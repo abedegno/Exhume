@@ -1,0 +1,48 @@
+# Toolchain profile: Borland Turbo C++ 1.01, Turbo Assembler 2.0, Turbo Link 3.01.
+# What is true of the tools, not of one game. The knowledge behind each value is in
+# compiler.md, assembler.md and linker.md beside this file.
+
+name = "Borland Turbo C++ 1.01 / TASM 2.0 / TLINK 3.01"
+
+[c]
+# one DOS batch line per source; {opts} from the source's /* opts: */ line, {file} its DOS name
+command = "TCC -c {opts} -IC:\\ {file}"
+default_opts = "-mm -1 -G -O -Z"
+code_class = "CODE"          # segment class of compiled code in the object
+public_prefix = "_"          # C names gain a leading underscore
+name_limit = 32              # Turbo C keeps 32 characters of an identifier (33 with the underscore)
+
+[asm]
+command = "TASM {opts} {file}"
+default_opts = "/ml"         # case-sensitive names, as the C side needs
+
+[log]
+# lines of a build log that mean trouble; TASM's summary "Error messages: None" does not
+problem = "(Error|Warning|Fatal)"
+benign = "messages:\\s+None"
+fatal = "(Error|Fatal)"
+
+[link]
+# TLINK rewrites a far call into the same overlay as nop; push cs; call near (90 0E E8),
+# so match treats 9A xx xx xx xx (fixup) against 90 0E E8 xx xx as equal
+overlay_call_rewrite = true
+# runtime helper names: long arithmetic (N_LXMUL@, F_LDIV@ ...) and other library internals
+library_name_patterns = ["^F_", "^N_", "@$"]
+# a far return ends a medium-model function; targets.py runs the last function to it
+far_return = 0xCB
+
+[fingerprint]
+# strings the runtime or linker leaves in the EXE (tools/fingerprint.py looks for them)
+strings = ["Turbo C++ - Copyright 1990 Borland Intl.", "Null pointer assignment",
+           "Abnormal program termination", "Runtime overlay error"]
+# C0's _DATA starts with 4 zero bytes and then the copyright string, so DGROUP's paragraph is
+# at or just below (string - 4); confirm it with a string the code references by DS offset
+dgroup_anchor = "Turbo C++ - Copyright 1990 Borland Intl."
+dgroup_anchor_offset = 4
+# a function opening with these bytes is compiled Turbo C with a standard frame (push bp; mov bp,sp)
+c_prologue = "55 8B EC"
+
+[setup]
+# expected MD5 of the executables setup-tc.sh and setup-tasm.sh unpack
+tcc_md5 = "db4c0704f7091b8d875be038bee2bf1e"
+tasm_md5 = "b68a63d6a94672910d4149fad4c18f00"

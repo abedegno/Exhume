@@ -1,0 +1,65 @@
+# Exhume project configuration for Ultima Underworld II (UW2.EXE, DOS, 1993), the first
+# case study. It points at the UW2Decomp repository, which holds the sources, target tables,
+# map and symbols. Everything UW2-specific that the generic tools need is here.
+#
+# Paths are relative to [project] root unless absolute. "~" and ${VAR} / ${VAR:-default}
+# are expanded, so the same file serves a checkout in place (the defaults) and a run that
+# keeps its outputs elsewhere (set EXHUME_BUILD, EXHUME_MAP).
+
+[project]
+name = "UW2"
+root = "${UW2DECOMP:-~/UW2Decomp}"
+src = "src"
+targets = "targets"
+symbols = "${EXHUME_SYMBOLS:-symbols.tsv}"
+matched = "${EXHUME_MATCHED:-matched.txt}"
+map = "${EXHUME_MAP:-map}"
+build = "${EXHUME_BUILD:-build}"       # objects (build/STEM/STEM.OBJ), the link, the queue
+queue = "queue"                        # relative to build
+
+[binary]
+exe = "${UW2_EXE:-~/UWGOG/UW2/UW2.EXE}"
+# DGROUP's load paragraph. DS:0 is at file 0x2C00 + 0x65E9 * 16 = 0x68A90, found from a string
+# both the code and the data agree on ("trap" at DS:1AEB is at file 0x6A57B).
+dgroup_para = 0x65E9
+# target names of overlays; the number is the overlay's index in the FBOV segment table
+overlay_segment = "ovr(\\d{3})"
+# the IDA listing (UWReverseEngineering's uw2_asm.asm) and how its segment names encode
+# paragraphs: seg012_1D31 is load paragraph 0x1D31 - 0x1ED
+listing = "${UW2_ASM:-~/UWReverseEngineering/uw2_asm.asm}"
+listing_para_bias = 0x1ED
+listing_stub_prefix = "stub"
+
+[toolchain]
+profile = "borland-tc101"
+# Turbo C++ 1.01's directory (TCC, TLINK, TLIB, the libraries, C0.ASM) and TASM 2.0, as
+# unpacked by profiles/borland-tc101/setup-tc.sh and setup-tasm.sh. Each entry of stage is
+# copied into C:\ for a build: a directory's contents, or a single file.
+home = "${EXHUME_TC:-~/UW2Decomp/TC}"
+stage = ["${EXHUME_TC:-~/UW2Decomp/TC}", "${EXHUME_TASM:-~/UW2Decomp/TASM}/TASM.EXE"]
+c_opts = "-mm -1 -G -O -Z"
+
+[names]
+# names in the FM Towns build's symbol table are the originals; symbols.tsv labels them so
+original_label = "FM Towns"
+original_symbols = "fmtowns/syms.tsv"
+
+[sibling]
+# the Japanese FM Towns build: same object list, same link order, 3237 original names.
+# 32-bit Watcom code; symbols above code_end are data.
+image = "fmtowns/uw2fmt.img"
+symbols = "fmtowns/syms.tsv"
+bits = 32
+code_end = 0x61dd5
+# hand-proven DOS <-> FM Towns pairs from shared strings (optional)
+extra_anchors = "~/UWReverseEngineering/UW2 FM Towns/dos_to_fmtowns_anchors.tsv"
+
+[map]
+# startup and the C runtime library: not aligned with the sibling
+library_segments = ["seg000", "seg005_105F"]
+
+[run]
+# rungame.mjs: the game directory staged into C:\ and the name the EXE runs under
+data = "${UW2_DATA:-~/UWGOG/UW2}"
+exe_name = "UW2.EXE"
+skip = ["SAVE0.pristine"]
