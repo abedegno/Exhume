@@ -10,6 +10,7 @@ Paths are relative to the Exhume checkout. You (the orchestrator) prepare target
 ## Pool
 
 - Run about three agents at once. Seven parallel Opus agents exhausted a session's usage limit in a few hours on UW2 and all seven died mid-file. Resume an interrupted agent with SendMessage (it keeps its context, which is cheaper than restarting); do not relaunch it.
+- Tell every agent not to spawn sub-agents of its own. The three-agent limit counts every agent running, not just the ones you launched: on UW2 two commenting agents each fanned out to about five sub-agents, twelve ran at once, and the session limit stopped all of them. Restate the rule when resuming.
 - Use the strongest Claude model as the matcher and finisher. On UW2, Opus averaged about 4 KB of matched code per 170k tokens. Sonnet matched both trial files but used about five times the tokens per byte (seg014, 579 bytes: 185k tokens; seg043, 1.6 KB: 434k tokens, 53 minutes, 218 tool calls).
 - Give a big file to one agent, which may fork helpers for single functions: UW2's largest file, ovr110 (20.6 KB, 68 functions), was finished by one Claude agent and seven forks after a Codex draft.
 - Give each agent the brief in skills/match-file (C) or skills/match-asm (assembly), plus: its source file name, its segment and table, and a one-line description of what the file does.
