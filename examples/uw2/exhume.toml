@@ -16,6 +16,7 @@ matched = "${EXHUME_MATCHED:-matched.txt}"
 map = "${EXHUME_MAP:-map}"
 build = "${EXHUME_BUILD:-build}"       # objects (build/STEM/STEM.OBJ), the link, the queue
 queue = "queue"                        # relative to build
+exclude = ["port"]                     # relative to src: the host port's own code, which the DOS build never compiles
 
 [binary]
 exe = "${UW2_EXE:-~/UWGOG/UW2/UW2.EXE}"

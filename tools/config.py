@@ -60,6 +60,8 @@ class Config:
         # source (tools/build.py) and a source's hash covers the ones it includes (srcdeps.py)
         self.include = os.path.normpath(os.path.join(self.root, p['include'])) if p.get('include') \
             else os.path.join(self.src, 'include')
+        # directories under src that hold no sources for the DOS build (a port's own code)
+        self.exclude = [os.path.normpath(os.path.join(self.src, x)) for x in p.get('exclude', [])]
         self.targets = R('targets', 'targets')
         self.symbols = R('symbols', 'symbols.tsv')
         self.matched = R('matched', 'matched.txt')

@@ -9,7 +9,8 @@ across the tree, and all_sources() stops when two collide. A source's DOS segmen
 overlay manager) should ask for it by segment, never by file name, so that renaming or
 moving a file needs no tool change.
 
-    all_sources(cfg)          every .C and .ASM under src except the include directory, by path
+    all_sources(cfg)          every .C and .ASM under src except the include directory and
+                              [project] exclude's directories, by path
     stem(path)                'GAMESTRN' for src/ui/GAMESTRN.C
     target(path)              the /* target: */ segment, or None
     by_stem(cfg)              {stem: path}
@@ -38,11 +39,12 @@ def _cfg(cfg):
 def all_sources(cfg=None):
     cfg = _cfg(cfg)
     inc = os.path.normpath(cfg.include)
+    skip = [inc] + list(getattr(cfg, 'exclude', []))
     out = []
     for ext in ('C', 'ASM', 'c', 'asm'):
         for p in glob.glob(os.path.join(cfg.src, '**', '*.' + ext), recursive=True):
             p = os.path.normpath(p)
-            if os.path.commonpath([p, inc]) == inc: continue
+            if any(os.path.commonpath([p, d]) == d for d in skip): continue
             out.append(p)
     out = sorted(set(out))
     seen = {}
