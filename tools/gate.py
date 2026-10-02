@@ -38,7 +38,7 @@ steps 4 need). Commands are split like a shell line and may use {python}, {exhum
     exact_exe = "LINK/out/UW2.EXE"       # relative to [project] build
     mod_exe = "MODLINK/out/UW2.EXE"
     known_diffs = [[0x6676C, 0x00, 0x01]]   # file offset, original byte, linked byte
-    sessions = 3                          # DOS sessions at once
+    sessions = 12                         # DOS sessions at once (default: tools/dosbatch.py's sessions())
     batch = 8                             # sources per session
     boot = ["w:5000", "s:title"]          # rungame.mjs steps for `boot` ([run] data, exe_name, skip)
 """
@@ -46,7 +46,7 @@ import sys, os, re, json, glob, time, shutil, hashlib, shlex, subprocess, tempfi
 from concurrent.futures import ThreadPoolExecutor
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 EXHUME = os.path.dirname(here)
-import config, sources
+import config, sources, dosbatch
 from srcdeps import source_hash
 
 
@@ -59,8 +59,8 @@ class Gate:
         self.cfg = cfg
         g = cfg.raw.get('gate', {})
         self.g = g
-        self.sessions = int(g.get('sessions', 3))
-        self.batch = int(g.get('batch', 8))
+        self.sessions = dosbatch.sessions(g.get('sessions'))
+        self.batch = int(g.get('batch', dosbatch.BATCH))
         self.known = {int(o): (int(a), int(b)) for o, a, b in g.get('known_diffs', [])}
         self.state_path = os.path.join(cfg.build, 'check', 'state.json')
         py = os.path.join(EXHUME, '.venv', 'bin', 'python')
@@ -87,9 +87,10 @@ class Gate:
 
     def toolchain(self):
         """A hash of what turns a source into an object: the toolchain's executables, the
-        profile's command lines and the DOS runner. A change rebuilds everything."""
+        profile's command lines and the DOS runner (dosrun.mjs and dosbackend.mjs). A change
+        rebuilds everything."""
         h = hashlib.sha1()
-        files = [os.path.join(here, 'dosrun.mjs'), os.path.join(here, 'build.py'),
+        files = [os.path.join(here, 'dosrun.mjs'), os.path.join(here, 'dosbackend.mjs'), os.path.join(here, 'build.py'),
                  os.path.join(self.cfg.profile_dir, 'profile.toml')]
         for s in self.cfg.stage:
             if os.path.isdir(s): files += sorted(glob.glob(os.path.join(s, '*.EXE')) + glob.glob(os.path.join(s, '*.exe')))
@@ -138,6 +139,7 @@ class Gate:
             res = build.build(cfg, [s for _, s, _ in todo], jobs=self.sessions, batch=self.batch)
             built = {stem: (None if ok else '; '.join(msgs) or 'failed') for stem, (ok, msgs) in res.items()}
         print(f'compiled {len(todo)} of {len(srcs)} sources in {time.time() - t1:.0f}s'
+              + (f' ({dosbatch.backend()}, {self.sessions} sessions)' if todo else '')
               + (' (the rest are unchanged since they last passed)' if len(todo) < len(srcs) else ''))
         check = [x for x in srcs if x[0] in {t[0] for t in todo}] if fast else srcs
 

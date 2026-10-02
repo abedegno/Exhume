@@ -13,6 +13,9 @@ place it. The modding build therefore works from a snapshot the last exact link 
   counts as a change to every source that includes it), each compiled with its
   own switches into a separate directory keyed by the source's hash, so the matched objects
   in <build> are never touched and a source is not recompiled while its text is unchanged.
+  They are compiled as the gate compiles, several to a DOS session and several sessions at
+  once, each failure tried once more alone (tools/dosbatch.py), so a change to a shared header
+  that many sources include costs seconds rather than one session per source.
 - listing_code_offsets() and code_offset_tables(): near code offsets that the extracted data
   holds as plain words (handler tables a module jumps through), found from the IDA listing's
   `dw offset` lines, so that a link can write them as `dw offset NAME`.
@@ -60,7 +63,7 @@ def changed_sources(cfg, base, outdir, sources, how_to_make):
     Each is built with its own /* opts: */ into outdir/STEM/STEM.OBJ, with SOURCE.SHA1 beside
     it; an object already built from the same text is reused. A source the snapshot does not
     have stops the build: the link order has no place for it yet."""
-    import build
+    import dosbatch
     known = load_snapshot(base, how_to_make)['sources']
     out = {}; todo = []
     for src in sources:
@@ -76,7 +79,8 @@ def changed_sources(cfg, base, outdir, sources, how_to_make):
     if todo:
         c2 = copy.copy(cfg); c2.build = outdir
         for stem, src, _ in todo: print(f'compiling {src} ({cfg.directives(src)[1]})')
-        res = build.build(c2, [s for _, s, _ in todo])
+        if len(todo) > 1: print(f'{len(todo)} sources in {dosbatch.backend()}, {dosbatch.sessions()} sessions at once')
+        res = dosbatch.compile_many(c2, [s for _, s, _ in todo])
         for stem, src, h in todo:
             ok, msgs = res[stem]
             if not ok: sys.exit(f'{stem}: build failed\n' + '\n'.join(msgs))

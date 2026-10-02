@@ -6,8 +6,12 @@
 
 Each source's switches come from its `/* opts: ... */` line (else the config's defaults);
 the command lines from the toolchain profile. Several sources share one DOS session (K per
-session, default 1; --all defaults to 12) and N sessions run at once (default 3: more
-emulators at once slow each other and make the emulator's damaged outputs more frequent).
+session, default 1; --all defaults to 12; a source that fails in a batch is built once more
+in a session of its own) and N sessions run at once. N defaults to what
+tools/dosbatch.py's sessions() says for the DOS in use (tools/dosbackend.mjs): one per core up
+to 12 in emu2 or DOSBox, 3 in js-dos, where more emulators at once slow each other and make
+the emulator's damaged outputs more frequent; EXHUME_DOS_SESSIONS or [toolchain] sessions
+override it.
 
 The project's shared headers ([project] include, default src/include) are copied into C:\
 beside the sources for every session, where `#include "name.h"` finds them; a header with
@@ -77,15 +81,21 @@ def _session(cfg, srcs, timeout):
     return logs
 
 
-def build(cfg, srcs, jobs=3, batch=1, timeout=300):
-    """Build srcs; returns {stem: (ok, problem lines)}."""
+def build(cfg, srcs, jobs=None, batch=1, timeout=300):
+    """Build srcs, jobs sessions at once (default: dosbatch.sessions()); returns {stem: (ok,
+    problem lines)}."""
+    if jobs is None:
+        import dosbatch
+        jobs = dosbatch.sessions() if len(srcs) > batch else 1
     groups = [srcs[i:i + batch] for i in range(0, len(srcs), batch)]
     res = {}
     with ThreadPoolExecutor(max(1, jobs)) as pool:
         for logs in pool.map(lambda g: _session(cfg, g, timeout * max(1, len(g) // 4 + 1)), groups):
             for stem, text in logs.items():
                 msgs, fatal = log_problems(cfg, text)
-                ok = not fatal and os.path.exists(cfg.obj(stem))
+                # an object with no log of its own is not trusted: the session died around it
+                ok = not fatal and os.path.exists(cfg.obj(stem)) and os.path.getsize(cfg.obj(stem)) > 0 \
+                    and bool(text.split('\nexhume: the DOS run failed')[0].strip())
                 res[stem] = (ok, msgs if msgs or ok else ['no object written'])
     return res
 
@@ -104,11 +114,15 @@ def main(argv):
     cfg = config.load(path)
     def opt(name, default):
         return int(a[a.index(name) + 1]) if name in a else default
-    jobs = opt('--jobs', 3)
+    jobs = opt('--jobs', None)
     srcs = all_sources(cfg) if '--all' in a else [x for i, x in enumerate(a) if not x.startswith('--') and (i == 0 or a[i - 1] not in ('--jobs', '--batch'))]
     if not srcs: sys.exit(__doc__)
     batch = opt('--batch', 12 if '--all' in a else 1)
-    res = build(cfg, [os.path.abspath(s) for s in srcs], jobs, batch)
+    import dosbatch
+    if len(srcs) > 1:
+        print(f'{len(srcs)} sources in {dosbatch.backend()}, {jobs or dosbatch.sessions()} sessions at once, {batch} to a session')
+    # a source that fails in a batch is built once more alone (a session can die part way)
+    res = dosbatch.compile_many(cfg, [os.path.abspath(s) for s in srcs], batch, jobs)
     bad = 0
     for stem, (ok, msgs) in sorted(res.items()):
         for m in msgs: print(f'{stem}: {m}')
