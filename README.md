@@ -6,11 +6,11 @@ It is for retro game preservation: people who want a game's source back in a for
 
 ## What is in it
 
-- `tools/`: the machinery. A headless DOS runner for the original toolchain (`dosrun.mjs`, through dos-mcp's js-dos), builds (`build.py`), per-function matching with fixups masked (`match.py`), verification of everything matching masks (`verify.py`), merge gates (`merge.py`, `rebuild-symbols.py`), the map of a binary from an IDA listing and a symbol-bearing sibling build (`doslist.py`, `locate.py`, `callgraphs.py`, `anchors.py`, `align.py`, `files.py`, `targets.py`, `callpairs.py`, `sibling.py`), an assembly draft generator (`asmgen.py`), a build queue with per-file budgets for sandboxed agents (`buildd.py`, `remote.sh`), EXE comparison (`exediff.py`), booting a build, taking screenshots and searching its memory (`rungame.mjs`), the modding build's snapshot and changed-source compiles (`modding.py`), a scan for addresses written as numbers (`addrscan.py`), a screenshot comparison for bisecting (`pngdiff.py`), and a first look at an unknown EXE (`fingerprint.py`). Everything project-specific is read from the project's `exhume.toml` (docs/config.md).
+- `tools/`: the machinery. A headless DOS runner for the original toolchain (`dosrun.mjs`, through dos-mcp's js-dos), builds (`build.py`), per-function matching with fixups masked (`match.py`), verification of everything matching masks (`verify.py`), merge gates (`merge.py`, `rebuild-symbols.py`), the map of a binary from an IDA listing and a symbol-bearing sibling build (`doslist.py`, `locate.py`, `callgraphs.py`, `anchors.py`, `align.py`, `files.py`, `targets.py`, `callpairs.py`, `sibling.py`), an assembly draft generator (`asmgen.py`), a build queue with per-file budgets for sandboxed agents (`buildd.py`, `remote.sh`), EXE comparison (`exediff.py`), booting a build, taking screenshots and searching its memory (`rungame.mjs`), the modding build's snapshot and changed-source compiles (`modding.py`), a scan for addresses written as numbers (`addrscan.py`), a screenshot comparison for bisecting (`pngdiff.py`), and a first look at an unknown EXE (`fingerprint.py`). The gate that proves the whole tree in one command (`gate.py`, with `repocheck.py` for CI, `install-hooks.sh` and `templates/`), sources in subsystem directories found by segment (`sources.py`) and hashed with their headers (`srcdeps.py`). The readability pass's tools: a declaration inventory (`declinv.py`), struct reconciliation (`structrec.py`), a header generator (`headergen.py`), raw offset and accessor macro tools (`rawoffsets.py`, `accessors.py`), warnings compared (`buildwarn.py`), and comment edits proved to change only comments (`comments.py`). Everything project-specific is read from the project's `exhume.toml` (docs/config.md).
 - `profiles/borland-tc101/`: Turbo C++ 1.01, TASM 2.0 and TLINK 3.01. The command lines and name rules the tools use (`profile.toml`), and what matching taught about each tool (`compiler.md`, `assembler.md`, `linker.md`). profiles/README.md lists the profiles that would come next.
-- `skills/`: Claude Code skills, one per stage: fingerprint-toolchain, map-binary, match-file, match-asm, verify-and-merge, link-and-diff, modding-build (changes of any size, and the layout audit), orchestrate (running several agents), port-prep.
-- `docs/`: the method end to end (method.md), the configuration (config.md), the link stage, the modding build and layout audits (link.md), and the UW2 case study with its numbers.
-- `examples/uw2/`: UW2's configuration, its link stage as a reference implementation, and a script that proves Exhume reproduces UW2Decomp's results.
+- `skills/`: Claude Code skills, one per stage: fingerprint-toolchain, map-binary, match-file, match-asm, verify-and-merge, link-and-diff, modding-build (changes of any size, and the layout audit), readability-pass (headers, constants, fields, names and comments, every byte kept), orchestrate (running several agents), port-prep.
+- `docs/`: the method end to end (method.md), the configuration (config.md), the link stage, the modding build and layout audits (link.md), the readability pass (readability.md), and the UW2 case study with its numbers.
+- `examples/uw2/`: UW2's configuration, its link stage as a reference implementation, a script that proves Exhume reproduces UW2Decomp's results, and the readability pass's plan, struct specs and scripts.
 
 ## Requirements
 
@@ -42,13 +42,16 @@ python3 ~/Exhume/tools/verify.py src/FILE.C
 python3 ~/Exhume/tools/merge.py src/FILE.C
 ```
 
-To check the toolkit against UW2 (needs a UW2Decomp checkout, its build, the toolchain and your UW2.EXE): `examples/uw2/prove.sh --map`.
+Once the whole program matches and links, the gate proves the tree in one command, and is what every later change must pass: copy `tools/templates/Makefile` beside the project's exhume.toml, fill in its `[gate]` section, and run `make check` (or `python3 ~/Exhume/tools/gate.py check`).
+
+To check the toolkit against UW2 (needs a UW2Decomp checkout, its build, the toolchain and your UW2.EXE): `examples/uw2/prove.sh --map`, and `python3 tools/gate.py check` with `EXHUME_CONFIG=examples/uw2/exhume.toml`.
 
 ## Status
 
 - Proven on one game, UW2, with one toolchain profile. `examples/uw2/prove.sh` rebuilds all 154 UW2 sources, matches and verifies them with the same results as UW2Decomp's own tools, and links an EXE byte-identical to UW2Decomp's (docs/case-study-uw2.md has the table). Its modding build gives the same EXE with nothing changed, and with sources grown in an overlay and a resident file it boots into the 3D view.
 - The C and assembly stages (fingerprint, map, match, verify, merge) are general, given a profile. The verify rules assume a Borland medium-model program with VROOMM overlays; other layouts will need work there.
 - The link stage is a reference implementation for UW2 only (examples/uw2/, docs/link.md): most of it encodes facts measured from UW2.EXE. The modding build's general parts (tools/modding.py) and the layout scan (tools/addrscan.py) are tools; the scan assumes a Borland medium-model program with a VROOMM segment table.
+- The readability pass is proven on UW2: Exhume's gate passes on UW2Decomp's final tree, and its header generator, given UW2's plan, reproduces UW2Decomp's shared-headers commit token for token. The C parser behind the readability tools reads the top level of period C, not all of C, and the struct layout rules are Borland's.
 - Only the Borland Turbo C++ 1.01 profile exists.
 
 ## License

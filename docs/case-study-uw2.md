@@ -1,6 +1,6 @@
 # Case study: Ultima Underworld II
 
-Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 1 October 2026.
+Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026.
 
 ## The target
 
@@ -35,7 +35,7 @@ Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin
 - The DOS and FM Towns builds proved to share link order (every game anchor monotonic; only the C library and platform modules differ). Size-based alignment between anchors, confirmed by both call graphs, named 884 of the 1,886 non-library functions at first. Holding out known pairs, confirmed names were right 80 times in 82; both misses disagreed with a hand-made anchor.
 - With matched files as anchors the map now carries 1,298 anchored names (Exhume's rerun of the pipeline gives the same files as UW2Decomp's tools on the same inputs).
 - Listing failures: seg002 (a run/skip/dump decoder) was never listed as procedures; seg004 began with a 0x63-byte table IDA decoded as code; ending a table at the first far return overran the assembly modules, whose tables had to be rewritten from paragraph start to the padding before the next module.
-- `map/filenames.tsv` proposes original file names from the System Shock source release (same engine lineage): six strong candidates and eleven plausible. Nothing was renamed on that evidence.
+- `map/filenames.tsv` first proposed original file names from the System Shock source release (same engine lineage): six strong candidates and eleven plausible. The readability pass (below) then renamed every file, recording each name's kind and evidence there.
 
 ### Match
 
@@ -78,6 +78,18 @@ As recorded in the project notes:
 - In extracted far data, the 3D model interpreter's opcode table (111 words at 4FAF:24F4) is written as `dw offset NAME` for the 110 entries that name a handler; the one entry that points at an unnamed data word stays a number.
 - Proven with a longer string and new code in OVR101 (an overlay), new initialised data and code in SEG039 (resident: every later segment, the far data and DGROUP's paragraph move), and a 333-byte `_BSS` array in SEG006, each alone and together: the game reaches the 3D view and looks and walks as the original does.
 
+### Readability pass
+
+On 2 October UW2Decomp made the matched tree readable in seven commits (12516e4 to f9bf8b5), and the EXE stayed identical through every one of them: the gate passed after each.
+
+- **Gate** (12516e4): `make check` over `tools/uw2.py`, incremental by source and header hash: every source matches and verifies, symbols.tsv rebuilds from scratch, the exact link equals UW2.EXE but the two known bytes, the unchanged modding build equals the exact link. About a minute from nothing, about ten seconds with nothing changed. A pre-push hook runs it; GitHub runs only the toolchain-free repocheck.
+- **Shared headers** (0c4d92c): 16 subsystem headers in `src/include`. Prototypes in the sources fell from 2,523 to 718, extern declarations from 899 lines to 256, local struct definitions from 350 to 50. 36 structs were reconciled from up to 53 copies each (`struct Object` had 53), their fields and types fixed by the bytes, and 1,263 names are shared. 227 names whose declarations differ between files stay declared in those files, because the files compile differently with one shared declaration.
+- **Named constants** (165ed97): 1,251 hex literals replaced by names, about 1,780 uses: all 448 item ids named from the game's own item names, the object classes from the FM Towns enum, object field masks, string blocks, fonts, palettes, tile types, skills, quest bytes, spell classes, error codes.
+- **Struct fields and accessors** (9aba437): cast-pointer offset sites fell from 96 to 12 (the rest kept because the bytes need them); new structs for the level block, animations, bitmaps, the font header, SCD rows and armour; 114 shared `OBJ_*`/`SET_*` accessor macros replace the per-file copies, two with a second spelling where files compile them differently.
+- **File names** (e44f1fc): all 154 sources renamed and grouped in 15 subsystem directories: 9 names original (from System Shock's source and Miles' AIL 2.14: VALLOC, INTERP, INPUT, DAMAGE, GAMESTRN, WRAPPER, GAMEWRAP, PLAYER, AIL), 34 inferred, 111 descriptive. Tools find sources by segment, so the link needed no change.
+- **Comments** (3c9afb9, 198a7b3): every file has a header comment and routine notes, with `match:` and `name:` tags; 14 subsystem notes. The first pass was cut short by a session limit after commenting agents fanned out into nested agents (skills/orchestrate).
+- **Findings** (f9bf8b5): docs/FINDINGS.md lists 17 likely bugs in the original, each re-checked against the source and the FM Towns build, with confidence, effect in the game and whether a port should reproduce it (two candidates dropped on re-reading), plus game rules recovered from the code, engine findings, dead code and open questions.
+
 ## Exhume's reproduction (1 October 2026)
 
 `examples/uw2/prove.sh --map` runs Exhume's tools against the UW2Decomp checkout, read-only, writing everything to Exhume's build directory:
@@ -97,3 +109,20 @@ As recorded in the project notes:
 | link.py --mod with OVR101 and SEG039 grown, in a copy of src/ (2 October) | 675,328 bytes; character creation shows "Strength:" and a new "S+D:" line; the game reaches the 3D view with objects drawn normally; rungame finds the marker the new resident code changes at start-up (`EXHUME-1`) in memory |
 
 One compile took about 30 seconds during the project. On the same machine on 1 October, UW2Decomp's tcc.mjs took about 7 seconds for one file and Exhume's runner about 2.5 seconds; batching many sources into one DOS session is what makes a full rebuild take seconds rather than an hour.
+
+## Exhume's reproduction of the readability pass (2 October 2026)
+
+Run against a snapshot of UW2Decomp at f9bf8b5 (`git archive`, with the toolchain linked in), never the working checkout; the earlier commits were checked from their own snapshots.
+
+| Check | Result |
+| --- | --- |
+| `tools/gate.py check` on the snapshot | 153 of 153 sources compiled, matched and verified; symbols.tsv rebuilt from scratch, 2,917 names, equal to the committed file; exact link equal to UW2.EXE except 0x6676C and 0x66774; modding build byte-identical to it. 78 s from nothing, 11 s with nothing changed |
+| the gate's negative cases | one changed constant in `game/SKILLS.C` fails `check --fast` (ovr154, 6,820 of 6,967 bytes); a comment added to `include/player.h` recompiles exactly its 52 includers, which pass |
+| `tools/declinv.py` at 12516e4, 0c4d92c and f9bf8b5 | prototypes 2,523, 718, 558; extern lines 899, 256, 254; local struct definitions 350, 50, 36: the commit's figures. Struct tags defined in more than one place: 34, then 0 |
+| `tools/declinv.py` at f9bf8b5: the conflicts left | 255 names declared differently in different files (250 with divergent forms, 39 with an old-style declaration somewhere), such as `advance`, defined with a `char` in `game/SKILLS.C` and declared with an `int` in `game/SKILLCHK.C`; 27 tie groups that mix header and local names, all passing the gate |
+| `tools/headergen.py` with examples/uw2/readability/headers/plan.toml, from the run's base tree | 1,263 names into 16 headers, 227 left by the plan and 55 by rule; all 115 files it writes have the token streams of commit 0c4d92c |
+| `tools/structrec.py` at 12516e4 | `struct Object` 53 copies, `struct Player` 41, `struct ComObj` 28, `struct Tile` 26; converting ComObj rewrites all 28 files, with the field names of the run's base tree (checked in four) |
+| `tools/rawoffsets.py` | 96 sites at 0c4d92c, 12 at f9bf8b5 |
+| `tools/comments.py apply` on `game/SKILLS.C` | refuses a spec whose edit changes `return 1` to `return 2`, and one whose comment text closes the comment early and leaves `value = 0;` behind; writes a comment-only spec (a routine comment, a trailing note, a reworded comment), after which the full gate passes |
+| `tools/repocheck.py` | Exhume: all checks pass; the snapshot with its game data extensions banned: all pass, and a copy of UW2.EXE renamed `notes.txt` is caught by its MZ header |
+

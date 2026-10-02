@@ -3,7 +3,7 @@
 Exhume rebuilds an old DOS program from source that the original tools compile, assemble and link to the same bytes. This is the method end to end, as it was used on Ultima Underworld II (docs/case-study-uw2.md has the numbers). Each stage has a skill under skills/ with the working detail; this page is the order and the reasons.
 
 ```
-fingerprint -> map -> match -> verify -> link -> run -> prove liveness -> modding build
+fingerprint -> map -> match -> verify -> link -> run -> prove liveness -> modding build -> readability pass
 ```
 
 Every stage ends in a check that a machine can repeat. Nothing is accepted on judgement alone: a function matches or it does not, a file verifies or it does not, the linked EXE equals the original or exediff says where it differs.
@@ -73,6 +73,13 @@ Make the sources changeable by any size, which is what a fix, a mod or a port ne
 - A literal address and a symbolic one assemble to the same bytes, so match and the exact link cannot tell them apart; only a link that moves things can. Audit the layout: scan with `tools/addrscan.py`, write each address it finds as a name, then boot with DGROUP shifted and bisect by padding `_BSS` in different files to find the ones the scan missed (docs/link.md, "Layout audits").
 - Prove it the way liveness was proved, with edits that change sizes: a longer string and new code in an overlay, new data and code in a resident file. Boot each into the program's main scene, and check a marker that new code changes at run time with rungame.mjs's memory search (`m:TEXT`).
 
+## 9. Readability pass
+
+Make the tree readable without changing a byte (skills/readability-pass, docs/readability.md), in six steps, each committed on its own and proved by the gate.
+
+- First the gate: `tools/gate.py check` proves the whole tree in one command (every source matches and verifies, symbols.tsv rebuilds from scratch, the exact link equals the original except its known bytes, the unchanged modding build equals the exact link), recompiling only what changed, including every source that includes a changed header. A pre-push hook runs it; hosted CI runs `tools/repocheck.py`, which needs neither the toolchain nor the program.
+- Then shared headers (`tools/declinv.py`, `tools/structrec.py`, `tools/headergen.py`), named constants, struct fields and accessors (`tools/rawoffsets.py`, `tools/accessors.py`), original file names and subsystem directories (tools find sources by segment, `tools/sources.py`), and comments, subsystem notes and a findings page (`tools/comments.py`, which proves an edit changed only comments).
+
 ## What "done" means
 
 - Every code segment outside the C runtime library has source that matches whole and verifies.
@@ -80,3 +87,4 @@ Make the sources changeable by any size, which is what a fix, a mod or a port ne
 - The game runs from the linked EXE, and a source change reaches the screen.
 - Data no source owns yet is listed (UW2: about 83 KB of far data from the graphics and 3D modules, and eight small DGROUP gaps).
 - The modding build links changed sources of any size and runs, and the layout audit lists what still has to keep its length (UW2: the extracted far data and the assembly modules that address it by number).
+- The tree reads as source: shared headers, names for constants and fields, file names with their evidence, every file commented, the findings written down; and one command, run before every push, proves it still builds the original.
