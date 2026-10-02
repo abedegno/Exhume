@@ -35,6 +35,12 @@ UW2's assembly modules were assembled with something that behaves exactly like *
 - **An assembly routine can share a C file's segment**: UW2's seg019 starts with SetPnt, an assembly module called with far calls from the C (a same-file C function would get `push cs; call near`). Its target table starts at the first C function (org 0x41).
 - **Modules that switch DS** (UW2: seg003 uses seg_370D; seg021 its own data segment; seg046 `_OVRGROUP_`) need `tools/asmgen.py --no-near-names`, or the draft names their data after unrelated DGROUP variables.
 
+## Addresses written as numbers
+
+- **A literal address and a symbolic one assemble to the same bytes.** `mov si,6742h` and `mov si,offset DGROUP:_Palettes` give `BE 42 67`; the second also carries a fixup. Match masks fixups and the exact link moves nothing, so both match and both link to the original. Only a link that moves data shows the difference: UW2's SEG004N had the number, and its object sprites were drawn with the wrong palette as soon as DGROUP data before DS:6742 grew. Write every operand that is an address as a name (`offset DGROUP:name`, `offset name`, `seg name`), and check with `tools/addrscan.py` (docs/link.md, "Layout audits").
+- The same holds for a stack placed at a number: UW2's SEG021Q set `mov ax,211Ch; mov sp,ax` before `mov ax,DGROUP; mov ss,ax`, the top of a private stack at the start of another module's `_DATA`, now `mov ax,offset DGROUP:_joy_position`.
+- **In a FAR_DATA segment, `dw offset NAME` for a far extern gives NAME's offset in its own segment**, not in the data segment. That is how a table of near code offsets kept in far data (UW2: the 3D model interpreter's opcode table, jumped through with `jmp word ptr [bx+24F4h]`) can be written by name, so it follows the code when the code moves.
+
 ## C with inline assembly
 
 - **C with inline assembly** (`#pragma inline`) goes through TASM, and shows it: a call to a later function in the same resident file becomes `push cs; call near; nop` (`0E E8 xx xx 90`), which TCC alone never produces. UW2's seg013 is mostly pseudo-registers (`_AH = ...; geninterrupt(0x67);`) with two short `asm` statements; prefer pseudo-registers wherever they reproduce the bytes (`_BX = 0` gives `xor bx,bx`, so a literal `mov bx,0` needs `asm`). TCC needs TASM.EXE beside it in C:\ for such files, which the config's `[toolchain] stage` provides.

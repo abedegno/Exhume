@@ -20,7 +20,12 @@ Paths are relative to the Exhume checkout. The link is the strongest check there
 2. Link. For UW2 this is the reference implementation: `python3 examples/uw2/link.py` (it runs `examples/uw2/extract.py` first). It stops with the source to correct when an object disagrees with the EXE (an unknown name, a public UW2 had static, an overlay's publics out of stub order, a missing relocation). For another game, copy and adapt it; docs/link.md says which parts are general.
 3. Compare: `python3 tools/exediff.py build/LINK/out/GAME.EXE`. Give only the linked EXE; the original comes from exhume.toml. It reports header fields, relocations (set, then order), the resident image segment by segment and the overlay area overlay by overlay.
 4. Run it: `node tools/rungame.mjs --data GAMEDIR --as GAME.EXE build/LINK/out/GAME.EXE shot- w:12000 s:title k:Escape w:3000 s:menu`, then read the screenshots.
-5. Prove the build is live: change one string in a copy of a source, build it into a scratch directory (`EXHUME_BUILD=/tmp/x python3 tools/build.py copy/FILE.C`), link it in place of the matched object (`link.py --no-extract --obj STEM=/tmp/x/STEM/STEM.OBJ --out /tmp/x/out`), and see the change on screen. exediff should show exactly the changed bytes.
+5. Prove the build is live: change one string in a copy of a source, build it into a scratch directory (`EXHUME_BUILD=/tmp/x python3 tools/build.py copy/FILE.C`), link it in place of the matched object (`link.py --no-extract --obj STEM=/tmp/x/STEM/STEM.OBJ --out /tmp/x/out`), and see the change on screen. exediff should show exactly the changed bytes. This works only for a change of the same length.
+6. When every object verified, the exact link leaves a snapshot in `<build>/LINK/base` for the modding build (`link.py --mod`), which links changes of any size. That is skills/modding-build.
+
+## What the exact link cannot see
+
+A DGROUP address written as a number (`mov si,6742h` for `offset DGROUP:_Palettes`) assembles to the same bytes as the name, so it matches and links exactly. Only a link that moves data exposes it. Run `tools/addrscan.py` and the layout audit in skills/modding-build before any change that alters sizes.
 
 ## Reading exediff
 

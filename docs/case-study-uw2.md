@@ -71,6 +71,13 @@ As recorded in the project notes:
 
 - The linked EXE reaches the title and main menu. Changing `"Str:"` to `"Lnk:"` in OVR101.C (character creation) changed exactly those three bytes in the EXE and showed on screen.
 
+### Modding build
+
+- On 2 October UW2Decomp added `link.py --mod` (commit 00b6b67). Four DGROUP addresses its sources wrote as numbers became names: SEG039.C indexed the C library's `_ctype` at `0x1bf7`, SEG021A loaded C0's `__psp` as `92h`, SEG021Q put a private stack at `211Ch`, and SEG004N handed OVR119's `Palettes` to the image decoders as `6742h`. Each new spelling compiles to the same bytes.
+- The last was found by booting, not by the scan: with data grown anywhere before DS:6742 the 3D view drew every object sprite on a coloured box. Padding `_BSS` file by file narrowed it to OVR119's `_BSS`; the scan then learned to follow numbers into pointer registers and through calls, and widening that to `mov sp` found SEG021Q's stack.
+- In extracted far data, the 3D model interpreter's opcode table (111 words at 4FAF:24F4) is written as `dw offset NAME` for the 110 entries that name a handler; the one entry that points at an unnamed data word stays a number.
+- Proven with a longer string and new code in OVR101 (an overlay), new initialised data and code in SEG039 (resident: every later segment, the far data and DGROUP's paragraph move), and a 333-byte `_BSS` array in SEG006, each alone and together: the game reaches the 3D view and looks and walks as the original does.
+
 ## Exhume's reproduction (1 October 2026)
 
 `examples/uw2/prove.sh --map` runs Exhume's tools against the UW2Decomp checkout, read-only, writing everything to Exhume's build directory:
@@ -84,5 +91,9 @@ As recorded in the project notes:
 | examples/uw2/link.py | 3 s; same size; the same two bytes differ; byte-identical to UW2Decomp's linked EXE, map identical |
 | Map pipeline into a copy | dos_procs, dos_code, segments, procs and both call graphs identical; anchors, functions and files identical to UW2Decomp's own tools run on the same inputs |
 | rungame.mjs | the linked EXE reaches the main menu; the OVR101 string change shows in character creation |
+| Exact link's snapshot for the modding build (2 October) | `LINK/base/layout.json` identical to UW2Decomp's |
+| tools/addrscan.py (2 October) | report identical to UW2Decomp's addrscan.py on the same objects (3,907 numeric operands, 155 marked) |
+| link.py --mod, no source changed (2 October) | 110 opcode table entries written as names; EXE byte-identical to the exact link |
+| link.py --mod with OVR101 and SEG039 grown, in a copy of src/ (2 October) | 675,328 bytes; character creation shows "Strength:" and a new "S+D:" line; the game reaches the 3D view with objects drawn normally; rungame finds the marker the new resident code changes at start-up (`EXHUME-1`) in memory |
 
 One compile took about 30 seconds during the project. On the same machine on 1 October, UW2Decomp's tcc.mjs took about 7 seconds for one file and Exhume's runner about 2.5 seconds; batching many sources into one DOS session is what makes a full rebuild take seconds rather than an hour.

@@ -3,7 +3,7 @@
 Exhume rebuilds an old DOS program from source that the original tools compile, assemble and link to the same bytes. This is the method end to end, as it was used on Ultima Underworld II (docs/case-study-uw2.md has the numbers). Each stage has a skill under skills/ with the working detail; this page is the order and the reasons.
 
 ```
-fingerprint -> map -> match -> verify -> link -> run -> prove liveness
+fingerprint -> map -> match -> verify -> link -> run -> prove liveness -> modding build
 ```
 
 Every stage ends in a check that a machine can repeat. Nothing is accepted on judgement alone: a function matches or it does not, a file verifies or it does not, the linked EXE equals the original or exediff says where it differs.
@@ -65,9 +65,18 @@ Boot the linked EXE among the game's files in headless DOS and look at it: `tool
 
 Change one visible thing in one source (a string), build it into a scratch directory, link it in place of the matched object, run it, and see the change on screen. exediff should report exactly the changed bytes. This proves the build really comes from the sources: that no stale object, extracted module or copied file stands in for them.
 
+## 8. Modding build
+
+Make the sources changeable by any size, which is what a fix, a mod or a port needs first (skills/modding-build, docs/link.md).
+
+- The exact link keeps a snapshot of the matched objects, their sources' hashes and where their data sits. `link.py --mod` compiles only the sources that changed since, into a separate directory, and lays the image out from the snapshot. With nothing changed it must give the exact link's EXE.
+- A literal address and a symbolic one assemble to the same bytes, so match and the exact link cannot tell them apart; only a link that moves things can. Audit the layout: scan with `tools/addrscan.py`, write each address it finds as a name, then boot with DGROUP shifted and bisect by padding `_BSS` in different files to find the ones the scan missed (docs/link.md, "Layout audits").
+- Prove it the way liveness was proved, with edits that change sizes: a longer string and new code in an overlay, new data and code in a resident file. Boot each into the program's main scene, and check a marker that new code changes at run time with rungame.mjs's memory search (`m:TEXT`).
+
 ## What "done" means
 
 - Every code segment outside the C runtime library has source that matches whole and verifies.
 - The linked EXE equals the original, or every remaining difference is listed and explained (UW2: two flag bytes in the overlay segment table, with a hypothesis).
 - The game runs from the linked EXE, and a source change reaches the screen.
-- Data no source owns yet is listed (UW2: about 83 KB of far data from the graphics and 3D modules, and eight small DGROUP gaps). Until it has source, only changes that keep data sizes are safe.
+- Data no source owns yet is listed (UW2: about 83 KB of far data from the graphics and 3D modules, and eight small DGROUP gaps).
+- The modding build links changed sources of any size and runs, and the layout audit lists what still has to keep its length (UW2: the extracted far data and the assembly modules that address it by number).

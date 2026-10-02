@@ -226,6 +226,7 @@ So if reloads differ in a way restructuring cannot fix, try the file with and wi
 - **`MK_FP` with an assignment inside**: `buf = MK_FP(ws = f(), 0)` stores the segment from AX; two statements store it from the register variable.
 - **`FP_OFF(MK_FP(seg, off))`** evaluates the segment and throws it away, leaving a redundant load.
 - **`FP_SEG` of a computed near pointer re-evaluates it**: `movedata(..., FP_SEG(d), FP_OFF(d), ...)` with `d = s + strlen(s)` calls `strlen` twice and pushes `ds`; a stack array gives `push ss`.
+- **A DGROUP address written as a number compiles to the same bytes as the name**: `((signed char near *)0x1bf7)[c]` and `(_ctype + 1)[c]` both give `[bx+1BF7h]`, the second with a fixup. Match cannot tell them apart; write the name (UW2's SEG039 had the number, for the C library's `_ctype` table). See assembler.md, "Addresses written as numbers".
 - **Far function-pointer table**: `if (tab[s][i]) tab[s][i]();` recomputes the index for the test (`mov ax,[bx]; or ax,[bx+2]`) and again for `call far [bx+tab]`.
 
 ### Calls, prototypes and the library
