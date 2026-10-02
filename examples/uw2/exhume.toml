@@ -58,6 +58,18 @@ extra_anchors = "~/UWReverseEngineering/UW2 FM Towns/dos_to_fmtowns_anchors.tsv"
 # startup and the C runtime library: not aligned with the sibling
 library_segments = ["seg000", "seg005_105F"]
 
+[layout]
+# tools/addrscan.py, which lists addresses written as numbers (docs/link.md, "Layout audits").
+# Segment table entries 50 to 78 are the far data segments, reported as FD50..FD78 (FD51 is
+# seg_370D, the graphics data; FD58 seg052_519C, the 3D renderer's; FD71 dseg062_62a6, seg021's).
+far_data_entries = [50, 78]
+# seg046 is the overlay manager, which the link takes from OVERLAY.LIB rather than its object
+library_objects = ["SEG046"]
+# seg003's dispatcher (_seg003_0272_5311 in SEG003K) is handed a routine's offset in BP and
+# calls it with DS = ES = SS = seg_370D: `mov ax,seg seg_370D; mov ds,ax; mov es,ax; ...
+# mov ss,ds:[558Ch]`, where DS:558C holds that paragraph
+dispatch = [{ register = "bp", ds = "FD51", es = "FD51", ss = "FD51" }]
+
 [run]
 # rungame.mjs: the game directory staged into C:\ and the name the EXE runs under
 data = "${UW2_DATA:-~/UWGOG/UW2}"

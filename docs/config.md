@@ -38,6 +38,16 @@ A second build with symbols. `image` (a flat code image), `symbols` (TSV: name, 
 
 - `library_segments`: segments holding startup code and the C library, left out of the alignment.
 
+## [layout]
+
+For `tools/addrscan.py`, which lists addresses written as numbers (docs/link.md, "Layout audits"). All optional.
+
+- `far_data_entries`: `[first, last]` overlay segment table entries that hold far data; their paragraphs are reported as `FDnn`. Without it, every entry with flags 0 other than DGROUP's counts.
+- `library_objects`: stems whose objects are not scanned because the link takes that code from a library (UW2: `SEG046`, the overlay manager).
+- `dispatch`: code entered through a dispatcher. Each entry is `{ register = "bp", ds = "FD51", es = "FD51", ss = "FD51" }`: a label whose offset is loaded into that register (`mov bp,offset X`) is entered with those segment registers.
+
+DGROUP is found by `[binary] dgroup_para`. The modding build also reads `[binary] listing` and `listing_para_bias`, for the `dw offset` tables in extracted data.
+
 ## [run]
 
 Notes for rungame.mjs (`data`, `exe_name`, `skip`), which takes them as arguments.
