@@ -53,4 +53,4 @@ To check the toolkit against UW2 (needs a UW2Decomp checkout, its build, the too
 
 ## License
 
-Not yet chosen.
+MIT; see LICENSE. The toolkit contains no game data and no Borland binaries: each project supplies its own executable and toolchain.
