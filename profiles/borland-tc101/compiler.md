@@ -243,3 +243,38 @@ So if reloads differ in a way restructuring cannot fix, try the file with and wi
 - **`atoi`** from stdlib.h links as `_atol`.
 - **Recognise library code**: UW2's ovr127 is Haruhiko Okumura's 1989 LZSS.C almost line for line, with its globals moved into one far work area. Well-known public code is worth looking for before reconstructing from scratch.
 - **Unreferenced helper functions** with no sibling counterpart can sit inside a neighbour's range in the target table; define them `static` where they fall.
+
+## Readability changes: what keeps the bytes
+
+What UW2's readability pass (skills/readability-pass) showed about Turbo C++ 1.01; the gate checked each.
+
+### Declarations and headers
+
+- **An unused declaration costs nothing**: an `extern` or prototype the file never uses leaves no EXTDEF, so a header may declare far more than a file needs. The object does gain comment records naming each included file and its time stamp, which no tool reads.
+- **Adding an `#include` changes nothing but those comment records**, provided the header declares no name the file defines in another way.
+- **A header is the first sight.** Publics and uninitialised globals with equal order keys (`bssorder.py`) are ordered by first sight, so declaring one of a tie group in a header and not the others reorders them (UW2: `missile_trx`/`missile_try` in seg027, `PlayerPitch`/`playerMod` in seg035, `check_arc`/`close_arc` in ovr093). Such names stay together, in headers or out.
+- **A shared prototype can change a caller**: with a `char` parameter in scope a call converts its argument (`mov al,[x]; push ax`), without it an `int` is pushed as it is; an old-style declaration converts nothing. So a name whose files disagree stays declared in each file its own way (UW2: 227 names after the header step).
+- **An uninitialised `far` definition after an `extern` declaration of the same name comes out as near DGROUP data**, so a far variable is never declared in a header its defining file includes.
+- **`struct X;` works** as an incomplete declaration, and a later definition completes the same tag. A tag declared and never defined draws "Undefined structure" at the end of the compile, a warning only.
+
+### Structs and fields
+
+- **Struct sizes are evidence**: a definition by value lays out `_BSS` with the struct's size (UW2's seg031 shows `struct MotionCalc` is 23 bytes although six files declared 24), and struct copies and pointer strides show sizes too.
+- **`unsigned` against `int` fields**: `p->f |= x` is `or [bx+N],ax` on an `unsigned` field and load, `or`, store on an `int` one. A comparison or `>>` on the field shows its signedness; elsewhere a cast at the one use keeps a shared type.
+- **A byte view of a word field**: `(unsigned char)s[i].value` compiles like reading an `unsigned char` field at that offset.
+- **Fields at the same offset compile alike whatever their names**: a scalar field and the matching element of an array field, a bitfield and the same bits in another partition of its word, `(&p->a)[i]` and an array indexed by `i`. Only the bits a field covers, its unit (a `char` or an `int` bitfield) and its type matter.
+- **No anonymous unions in C**: a word read both whole and as bitfields is a named union, and every access names the view.
+- **A field compiles like the cast it replaces** when the address is the same and reached the same way (`*(unsigned far *)((char far *)o + 0x16)` is `o->home`; `&a[i]` of 0x30-byte records is `(char *)a + i * 0x30`). Not when the scaling differs: `((unsigned *)p)[i * 3 + 2]` scales after the add, where `p[i].f` folds the field's offset into the displacement. Not when the base pointer differs: code that keeps a pointer at a later field and reads before it (`[bx-4]`) keeps that pointer.
+- **Pointer types of the same address are free**: retyping `unsigned far *` link variables as a union pointer changed no byte, and cleared the "Suspicious pointer conversion" warnings that sharing the prototypes had drawn (UW2: 234).
+
+### Constants and macros
+
+- **A `#define` whose value is the literal compiles the same**, so keep the literal's spelling: hex values from 0x8000 are `unsigned` and decimal ones `long`; a name never replaces a decimal `32768` with `0x8000`.
+- **Enum constants compile like the `int` literal** in `case` labels, comparisons with `char`, bitfield values, array indices and arguments. Only values below 0x8000 suit an enum.
+- **Constant expressions fold** before code generation (`ERR_LOWMEM | 2` pushes the single value). Rewriting an inverse mask as `~NAME`, or splitting a literal that is combined with variables, can change the code (see `~` constants under "Expressions"), so those stay literals.
+- **Setter macros fold constants**: `x = x & 0xF00F | ((0) & 0xFF) << 4` compiles like `x &= 0xF00F`. Masking the argument costs an `and` only when the argument is a variable not already masked; `((v) & 7)` of `x & 7` merges into one `and` unless the macro casts first (`(unsigned)(v) & 7`), which keeps both. A shift by 0 always costs `shr ax,0`. A file that compiles a shared macro differently needs a second spelling of it.
+- **With `-d`**, the literal pool shares duplicates and tails, so replacing a literal with a `#define` of the same literal changes nothing, while a named `char` array is data in definition order, outside the pool.
+
+### File names
+
+- **A C file's code segment is `FILE_TEXT` and its far variables' segments `FILE<n>_FAR`**, after the file name, so renaming a file renames its segments. The EXE keeps no segment names; see linker.md for when a name matters.

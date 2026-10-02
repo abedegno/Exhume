@@ -11,17 +11,21 @@ A matched decompilation is a reference, not yet a portable program. UW2 has not 
 
 Before any port or modification, get the modding build working (skills/modding-build): the exact link's snapshot, `link.py --mod` giving the exact EXE with nothing changed, a layout audit with `tools/addrscan.py`, and a proof that edits of different sizes in an overlay and in a resident file boot into the program's main scene. Until then every change has to keep the original's sizes. After it, a change of any size can be tried and run against the original in minutes.
 
+## Then: the readability pass
+
+A port reads the code before it changes it. Make the matched tree readable first, every byte kept (skills/readability-pass): a gate that proves the whole tree in one command, shared headers, named constants, struct fields, original file names, comments and a findings page. The findings page is the port's list of decisions: each likely bug in the original, with whether a port should reproduce it.
+
 ## Keep the matching tree as the reference
 
 - Never change the matched sources in place for a port. Branch or copy. The matched tree, its link and `exediff` are the regression test for any later clean-up that is meant to keep the bytes.
-- Clean-ups that keep the bytes (names, comments, types that compile the same, shared headers) can go into the matched tree, each one proved by build, match, verify and link.
+- Clean-ups that keep the bytes (names, comments, types that compile the same, shared headers) go into the matched tree, each one proved by the gate (`tools/gate.py check`; skills/readability-pass).
 
 ## What the matched tree still lacks (check each)
 
 - **Data owned by no source.** Anything the link still extracts from the user's EXE (examples/uw2/extract.py: UW2 still takes about 83 KB of far data, the graphics and 3D modules' tables and models, and eight small unattributed DGROUP gaps) must become source or a loaded asset. The modding build keeps extracted pieces in their places next to their neighbours and writes relocated words and typed code offsets in them as names, but their internal layout is fixed: change such data, and the assembly that addresses it by number, only at the same length until it has source.
 - **Addresses written as numbers.** The layout audit (skills/modding-build) lists what is left; each remaining entry is a place a port must replace with a name or a structure.
 - **Provisional names.** symbols.tsv marks each name original, library or provisional. Name what you can from the sibling build before a port freezes them.
-- **Prototypes.** Original files often declared what they called for themselves, inconsistently (UW2: seg038 calls `advance` with an int, ovr154 defines it with a char). A port needs one header per module with the true types.
+- **Prototypes.** Original files often declared what they called for themselves, inconsistently (UW2: seg038 calls `advance` with an int, ovr154 defines it with a char). The readability pass shares every declaration it can; the names still declared per file (`tools/declinv.py` lists them as conflicts: UW2 has 255) are where the original disagreed with itself, and a port has to choose one true type for each.
 - **Platform code.** List every file that touches the hardware or DOS: interrupts (`geninterrupt`, pseudo-registers), port I/O (`outportb`), EMS, the timer, video memory, the sound driver interface (UW2: Miles AIL 2.0 in seg022), the mouse and keyboard handlers, and all assembly modules. These are the port's platform layer.
 - **Memory model assumptions.** 16-bit `int`, far pointers built with `MK_FP` and compared by offset only, segment arithmetic (`FP_SEG(x) + 1`), far pointer subtraction done as long division, huge arrays, overlay stubs (a function address stored as data points at its overlay stub, not its code).
 - **Layout assumptions.** Struct fields placed with padding arrays to exact offsets, the compiler's bitfield placement (Borland places each field in the 16-bit window starting at the byte holding the next free bit), save files and data files read by `fread` into structs. Write each record layout down with its byte offsets before changing the compiler.

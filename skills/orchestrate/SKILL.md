@@ -36,6 +36,10 @@ Paths are relative to the Exhume checkout. You (the orchestrator) prepare target
 - Shell scripts must not write fixed paths in /tmp: two agents running the same script overwrite each other's output.
 - Python tools must not reassign sys.argv when they call each other (pass arguments to main), or an imported tool reads the wrong file.
 
+## The readability pass
+
+After the exact link and the modding build, skills/readability-pass makes the tree readable without changing a byte. Its orchestration differs from matching: steps 1 and 2 (the gate, shared headers) are one job over the whole tree; steps 3, 4 and 6 (constants, fields, comments) split by subsystem, one agent owning a subsystem's sources and its header, never two agents on one header. Agents run `tools/gate.py check --fast` on their own changes and you run the full gate before each commit; comment agents' edits go through `tools/comments.py apply` and you check the tree with `tools/comments.py check --ref HEAD`. The no-nested-agents rule above came from this pass.
+
 ## Reviewing a report
 
 - Check its claims: rerun match and verify yourself through merge.py.
