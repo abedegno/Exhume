@@ -20,10 +20,13 @@ def add(ida, name, why):
     fmn = name if name.endswith('_') else name + '_'
     if ida not in dosidx or fmn not in fm: return
     anchors.setdefault(ida, (fmn, why))
-# only files that match and verify count; other target tables take their names from the map
+# only files that match and verify count; other target tables take their names from the map.
+# matched.txt lists segments; a segment split into modules has a table per module, named
+# SEGMENT_OFFSET (seg003_0272_EC, seg019_21BA_C), which counts when its segment is listed
 done = cfg.matched_set()
 for t in glob.glob(os.path.join(cfg.targets, '*.tsv')):
-    if os.path.splitext(os.path.basename(t))[0] not in done: continue
+    name = os.path.splitext(os.path.basename(t))[0]
+    if name not in done and re.sub(r'^(seg\d{3}_[0-9A-F]{4})_[0-9A-F]+$', r'\1', name) not in done: continue
     for l in open(t):
         if not l.startswith('#'): c, ida = l.split('\t')[:2]; add(ida, c, 'matched')
 for p in glob.glob(os.path.join(cfg.map, 'pairs_*.tsv')):
