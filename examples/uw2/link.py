@@ -21,7 +21,7 @@ on: every call to them is a fixup).
 
 1. extract.py writes the data-only modules, manifest.json and renames.json under
    build/LINK (skip with --no-extract when they are current). Before it, a far data source
-   (an .ASM marked /* fardata */, src/FARDATA.ASM) is assembled into build/STEM when its
+   (an .ASM marked /* fardata */, src/sys/FARDATA.ASM) is assembled into build/STEM when its
    object is missing or older, since extract.py compares its segments with the EXE.
 2. C0UW2.ASM is Turbo C++'s own TC/C0.ASM with the changes UW2's startup code shows (see
    c0_source), assembled as BUILD-C0.BAT does for the medium model.
@@ -96,7 +96,7 @@ def stub_order_wrong(d, order):
 
     Turbo C lists a file's publics in descending order of the key tools/bssorder.py computes
     from each name, names with equal keys in the reverse of the order they were first seen
-    (a prototype counts; see OVR108.C); so the EXE's stub order is a constraint on the names.
+    (a prototype counts; see CUTS.C); so the EXE's stub order is a constraint on the names.
     A file that breaks it has a name whose key sorts differently from the original's."""
     want = set(order); listed = []
     for t, b in _records(d):
@@ -117,8 +117,9 @@ SOURCE_DEFECTS = {'bytealigned': 'its _DATA or _BSS starts at an odd address: a 
 
 def build_fardata():
     """Assemble each far data source (marked /* fardata */) whose object is missing or older."""
-    import glob, build
-    for src in sorted(glob.glob(os.path.join(CFG.src, '*.ASM'))):
+    import build, sources
+    for src in sources.all_sources(CFG):
+        if not src.upper().endswith('.ASM'): continue
         text = open(src, encoding='latin1').read(3000)
         if not re.search(r'/\*\s*fardata\s*\*/', text): continue
         stem = CFG.stem(src); obj = CFG.obj(stem)
@@ -127,10 +128,12 @@ def build_fardata():
         if not ok: sys.exit(f'{stem}: assembly failed\n' + '\n'.join(msgs))
 
 def changed_sources():
-    """--mod: {stem: object} for each source whose text is not what the last exact run built,
-    compiled into <build>/MODLINK/src/STEM with the source's own /* opts: */."""
-    import build
-    srcs = [s for s in build.all_sources(CFG) if CFG.stem(s) != 'SEG046']    # SEG046: from OVERLAY.LIB
+    """--mod: {stem: object} for each source whose text (with the shared headers it includes)
+    is not what the last exact run built, compiled into <build>/MODLINK/src/STEM with the
+    source's own /* opts: */."""
+    import build, sources
+    overlay_manager = sources.by_segment('seg046', CFG)      # linked from OVERLAY.LIB, not its source
+    srcs = [s for s in build.all_sources(CFG) if CFG.stem(s) != overlay_manager]
     return modding.changed_sources(CFG, os.path.join(LINKDIR_EXACT, 'base'), os.path.join(LINKDIR, 'src'), srcs,
                                    'run the exact link (python3 examples/uw2/link.py) once while every source matches')
 

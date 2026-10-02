@@ -39,6 +39,9 @@ done
 mkdir -p "$OUT" "$OUT/proof"; P="$OUT/proof"
 cp "$UW/symbols.tsv" "$OUT/symbols.tsv"; cp "$UW/matched.txt" "$OUT/matched.txt"
 cd "$UW"     # sources are named relative to the project, as agents name them
+# a segment's source, relative to the project (sources live in subsystem directories and are
+# found by their /* target: */ line, so this survives renames)
+seg() { $PY "$ex/tools/sources.py" "$1" | head -1 | cut -f3; }
 
 echo "== 1. build everything"
 start=$(date +%s); $PY "$ex/tools/build.py" --all > "$P/build.txt"; tail -1 "$P/build.txt"
@@ -58,7 +61,7 @@ print(f'   objects equal to UW2Decomp\'s: {same}, different: {diff}')
 EOF
 
 echo "== 2. match, fresh builds"
-for f in src/PLAYER.C src/SEG012.C src/SEG022.ASM; do
+for f in $(seg ovr154) $(seg seg012) $(seg seg022); do
   $PY "$ex/tools/match.py" $f > "$P/match-$(basename $f).txt"
   tail -1 "$P/match-$(basename $f).txt" | sed 's/^/   /'
   if [ -x "$UW/.venv/bin/python" ]; then
@@ -69,7 +72,7 @@ done
 
 echo "== 3. verify every source"
 ok=0; bad=0; same=0; differ=0
-for f in $(grep -l "/\* target:" src/*.C src/*.ASM); do
+for f in $($PY "$ex/tools/sources.py" | awk -F'\t' '$2 != "-" {print $3}'); do
   b=$(basename $f)
   if $PY "$ex/tools/verify.py" $f > "$P/verify-$b.txt"; then ok=$((ok+1)); else bad=$((bad+1)); echo "   problems: $f"; fi
   if [ -x "$UW/.venv/bin/python" ]; then
@@ -82,7 +85,7 @@ echo "   verified: $ok, with problems: $bad; output equal to UW2Decomp's verify.
 echo "== 4. symbols.tsv from scratch"
 $PY "$ex/tools/rebuild-symbols.py" | sed 's/^/   /'
 diff "$OUT/symbols.tsv" "$UW/symbols.tsv" | sed 's/^/   /' || true
-$PY "$ex/tools/merge.py" src/PLAYER.C | sed 's/^/   merge: /'
+$PY "$ex/tools/merge.py" $(seg ovr154) | sed 's/^/   merge: /'
 
 echo "== 5. link"
 start=$(date +%s)
@@ -108,27 +111,27 @@ cmp -s "$OUT/MODLINK/out/UW2.EXE" "$OUT/LINK/out/UW2.EXE" && echo "   byte-ident
 
 echo "== 8. modding build, sources changed in size (in a copy of src/)"
 rm -rf "$OUT/modsrc"; cp -R "$UW/src" "$OUT/modsrc"
-$PY - "$OUT/modsrc" <<'EOF'
+$PY - "$OUT/modsrc" "$(seg ovr101 | sed 's#^src/##')" "$(seg seg039 | sed 's#^src/##')" <<'EOF'
 import sys, os
-d = sys.argv[1]
+d, OVR101, SEG039 = sys.argv[1:4]     # the files of ovr101 (character creation) and seg039 (strings)
 def edit(name, old, new):
     p = os.path.join(d, name); s = open(p, encoding='latin1').read()
     if s.count(old) != 1: sys.exit(f'{name}: the text to change is not there once: {old!r}')
     open(p, 'w', encoding='latin1', newline='').write(s.replace(old, new))
 # an overlay: a longer string, and a new line (two more calls and a sum) on the attributes panel
-edit('OVR101.C', 'string_to_screen("Str:", 0x5D, 0x96);', 'string_to_screen("Strength:", 0x5D, 0x96);')
-edit('OVR101.C', '    string_to_screen("Vit:", 0x5D, 0x60);\n    string_to_screen(buf, 0x8C - string_width(buf), 0x60);\n}',
+edit(OVR101, 'string_to_screen("Str:", 0x5D, 0x96);', 'string_to_screen("Strength:", 0x5D, 0x96);')
+edit(OVR101, '    string_to_screen("Vit:", 0x5D, 0x60);\n    string_to_screen(buf, 0x8C - string_width(buf), 0x60);\n}',
      '    string_to_screen("Vit:", 0x5D, 0x60);\n    string_to_screen(buf, 0x8C - string_width(buf), 0x60);\n'
      '    itoa(playerdat->attr[0] + playerdat->attr[1], buf, 10);\n    string_to_screen("S+D:", 0x5D, 0x52);\n'
      '    string_to_screen(buf, 0x8C - string_width(buf), 0x52);\n}')
 # a resident file: new initialised data, and code at start-up that changes it (EXHUME-0 to
 # EXHUME-1), which moves every resident segment after it, the far data and all of DGROUP's
 # _DATA after SEG039's
-edit('SEG039.C', 'char aRb_4[] = "rb";\n', 'char aRb_4[] = "rb";\nchar exhume_marker[] = "EXHUME-0 resident code and data grew";\n')
-edit('SEG039.C', 'unsigned char far init_strings(void)\n{\n    int i, j;\n',
+edit(SEG039, 'char aRb_4[] = "rb";\n', 'char aRb_4[] = "rb";\nchar exhume_marker[] = "EXHUME-0 resident code and data grew";\n')
+edit(SEG039, 'unsigned char far init_strings(void)\n{\n    int i, j;\n',
      'unsigned char far init_strings(void)\n{\n    int i, j;\n'
      '    for (j = 0; exhume_marker[j] != \'-\'; j++) ;\n    exhume_marker[j + 1] = exhume_marker[j + 1] + 1;\n')
-print('   edited OVR101.C and SEG039.C in', d)
+print(f'   edited {OVR101} (ovr101) and {SEG039} (seg039) in', d)
 EOF
 EXHUME_SRC="$OUT/modsrc" $PY "$ex/examples/uw2/link.py" --mod > "$P/modlink-edit.txt" 2>&1 || true
 grep "^changed sources\|^modding build\|failed" "$P/modlink-edit.txt" | sed 's/^/   /'

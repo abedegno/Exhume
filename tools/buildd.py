@@ -4,8 +4,8 @@
 
 An agent writes <queue>/<id>.req holding one line, "match SRC [--dis NAME] [--no-build]" or
 "verify SRC", and waits for <queue>/<id>.out; tools/remote.sh does both. Only those two
-commands, sources inside the project's src directory named NAME.C or NAME.ASM, and those
-options are accepted: the queue runs with your permissions, so it must not run anything else.
+commands, sources inside the project's src directory (or a subdirectory of it) named NAME.C
+or NAME.ASM, and those options are accepted: the queue runs with your permissions, so it must not run anything else.
 
 Per-file build budget: <queue>/budget/<NAME.C> holds the number of match builds left
 (--budget when the file is first seen). At zero further builds are refused with a message
@@ -21,7 +21,7 @@ opt = lambda n, d: int(a[a.index(n) + 1]) if n in a else d
 JOBS, BUDGET = opt('--jobs', 3), opt('--budget', 30)
 q = cfg.queue; os.makedirs(os.path.join(q, 'budget'), exist_ok=True)
 srcrel = os.path.relpath(cfg.src, cfg.root)
-OK = re.compile(r'^(match|verify) ((?:' + re.escape(srcrel) + r'/)?[A-Za-z0-9_]+\.(?:C|ASM))((?: --dis [A-Za-z_][A-Za-z0-9_]*| --no-build)*)$')
+OK = re.compile(r'^(match|verify) ((?:' + re.escape(srcrel) + r'/)?(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.(?:C|ASM))((?: --dis [A-Za-z_][A-Za-z0-9_]*| --no-build)*)$')
 
 def finish(req, text):
     out = req[:-4] + '.out'
@@ -32,7 +32,13 @@ def run(req):
     m = OK.match(line)
     if not m: return finish(req, f'rejected: {line!r}\n[exit 2]\n')
     cmd, src, opts = m.groups()
-    src = os.path.join(cfg.src, os.path.basename(src))
+    rel = src[len(srcrel) + 1:] if src.startswith(srcrel + '/') else src
+    src = os.path.normpath(os.path.join(cfg.src, rel))
+    if os.path.commonpath([src, cfg.src]) != cfg.src or not os.path.exists(src):
+        import sources     # a bare NAME.C is looked up anywhere in the tree
+        hit = sources.by_stem(cfg).get(sources.stem(src))
+        if not hit: return finish(req, f'no such source: {line!r}\n[exit 2]\n')
+        src = hit
     if cmd == 'match' and '--no-build' not in opts:
         bf = os.path.join(q, 'budget', os.path.basename(src))
         left = int(open(bf).read()) if os.path.exists(bf) else BUDGET

@@ -9,7 +9,7 @@ candidates; docs/link.md ("Layout audits") says how to read them and how to find
 misses.
 
 The objects are the matched builds (<build>/STEM/STEM.OBJ, less [layout] library_objects,
-which the link takes from a library). Every operand with no fixup on it that could be an
+stems or target segments the link takes from a library). Every operand with no fixup on it that could be an
 address is listed, with the segment it goes through; lines marked * may reach DGROUP (or a
 segment the scan cannot name) and need reading.
 
@@ -93,7 +93,8 @@ def ida_text():
     return out
 
 def objects():
-    for src in sorted(glob.glob(os.path.join(CFG.src, '*.C')) + glob.glob(os.path.join(CFG.src, '*.ASM'))):
+    import sources
+    for src in sources.all_sources(CFG):
         m = re.search(r'/\*\s*target:\s*(\w+)\s*\*/', open(src, encoding='latin1').read(3000))
         if not m: continue
         stem = CFG.stem(src); obj = CFG.obj(stem)
@@ -473,7 +474,8 @@ def main(argv=None):
         if src.upper().endswith('.C'):
             o = fixups(open(obj, 'rb').read()); CREFS.update(n for n in o['ext'] if n)
     risky = 0; total = 0
-    objs = [x for x in objects() if x[0] not in skip]     # linked from a library, not from their objects
+    # linked from a library, not from their objects; named by stem or by target segment
+    objs = [x for x in objects() if x[0] not in skip and not any(x[2].upper().startswith(s) for s in skip)]
     # the assembly modules call each other: an entry's state is what its callers hold, so
     # scan them all until that stops changing
     for rnd in range(20):

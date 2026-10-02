@@ -6,9 +6,11 @@ Once a source changes, its object no longer matches those bytes, so that compari
 place it. The modding build therefore works from a snapshot the last exact link left:
 
 - write_snapshot(): after an exact link in which every object verified, keep in
-  <build>/LINK/base a copy of each matched object, the SHA-1 of the source it was built from,
-  and the layout the link derived for it (layout.json).
-- changed_sources(): the sources whose text differs from the snapshot's, each compiled with its
+  <build>/LINK/base a copy of each matched object, the hash of the source it was built from
+  (tools/srcdeps.py: the text and the shared headers it includes), and the layout the link
+  derived for it (layout.json).
+- changed_sources(): the sources whose hash differs from the snapshot's (so a changed header
+  counts as a change to every source that includes it), each compiled with its
   own switches into a separate directory keyed by the source's hash, so the matched objects
   in <build> are never touched and a source is not recompiled while its text is unchanged.
 - listing_code_offsets() and code_offset_tables(): near code offsets that the extracted data
@@ -22,6 +24,7 @@ stub order, exediff). docs/link.md, "The modding build", has the reasons."""
 import os, sys, re, json, copy, hashlib, shutil, struct
 
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
+from srcdeps import source_hash
 
 SNAPSHOT = 'layout.json'
 
@@ -33,14 +36,14 @@ def sha1(path):
 def write_snapshot(cfg, base, objects):
     """objects: {stem: (object path, source path, layout dict or None)}. Copies each object
     into base and writes base/layout.json: {'objects': {stem: layout}, 'sources': {stem:
-    [source relative to the project root, SHA-1]}}. Call it only when every object verified:
+    [source relative to the project root, source_hash]}}. Call it only when every object verified:
     the layouts are where verify.py found each object's data in the original EXE."""
     os.makedirs(base, exist_ok=True)
     lay = {'objects': {}, 'sources': {}}
     for stem, (obj, src, layout) in objects.items():
         shutil.copyfile(obj, os.path.join(base, stem + '.OBJ'))
         if layout is not None: lay['objects'][stem] = layout
-        lay['sources'][stem] = [os.path.relpath(src, cfg.root), sha1(src)]
+        lay['sources'][stem] = [os.path.relpath(src, cfg.root), source_hash(src, cfg)]
     json.dump(lay, open(os.path.join(base, SNAPSHOT), 'w'), indent=1, sort_keys=True)
 
 
@@ -52,7 +55,8 @@ def load_snapshot(base, how_to_make):
 
 
 def changed_sources(cfg, base, outdir, sources, how_to_make):
-    """{stem: object path} for each of sources (paths) whose text differs from the snapshot's.
+    """{stem: object path} for each of sources (paths) whose hash (text and included headers)
+    differs from the snapshot's.
     Each is built with its own /* opts: */ into outdir/STEM/STEM.OBJ, with SOURCE.SHA1 beside
     it; an object already built from the same text is reused. A source the snapshot does not
     have stops the build: the link order has no place for it yet."""
@@ -63,7 +67,7 @@ def changed_sources(cfg, base, outdir, sources, how_to_make):
         stem = cfg.stem(src)
         if stem not in known:
             sys.exit(f'{stem}: a source the exact link did not have; a new file needs a place in the link order first')
-        h = sha1(src)
+        h = source_hash(src, cfg)
         if h == known[stem][1]: continue
         obj = os.path.join(outdir, stem, stem + '.OBJ'); shafile = os.path.join(outdir, stem, 'SOURCE.SHA1')
         if not (os.path.exists(obj) and os.path.exists(shafile) and open(shafile).read() == h):

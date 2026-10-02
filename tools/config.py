@@ -56,6 +56,10 @@ class Config:
         self.root = os.path.normpath(os.path.join(here, p.get('root', '.')))
         R = lambda k, d: os.path.normpath(os.path.join(self.root, p.get(k, d)))
         self.src = R('src', 'src')
+        # shared headers: sources include them as "name.h"; the build stages them beside each
+        # source (tools/build.py) and a source's hash covers the ones it includes (srcdeps.py)
+        self.include = os.path.normpath(os.path.join(self.root, p['include'])) if p.get('include') \
+            else os.path.join(self.src, 'include')
         self.targets = R('targets', 'targets')
         self.symbols = R('symbols', 'symbols.tsv')
         self.matched = R('matched', 'matched.txt')
@@ -212,6 +216,6 @@ if __name__ == '__main__':
         v = getattr(c, rest[0], None)
         print(v if v is not None else c.raw.get(rest[0], ''))
     else:
-        for k in ('file', 'root', 'src', 'targets', 'symbols', 'matched', 'map', 'build', 'queue', 'exe_path',
+        for k in ('file', 'root', 'src', 'include', 'targets', 'symbols', 'matched', 'map', 'build', 'queue', 'exe_path',
                   'listing', 'profile_dir', 'home', 'stage', 'c_opts', 'asm_opts'):
             print(f'{k:12} {getattr(c, k)}')
