@@ -3,6 +3,8 @@ no source in src/ produces yet, plus the manifest link.py links by.
 
     python3 examples/uw2/extract.py [--config PATH]
         writes <build>/LINK/*.ASM, manifest.json and renames.json
+    python3 examples/uw2/extract.py --mod [--config PATH]
+        the same for the modding build, in <build>/MODLINK
 
 REFERENCE IMPLEMENTATION, UW2 only. It is kept as UW2Decomp wrote it, with paths taken from
 exhume.toml, because most of it encodes facts measured from UW2.EXE (segment table entry
@@ -11,6 +13,16 @@ range, C0's routine offsets) rather than rules. docs/link.md says which parts ar
 and how to redo them for another game.
 
 The modules hold game bytes, so they live under build/ and are never committed.
+
+When every object verifies, the exact run also keeps what the modding build needs in
+<build>/LINK/base (tools/modding.py): a copy of each matched object, the SHA-1 of the source
+it came from, and the places verify.py found for its data (layout.json). --mod works out the
+same layout from those instead of from <build>, where an object may now come from a changed
+source (verify.py places data by the EXE's bytes at the object's own offsets, which a changed
+object no longer has), so its modules are the exact run's except that the near code offsets
+the IDA listing types in the extracted data become `dw offset NAME` (see NEAR below). The
+extracted bytes hold no relocated word and no near DGROUP pointer (UW2Decomp's
+docs/LAYOUT.md), so nothing else in them moves.
 
 What is extracted, and the evidence for each piece:
 
@@ -67,13 +79,19 @@ known address (in code, only right after a far call or jump opcode), otherwise a
 import sys, os, re, struct, json, glob, io, contextlib
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), 'tools'))
-import config
+import config, modding
 from fixups import fixups
 
 CFGPATH, _rest = config.pop_config(sys.argv[1:])
 CFG = config.load(CFGPATH)
 root = CFG.root
-OUT = os.path.join(CFG.build, 'LINK')
+# --mod: the modding build (docs/link.md). The layout is worked out from the matched objects
+# and their places as the last exact run recorded them (BASE), not from the objects in
+# <build>, which may hold changed sources; the modules go to <build>/MODLINK.
+MOD = '--mod' in _rest
+BASE = os.path.join(CFG.build, 'LINK', 'base')
+NO_BASE = 'run the exact link (python3 examples/uw2/link.py) once while every source matches'
+OUT = os.path.join(CFG.build, 'MODLINK' if MOD else 'LINK')
 TC = CFG.home
 exe = CFG.exe
 w16 = lambda b, i: struct.unpack_from('<H', b, i)[0]
@@ -111,6 +129,9 @@ for src in sorted(glob.glob(os.path.join(CFG.src, '*.C')) + glob.glob(os.path.jo
     stem = os.path.splitext(os.path.basename(src))[0].upper()
     if stem == 'SEG046': continue      # the overlay manager: linked from OVERLAY.LIB itself
     obj = CFG.obj(stem)
+    if MOD:
+        obj = os.path.join(BASE, stem + '.OBJ')
+        if not os.path.exists(obj): sys.exit(f'{stem}: no matched object in {BASE}: {NO_BASE}')
     o = fixups(open(obj, 'rb').read())
     hdr = open(os.path.join(CFG.targets, m.group(1) + '.tsv')).readline()
     base = int(re.search(r'base 0x([0-9A-F]+)', hdr).group(1), 16)
@@ -122,12 +143,15 @@ for src in sorted(glob.glob(os.path.join(CFG.src, '*.C')) + glob.glob(os.path.jo
 # what verify.py resolves for each object: its _DATA and _BSS bases, every extern's address
 import verify
 _captured = {}
+ALL_VERIFIED = True
 for stem, ob in OBJS.items():
+    if MOD: break
     _captured.clear(); buf = io.StringIO()
     # verify's main takes its arguments directly and hands over the names it resolved;
     # nothing here touches sys.argv
     with contextlib.redirect_stdout(buf):
-        verify.main([ob['src'], '--config', CFG.file], on_names=lambda syms: _captured.update({n: v for n, (v, _) in syms.items()}))
+        rc = verify.main([ob['src'], '--config', CFG.file], on_names=lambda syms: _captured.update({n: v for n, (v, _) in syms.items()}))
+    ALL_VERIFIED = ALL_VERIFIED and not rc
     v = buf.getvalue()
     for kind, n, at in re.findall(r'^_(DATA|BSS): (\d+) bytes.*?DS:([0-9A-F]+)', v, re.M):
         ob[kind.lower()] = int(at, 16)
@@ -137,6 +161,17 @@ for stem, ob in OBJS.items():
     # the file's own far segments, where verify.py placed them
     ob['far'] = [(n, int(p, 16), int(q, 16), int(ln)) for n, ln, p, q in
                  re.findall(r'^(\S+): (\d+) bytes match at ([0-9A-F]{4}):([0-9A-F]{4})', v, re.M)]
+
+if MOD:
+    # each object's places as the exact run found them (verify.py needs the EXE's bytes at the
+    # object's own offsets, which a changed object no longer has)
+    _lay = modding.load_snapshot(BASE, NO_BASE)
+    for stem, ob in OBJS.items():
+        if stem not in _lay['objects']: sys.exit(f'{stem}: not in {BASE}/layout.json')
+        L = _lay['objects'][stem]
+        ob['data'], ob['bss'] = L['data'], L['bss']
+        ob['refs'] = {n: tuple(a) for n, a in L['refs'].items()}
+        ob['far'] = [tuple(x) for x in L['far']]
 
 # A file whose own code never refers to its _DATA or _BSS (data defined for other files, such
 # as seg033's ActDoors) is placed by its publics instead: where other files' references and
@@ -250,7 +285,8 @@ for src in sorted(glob.glob(os.path.join(CFG.src, '*.ASM'))):
     if not re.search(r'/\*\s*fardata\s*\*/', open(src, encoding='latin1').read(3000)): continue
     stem = os.path.splitext(os.path.basename(src))[0].upper()
     obj = CFG.obj(stem)
-    if not os.path.exists(obj) or os.path.getmtime(obj) < os.path.getmtime(src):
+    if MOD: obj = os.path.join(BASE, stem + '.OBJ')
+    elif not os.path.exists(obj) or os.path.getmtime(obj) < os.path.getmtime(src):
         sys.exit(f'{stem}: {obj} is missing or older than its source (link.py builds it)')
     o = fixups(open(obj, 'rb').read()); FAROBJS[stem] = obj
     if o['fixups']: sys.exit(f'{stem}: far data with fixups is not handled yet')
@@ -613,6 +649,24 @@ def labels_at(m, f, para):
             out.append(f'{n} label byte'); m.publics.append(n)
     return out
 
+# --mod: near addresses held as plain words in the extracted bytes. There are no relocations
+# in them and no near pointers into DGROUP (UW2Decomp's docs/LAYOUT.md); what they do hold is
+# near code offsets, tables of handlers in seg003 and seg004 that the assembly jumps through
+# (`jmp word ptr [bx+24F4h]` with DS on seg052_519C). Each one the IDA listing types, and the
+# rest of its table, becomes `dw offset NAME` (tools/modding.py), so that it follows that code
+# if the module holding it changes size: seg052_519C's model opcode table at 24F4 runs to
+# 25D2, 111 handlers, the same as FM Towns' do_eof .. do_bcompact_map; its entry for 0xDA
+# points at a data word in seg004, L0D7F, which has no name and stays a number. The exact link
+# keeps the bytes (the same result either way while nothing moves).
+NEAR = {}
+if MOD:
+    NEAR = modding.code_offset_tables(
+        modding.listing_code_offsets(CFG, exe), exe,
+        inside=lambda f: any(r[0] <= f < r[1] - 1 for r in RANGES),
+        name_at=lambda para, off: NAME_AT.get(('FAR', para, off)))
+    if not CFG.listing or not os.path.exists(CFG.listing): print('no IDA listing: near code offsets in the extracted data stay numbers')
+    print(f'--mod: {len(NEAR)} near code offsets in the extracted data written as names')
+
 def body(m, lo, hi, para, code):
     """Bytes lo..hi of the EXE as db lines, with labels for the names defined there and a fixup
     at every relocation. para: the frame of the segment the range sits in."""
@@ -623,6 +677,8 @@ def body(m, lo, hi, para, code):
     while i < hi:
         if i in OWN:
             flush(); out += labels_at(m, i, para)
+        if i in NEAR and i + 1 not in OWN:
+            flush(); m.externs.add(NEAR[i]); out.append(f'        dw offset {NEAR[i]}'); i += 2; continue
         if i + 2 in RELOCS and i + 2 < hi and i not in RELOCS and i + 1 not in OWN and i + 2 not in OWN and i + 3 not in OWN:
             off = w16(exe, i); seg = RELOCS[i + 2]
             ok_ptr = (not code) or (i >= lo + 1 and exe[i - 1] in (0x9A, 0xEA))
@@ -785,6 +841,12 @@ manifest = dict(
 for fx in ADDFIX.values():
     for e in fx: e[1] = frame_name(e[2])
 json.dump(manifest, open(os.path.join(OUT, 'manifest.json'), 'w'), indent=1)
+if not MOD and ALL_VERIFIED:
+    # the matched objects, the sources they came from and where they sit, for --mod
+    modding.write_snapshot(CFG, BASE, {
+        **{stem: (ob['obj'], ob['src'], dict(data=ob['data'], bss=ob['bss'], refs=ob['refs'], far=ob['far']))
+           for stem, ob in OBJS.items()},
+        **{stem: (p, os.path.join(CFG.src, stem + '.ASM'), None) for stem, p in FAROBJS.items()}})
 json.dump(RENAMES, open(os.path.join(OUT, 'renames.json'), 'w'), indent=1, sort_keys=True)
 print(f'{len(modules)} modules in {OUT}: {len(DPIECES)} _DATA gaps, {len(BPIECES)} _BSS gaps, '
       f'{len(OWNED)} names defined, {sum(map(len, RENAMES.values()))} renames')

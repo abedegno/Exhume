@@ -9,7 +9,7 @@
 [project]
 name = "UW2"
 root = "${UW2DECOMP:-~/UW2Decomp}"
-src = "src"
+src = "${EXHUME_SRC:-src}"            # a copy of src/ to build a modded game from (prove.sh)
 targets = "targets"
 symbols = "${EXHUME_SYMBOLS:-symbols.tsv}"
 matched = "${EXHUME_MATCHED:-matched.txt}"

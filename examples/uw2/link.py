@@ -1,6 +1,7 @@
 """Link UW2.EXE from the matched objects with Turbo Link 3.01, headless in DOS, and compare.
 
     python3 examples/uw2/link.py [--config PATH] [--no-extract] [--out DIR] [--obj STEM=PATH ...]
+    python3 examples/uw2/link.py --mod [--config PATH] [--out DIR] [--obj STEM=PATH ...]
 
 REFERENCE IMPLEMENTATION, UW2 only, kept as UW2Decomp wrote it with paths from exhume.toml.
 The general parts (the date and name TLINK stores, the response file, library order,
@@ -9,6 +10,14 @@ profiles/borland-tc101/linker.md; the C0 patches and module lists are UW2's.
 
 --obj links another build of one object in place of <build>/STEM/STEM.OBJ (to try a changed
 source without disturbing the matched build).
+
+--mod is the modding build (docs/link.md, "The modding build"): sources may change by any
+size. The layout comes from the last exact run (<build>/LINK/base, written by extract.py when
+every object verified), the sources whose text differs from that run's are compiled into
+<build>/MODLINK/src (the matched objects in <build> are left alone; tools/modding.py), and the
+EXE goes to <build>/MODLINK/out. Nothing is compared with your EXE, and an overlay's publics
+may come in any order (TLINK then numbers its stub entries differently, which nothing depends
+on: every call to them is a fixup).
 
 1. extract.py writes the data-only modules, manifest.json and renames.json under
    build/LINK (skip with --no-extract when they are current). Before it, a far data source
@@ -40,11 +49,12 @@ import sys, os, json, subprocess, shutil, re
 here = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(here)), 'tools')
 sys.path.insert(0, TOOLS)
-import config
+import config, modding
 CFGPATH, ARGS = config.pop_config(sys.argv[1:])
 CFG = config.load(CFGPATH)
 root = CFG.root
 LINKDIR = os.path.join(CFG.build, 'LINK')
+LINKDIR_EXACT = LINKDIR
 
 def c0_source():
     """TC/C0.ASM with UW2's differences. UW2's C0 (seg005 up to offset 0x249) is the same code
@@ -116,11 +126,27 @@ def build_fardata():
         ok, msgs = build.build(CFG, [src])[stem]
         if not ok: sys.exit(f'{stem}: assembly failed\n' + '\n'.join(msgs))
 
+def changed_sources():
+    """--mod: {stem: object} for each source whose text is not what the last exact run built,
+    compiled into <build>/MODLINK/src/STEM with the source's own /* opts: */."""
+    import build
+    srcs = [s for s in build.all_sources(CFG) if CFG.stem(s) != 'SEG046']    # SEG046: from OVERLAY.LIB
+    return modding.changed_sources(CFG, os.path.join(LINKDIR_EXACT, 'base'), os.path.join(LINKDIR, 'src'), srcs,
+                                   'run the exact link (python3 examples/uw2/link.py) once while every source matches')
+
 def main():
+    global LINKDIR
     a = ARGS
+    mod = '--mod' in a
+    if mod: LINKDIR = os.path.join(CFG.build, 'MODLINK')
     out = os.path.join(LINKDIR, 'out')
     if '--out' in a: out = a[a.index('--out') + 1]
-    if '--no-extract' not in a:
+    changed = {}
+    if mod:
+        changed = changed_sources()
+        print('changed sources:', ' '.join(sorted(changed)) or 'none')
+        subprocess.run([sys.executable, os.path.join(here, 'extract.py'), '--mod', '--config', CFG.file], check=True)
+    elif '--no-extract' not in a:
         build_fardata()
         subprocess.run([sys.executable, os.path.join(here, 'extract.py'), '--config', CFG.file], check=True)
     man = json.load(open(os.path.join(LINKDIR, 'manifest.json')))
@@ -144,11 +170,12 @@ def main():
         bad += [f'{k}: {why}' for k in man.get(x) or ()]      # a list or a dict by object
     if bad: sys.exit('sources to correct before linking:\n  ' + '\n  '.join(bad))
     override = dict(x.split('=', 1) for k, x in enumerate(a) if k and a[k - 1] == '--obj')
+    override = {**changed, **override}
     objdir = os.path.join(LINKDIR, 'obj'); os.makedirs(objdir, exist_ok=True)
     for k, p in man['objects'].items():
         if k in man['resident'] or k in man['overlays'] or k in man['late']:
             d = open(override.get(k, p), 'rb').read()
-            if man['stuborder'].get(k) and stub_order_wrong(d, man['stuborder'][k]):
+            if not mod and man['stuborder'].get(k) and stub_order_wrong(d, man['stuborder'][k]):
                 bad.append(f'{k}: publics listed out of the EXE\'s overlay stub order: a name whose '
                            'tools/bssorder.py key sorts differently from the original\'s')
             open(os.path.join(objdir, k + '.OBJ'), 'wb').write(d)
@@ -183,6 +210,11 @@ def main():
     print('\n'.join(errs[:60]))
     if len(errs) > 60: print(f'... {len(errs) - 60} more')
     if r.returncode: sys.exit(r.returncode)
+    if mod:
+        if not os.path.exists(os.path.join(out, 'UW2.EXE')) or errs: sys.exit('the modding link failed')
+        print(f'modding build: {os.path.join(out, "UW2.EXE")}, '
+              f'{os.path.getsize(os.path.join(out, "UW2.EXE"))} bytes (yours: {len(CFG.exe)})')
+        return
     sys.exit(subprocess.run([sys.executable, os.path.join(TOOLS, 'exediff.py'), os.path.join(out, 'UW2.EXE'), '--config', CFG.file]).returncode)
 
 if __name__ == '__main__':
