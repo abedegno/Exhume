@@ -17,7 +17,7 @@ You are rebuilding one original source file (one code segment) as C that the ori
 ## Loop
 
 1. Start the file with `/* target: SEG */` and `/* opts: ... */` (for UW2: `-mm -1 -G -O -Y -d`). Change switches only when the bytes demand it, and say why.
-2. `python3 tools/match.py src/FILE.C` compiles in DOS (a few seconds) and prints each function as MATCH, bytes differing, or size against the table's. Add `--dis NAME` for an instruction diff of one function; `--no-build` re-compares the last build.
+2. `python3 tools/match.py src/FILE.C` compiles in DOS (about half a second in emu2, a few seconds in js-dos) and prints each function as MATCH, bytes differing, or size against the table's. Add `--dis NAME` for an instruction diff of one function; `--no-build` re-compares the last build.
 3. Work function by function, smallest differences first. A length difference shows as the first instruction that differs; fix that one and rebuild. Batch edits: every build costs time and, in a queue, budget.
 4. When the instructions agree but registers or reloads differ, restructure (statement order, nesting against early return or continue, declaration order for SI/DI, `x += y` against `x = x + y`, block-scoped locals). The compiler.md lists which source shapes give which bytes.
 5. Stop at `WHOLE SEGMENT MATCHES`. Then `python3 tools/verify.py src/FILE.C` (without `--update`) must end `-- fixups and data verified`.

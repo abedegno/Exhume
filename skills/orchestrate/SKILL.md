@@ -17,11 +17,16 @@ Paths are relative to the Exhume checkout. You (the orchestrator) prepare target
 
 ## Codex
 
-- Codex's sandbox cannot start the emulator's headless browser. Run the queue outside it: `python3 tools/buildd.py --budget 30` (backgrounded), and tell Codex to build with `tools/remote.sh match src/FILE.C` and `tools/remote.sh verify src/FILE.C`. The queue accepts only those two commands on files in src/.
+- Codex's sandbox could not start js-dos's headless browser on UW2; whether it can run emu2 or DOSBox-X is untested. Run the queue outside it: `python3 tools/buildd.py --budget 30` (backgrounded; it serves one request per DOS session, as many at once as suit the DOS in use, `--jobs` to change), and tell Codex to build with `tools/remote.sh match src/FILE.C` and `tools/remote.sh verify src/FILE.C`. The queue accepts only those two commands on files in src/.
 - Measured on UW2, in input tokens (mostly cached): gpt-6-sol at medium effort, alone, about 1.3M per file of around 1 KB (ovr117: five builds). A cheap draft (gpt-6-luna) finished by sol at medium: 0.9M to 2.0M, average 1.46M over four files, counting luna at 1/20 since sol costs 20 times luna per token. sol at low effort alone: 1.8M to 2.95M. luna alone never finished a file: it quit after one to four builds, or ran away to 10M tokens ignoring caps.
 - Codex stalls on files over about 2 KB and leaves stubs. The pattern that worked: Codex drafts and matches the small functions, a Claude agent finishes the rest (ovr095, ovr097, ovr103, ovr110, ovr166 and others in UW2's history).
 - Codex drafts hide wrong extern names behind masked fixups. The finisher must run verify and use symbols.tsv names; ovr103's draft had about 20 wrong names.
 - Tell Codex explicitly to keep going until WHOLE SEGMENT MATCHES or the budget runs out, and to end with the brief's report including the build count.
+
+## The DOS
+
+- Build the fast DOS before starting agents: `sh tools/setup-emu2.sh` (docs/method.md, "Choosing the DOS"). In emu2 a match build is about half a second and the whole UW2 gate 8 seconds; in js-dos a build takes 3 to 7 seconds (about 30 during the UW2 project) and the gate over a minute. The agent limit above is about tokens and session limits, not the DOS.
+- Sessions at once follow the DOS (one per core up to 12 natively, three in js-dos). Several full gates at once still share those cores; agents use `gate.py check --fast`.
 
 ## Budgets
 

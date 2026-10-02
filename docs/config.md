@@ -27,6 +27,8 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 - `home`: the compiler's directory (headers, libraries, startup source), read by the link.
 - `stage`: what is copied into C:\ for every DOS run: a directory's contents, or a single file.
 - `c_opts`, `asm_opts`: defaults for sources with no `/* opts: */` line (otherwise the profile's).
+- `dos`: the DOS the toolchain runs in: `emu2`, `dosbox-x`, `staging`, `jsdos` or `auto` (the default: emu2 if built, else DOSBox-X, else js-dos). The environment's `EXHUME_DOS` wins over it. docs/method.md, "Choosing the DOS".
+- `sessions`: DOS sessions at once for the gate, `build.py`, the modding build and `buildd.py` (default: one per core up to 12 in a native DOS, 3 in js-dos). The environment's `EXHUME_DOS_SESSIONS` wins over it.
 
 ## [names]
 
@@ -57,7 +59,7 @@ For tools/gate.py, the build driver and gate (docs/readability.md, "The gate"). 
 - `link`, `mod_link`: the exact link and the modding build (UW2: `examples/uw2/link.py`, with `--mod` for the second).
 - `exact_exe`, `mod_exe`: where they write the EXE, relative to build.
 - `known_diffs`: `[offset, original byte, linked byte]` for each byte the exact link is known to get wrong (UW2: two). Any other difference fails the gate, and so does one of these not differing.
-- `sessions`, `batch`: DOS sessions at once (default 3) and sources per session (default 8).
+- `sessions`, `batch`: DOS sessions at once for the gate alone (default: `[toolchain] sessions`, else what suits the DOS in use; `EXHUME_DOS_SESSIONS` wins) and sources per session (default 8).
 - `boot`: rungame.mjs steps for `gate.py boot`, which also uses [run].
 
 ## [repocheck]

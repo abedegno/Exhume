@@ -37,5 +37,7 @@ After renaming anything that other files use, rebuild every object (`python3 too
 - One name for two variables (OVR108's `sound_fpage` and the DS:34AA one; `hitz` in SEG007 and SEG024).
 - A file's data starting at an odd address: it is missing the byte before (five files).
 - Stale objects: a failed compile used to leave the previous object in place. build.py deletes the object before building, and merge.py always builds fresh.
+- Objects from different DOS emulators (emu2, DOSBox-X, js-dos) never compare equal byte for byte: Turbo C records each source's and header's time stamp in dependency comments, and each run stages its own copies. Compare objects by segments, data, publics, externs and fixups (what match and verify read, and what prove.sh compares), never by file hash. On UW2 every object agreed across all three that way, and the links were byte-identical.
+- An empty object counted as built: a js-dos session that died part way through a batch left a zero-length object with no log. build.py now requires each source's own log and a non-empty object, and dosrun.mjs never copies back a damaged output.
 - A gate that hid its own failure: piping `verify.py --update` through `tail` lost its exit status, and two files merged with seven symbol conflicts. merge.py checks every exit status.
 - `verify.py FILE --update`: the flag goes after the file.

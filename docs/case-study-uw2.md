@@ -96,7 +96,7 @@ On 2 October UW2Decomp made the matched tree readable in seven commits (12516e4 
 
 | Check | Result |
 | --- | --- |
-| Build all 154 sources (3 DOS sessions at a time, up to 12 sources each) | 154 built in 13 s; every object equal to UW2Decomp's (segments, data, publics, externs, fixups) |
+| Build all 154 sources (3 DOS sessions at a time, up to 12 sources each, in js-dos; see "Choosing the DOS" below for emu2) | 154 built in 13 s; every object equal to UW2Decomp's (segments, data, publics, externs, fixups) |
 | match.py, fresh builds of PLAYER.C (overlay), SEG012.C (resident), SEG022.ASM (assembly) | all WHOLE SEGMENT MATCHES; reports identical to UW2Decomp's match.py |
 | verify.py on all 153 sources with a target | 153 verified; output identical to UW2Decomp's verify.py for all 153 |
 | rebuild-symbols.py | 2,917 names; equal to UW2Decomp's symbols.tsv except two stale provisional names for variables OVR166.C now keeps static |
@@ -108,7 +108,44 @@ On 2 October UW2Decomp made the matched tree readable in seven commits (12516e4 
 | link.py --mod, no source changed (2 October) | 110 opcode table entries written as names; EXE byte-identical to the exact link |
 | link.py --mod with OVR101 and SEG039 grown, in a copy of src/ (2 October) | 675,328 bytes; character creation shows "Strength:" and a new "S+D:" line; the game reaches the 3D view with objects drawn normally; rungame finds the marker the new resident code changes at start-up (`EXHUME-1`) in memory |
 
-One compile took about 30 seconds during the project. On the same machine on 1 October, UW2Decomp's tcc.mjs took about 7 seconds for one file and Exhume's runner about 2.5 seconds; batching many sources into one DOS session is what makes a full rebuild take seconds rather than an hour.
+One compile took about 30 seconds during the project. On the same machine on 1 October, UW2Decomp's tcc.mjs took about 7 seconds for one file and Exhume's runner about 2.5 seconds; batching many sources into one DOS session is what makes a full rebuild take seconds rather than an hour. Since 2 October the toolchain runs in emu2 by default, which takes a full rebuild from about a minute to a few seconds (next section).
+
+## Choosing the DOS (2 October 2026)
+
+All of UW2 was matched with the toolchain in js-dos (DOSBox in WebAssembly, in headless Chrome). UW2Decomp then measured three native DOS emulators for the toolchain (its commit fbcbae9, docs/BUILDING.md, "Choosing the DOS"), and Exhume took the same runner (`tools/dosbackend.mjs`, docs/method.md, "Choosing the DOS"). js-dos is still what runs the game.
+
+UW2Decomp's measurements, on an Apple M4 Pro with 14 cores:
+
+| | emu2 | DOSBox-X | DOSBox Staging | js-dos |
+| --- | --- | --- | --- | --- |
+| `match.py` on one file (SKILLS.C) | 0.4 s | 1.6 s | 1.4 s | 6.3 s |
+| the exact link (`link.py`) | 1.3 s | 2.6 s | 3.3 s | 3.1 s |
+| all 153 sources, 3 sessions | 7 s | 13 s | 13 s | 64 s, 23 left for single builds |
+| all 153 sources, 12 sessions | 3 s | 4 s | 6 s | (3 sessions) |
+| `make check-all` | 7 s | 10 s | 12 s | 149 s |
+| `make check`, nothing changed | 4 s | 7 s | 7 s | 10 s |
+| `make` after a change to `portable.h` (93 sources), one at a time as before | 27 s | 140 s | | 585 s |
+| the same, batched and in parallel | 4 s | 6 s | 8 s | 128 s |
+
+Every one of the 153 sources was compiled in each and compared with js-dos's objects: they differ only in the time of day Turbo C records for each source and header (the Borland dependency records and their checksums), which differs between two js-dos builds too. The exact links (EXE and map) are identical in all four. An emu2 without the date patch gets three bytes of the link date wrong.
+
+Exhume's own runs, on the same machine, against a `git archive` snapshot of UW2Decomp at fbcbae9 (the toolchain linked in, nothing written to the checkout):
+
+| | emu2 | DOSBox-X | js-dos |
+| --- | --- | --- | --- |
+| `match.py` on SKILLS.C (ovr154), a fresh build | 0.5 s | 1.8 s | 3.0 s |
+| the exact link (`examples/uw2/link.py`) | 1.7 s | 2.9 s | 3.5 s |
+| `gate.py check --all` (153 sources compiled, 12 sessions; 3 in js-dos) | 8 s, compiles 3 s | 12 s | 74 s, compiles 34 s |
+| `gate.py check`, nothing changed | 5 s | | 11 s |
+| `link.py --mod` after a comment added to `portable.h` (93 sources), batched and in parallel | 4 s | | 60 s |
+| the same compiles one source to a session, three at once (the old path) | 9 s | | |
+| `prove.sh` step 1, `build.py --all` | 3 s | | 68 s |
+| `prove.sh` whole, with the boot (which is always js-dos) | 1 min 45 s | | 3 min 4 s |
+
+- The gate passed in all three, and `prove.sh` in emu2 and js-dos: every object equal to UW2Decomp's own (segments, data, publics, externs, fixups), matches and verifies identical to UW2Decomp's tools, the link byte-identical to UW2Decomp's, the modding build with size-changing edits booted to the 3D view with its marker found in memory.
+- The 154 objects (153 sources and FARDATA) from emu2, DOSBox-X and js-dos are the same record for record once the Borland dependency comments (COMENT class E9) are left out; none is byte-identical as it stands, since each carries the time stamps of its own staging. The exact link and its map are byte-identical across all three and to UW2Decomp's, and so are the modded EXEs from emu2 and js-dos.
+- An unpatched emu2 (the pinned commit without `tools/emu2-date.patch`) linked an EXE that differs in three bytes, the link date (2 October 2026 for 12 May 1993).
+- js-dos dropped sessions part of the way through 12-source batches: `build.py --all` lost 41 of 154 sources on one run. The lone retry of each failed source, which the gate already had, now runs in `build.py` and the modding build too. That run also found that a session that died could leave a zero-length object that counted as built; `dosrun.mjs` no longer copies back a damaged output and `build.py` requires each source's own log.
 
 ## Exhume's reproduction of the readability pass (2 October 2026)
 

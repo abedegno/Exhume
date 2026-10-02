@@ -2,7 +2,7 @@
 
 Linking the matched objects into the whole executable is the last and strongest check (skills/link-and-diff). For UW2 it is done by `examples/uw2/extract.py` and `examples/uw2/link.py`, kept as UW2Decomp wrote them with only their paths moved into exhume.toml. They are not generalised, because most of their lines are facts measured from UW2.EXE rather than rules, and half-generalising them would hide which is which. This page separates the two, so the next game can reuse the rules and measure its own facts.
 
-The generic tools around them are general: `tools/build.py` builds the objects, `tools/dosrun.mjs` runs TASM, TLIB and TLINK in headless DOS, `tools/exediff.py` compares the result, `tools/rungame.mjs` runs it, `tools/modding.py` holds the parts of the modding build that are not UW2's, and `tools/addrscan.py` lists addresses written as numbers.
+The generic tools around them are general: `tools/build.py` builds the objects, `tools/dosrun.mjs` runs TASM, TLIB and TLINK in headless DOS (the one `tools/dosbackend.mjs` picks, docs/method.md, "Choosing the DOS"), `tools/exediff.py` compares the result, `tools/rungame.mjs` runs it, `tools/modding.py` holds the parts of the modding build that are not UW2's, and `tools/addrscan.py` lists addresses written as numbers.
 
 ## Rules (true of TLINK 3.01, Turbo C++ 1.01 and the VROOMM overlay manager)
 
@@ -13,7 +13,7 @@ These are in profiles/borland-tc101/linker.md with their evidence. In short:
 - TLINK numbers an overlay's stub entries from the last public its object lists, and Turbo C lists publics by a hash of the name (profiles/borland-tc101/bssorder.py). So the stub order constrains the names in an overlay, and a public with no stub entry was `static`.
 - TLINK places each segment where it first sees its name. Empty segments declared early in a small module reproduce the original segment order and alignment; empty entries in the segment table are segments the original link had.
 - Each `far` variable in a Turbo C file is its own paragraph-aligned segment, so the order of far data segments shows which file defined each one.
-- TLINK stores the output name (`__EXENAME__`) and the DOS date (`__EXEDATE__`) in the image: link under the original name, after setting the date.
+- TLINK stores the output name (`__EXENAME__`) and the DOS date (`__EXEDATE__`) in the image: link under the original name, after setting the date. The DOS must honour INT 21h AH=2Bh for the programs that run after the one that sets it: emu2 does only with `tools/emu2-date.patch`.
 - Alignment padding between separately assembled modules is zero bytes to the segment's alignment: that is how a segment that was several modules is split.
 - A relocation in the EXE where the object has no fixup is a constant in the source where the original had a segment.
 

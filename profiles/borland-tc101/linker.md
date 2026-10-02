@@ -34,7 +34,7 @@ What Turbo Link 3.01 (TLINK.EXE from Turbo C++ 1.01), TLIB and Borland's VROOMM 
 ## What TLINK stores in the EXE
 
 - **The output name** goes into `__EXENAME__`. UW2's is `uwedit.exe` in lower case, so the link must name its output that.
-- **The DOS date of the link** goes into `__EXEDATE__`. UW2's is 12 May 1993; the reference link sets the DOS date first with a tiny SETDATE program.
+- **The DOS date of the link** goes into `__EXEDATE__`. UW2's is 12 May 1993; the reference link sets the DOS date first with a tiny SETDATE program (`mov ah,2Bh; int 21h`, linked as a .COM in the same batch). So the DOS the link runs in must honour INT 21h AH=2Bh and keep the date for TLINK, which runs after SETDATE has exited. DOSBox-X, DOSBox Staging and js-dos do. emu2 runs each program as its own process and refuses to set the date; `tools/emu2-date.patch` (built by `tools/setup-emu2.sh`) keeps a date set this way in a file the later programs of the run read. With an unpatched emu2 the link takes today's date and three bytes of UW2's link differ.
 - **The code flag in the overlay segment table** is set only for a segment class spelled exactly `CODE`. UW2 has 0 for seg003 and seg004 where the relink gives 1; a class `Code` gives 0 but moves the segments, so the original's combination is unexplained (possibly a different TLINK 3.0x). These are the two bytes that still differ (file 0x6676C and 0x66774).
 
 ## Command line
