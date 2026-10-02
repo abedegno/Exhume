@@ -5,3 +5,4 @@ build/
 toolchain/
 *.OBJ
 *.EXE
+tools/emu2/

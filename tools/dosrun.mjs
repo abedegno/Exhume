@@ -1,5 +1,7 @@
-// Run batch lines headless in DOS (dos-mcp's js-dos backend) and copy named outputs back.
-// Every compile, assemble, library and link step in Exhume goes through this.
+// Run batch lines headless in DOS and copy named outputs back. Every compile, assemble,
+// library and link step in Exhume goes through this. The DOS is the one tools/dosbackend.mjs
+// picks (EXHUME_DOS, or exhume.toml's [toolchain] dos: emu2, dosbox-x, staging, jsdos, or
+// auto); with emu2 a line must be a program with an optional redirection, or echo.
 //
 //   node tools/dosrun.mjs OUTDIR [options]
 //     --stage PATH        copy into C:\ before the run: a directory's contents, or one file
@@ -16,9 +18,10 @@
 // The run's own log is RUN.LOG: each line's output is appended there unless the line
 // redirects itself. It is always copied back. An output that is missing (-o only), empty,
 // or (for .OBJ) not a well-formed OMF record chain, or (for .EXE) shorter than its MZ header
-// says, counts as damaged and the whole run is retried: the emulator occasionally hands back
-// such files, more often with several emulators running at once.
-import { JsDosBackend } from "dos-mcp/dist/backend/jsdos.js";
+// says, counts as damaged: it is not copied back, and the whole run is retried. The emulator
+// occasionally hands back such files, more often with several emulators running at once
+// (js-dos far more than the native ones).
+import { runStage } from "./dosbackend.mjs";
 import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename, dirname } from "node:path";
@@ -93,27 +96,25 @@ writeFileSync(join(stage, "RUN.BAT"), [
 let ok = false;
 for (let attempt = 0; attempt < retries && !ok; attempt++) {
   if (attempt) console.log("run did not finish or left a damaged output, retrying");
-  const be = new JsDosBackend({ headless: true });
   let bad = false;
   try {
-    await be.loadBundle({ source: stage, autoexec: ["RUN.BAT"] });
-    let done = false;
-    for (let i = 0; i < timeout * 2 && !done; i++) {
-      await be.wait(500);
-      try { await be.fsStat("C:/DONE.TXT"); done = true; } catch { }
-    }
-    if (!done) { bad = true; console.log("timed out"); }
-    else await be.wait(1000);   // let DOS finish writing before the files are read
-    mkdirSync(outDir, { recursive: true });
-    for (const n of [...outs, ...optional, "RUN.LOG"]) {
-      let b = null;
-      try { b = await be.fsRead(`C:/${n.replace(/\\/g, "/")}`); } catch { }
-      const opt = optional.includes(n) || n === "RUN.LOG";
-      if ((b || !opt) && n !== "RUN.LOG" && damaged(n, b)) { bad = true; console.log("missing or damaged", n); }
-      if (b) writeFileSync(join(outDir, basename(n.replace(/\\/g, "/"))), b);
-    }
-  } catch (e) { bad = true; console.log("error", e.message); }
-  finally { await be.shutdown(); }
+    const run = await runStage(stage, "RUN.BAT", timeout);
+    try {
+      if (!run.finished) { bad = true; console.log("timed out"); }
+      mkdirSync(outDir, { recursive: true });
+      for (const n of [...outs, ...optional, "RUN.LOG"]) {
+        const b = await run.read(n);
+        const opt = optional.includes(n) || n === "RUN.LOG";
+        const dmg = n !== "RUN.LOG" && damaged(n, b);
+        if ((b || !opt) && dmg) { bad = true; console.log("missing or damaged", n); }
+        // a damaged output is never copied back, where a tool would take it for a good one
+        if (b && !dmg) writeFileSync(join(outDir, basename(n.replace(/\\/g, "/"))), b);
+      }
+    } finally { await run.close(); }
+  } catch (e) {
+    bad = true; console.log("error", e.message);
+    if (/^emu2 backend:|^EXHUME_DOS=/.test(e.message)) break;     // retrying cannot help
+  }
   ok = !bad;
 }
 rmSync(stage, { recursive: true, force: true });

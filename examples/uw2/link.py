@@ -29,7 +29,8 @@ on: every call to them is a fixup).
    names, statics, alignment or segment references disagree with the EXE (extract.py reports
    them), or an overlay whose publics are listed out of the EXE's stub order (see
    stub_order_wrong), stops the link until it is corrected.
-4. In DOS: the date is set to 12 May 1993 (TLINK records it), TASM assembles the generated
+4. In DOS (tools/dosrun.mjs, in the DOS tools/dosbackend.mjs picks; with emu2 the date needs
+   tools/emu2-date.patch): the date is set to 12 May 1993 (TLINK records it), TASM assembles the generated
    modules, TLIB puts the second library's modules (seg003's, seg004's, seg021's but its
    first, and seg045) into UWLIB.LIB in the manifest's order,
    and TLINK links from LINK.RSP:

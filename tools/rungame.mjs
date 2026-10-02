@@ -1,6 +1,8 @@
 // Boot a linked EXE headless in DOS among the game's data files, press keys, take screenshots.
 // The last stage of the method: a byte-identical EXE that also runs, and a source change
-// that shows on screen, prove the decompilation is live.
+// that shows on screen, prove the decompilation is live. Always js-dos, whatever EXHUME_DOS
+// says (that chooses the DOS for the toolchain only, tools/dosbackend.mjs): a program needs a
+// screen, keys, and dos-mcp's memory reads.
 //
 //   node tools/rungame.mjs --data DIR [--as NAME.EXE] [--skip SUBSTRING]... EXE OUTPREFIX STEP...
 //     --data DIR      the game directory, staged into C:\ (never modified)

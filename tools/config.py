@@ -84,6 +84,14 @@ class Config:
         prof_c = self.profile.get('c', {}); prof_a = self.profile.get('asm', {})
         self.c_opts = t.get('c_opts', prof_c.get('default_opts', ''))
         self.asm_opts = t.get('asm_opts', prof_a.get('default_opts', ''))
+        # the DOS the toolchain runs in (tools/dosbackend.mjs) and how many sessions at once
+        # (tools/dosbatch.py); the environment's EXHUME_DOS and EXHUME_DOS_SESSIONS win, and
+        # setting them here passes the choice to every tool and DOS run this one starts
+        self.dos = t.get('dos')
+        self.dos_sessions = t.get('sessions')
+        if self.dos and not os.environ.get('EXHUME_DOS'): os.environ['EXHUME_DOS'] = str(self.dos)
+        if self.dos_sessions and not os.environ.get('EXHUME_DOS_SESSIONS'):
+            os.environ['EXHUME_DOS_SESSIONS'] = str(self.dos_sessions)
         n = raw.get('names', {})
         self.original_label = n.get('original_label', 'original')
         self.original_symbols = os.path.join(self.root, n['original_symbols']) if n.get('original_symbols') else None
