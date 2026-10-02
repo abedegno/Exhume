@@ -1,0 +1,346 @@
+# UW2's plan for tools/headergen.py: the shared headers of UW2Decomp commit 0c4d92c, generated from
+# the sources before that commit (with a few hand fixes) by the script headergen.py was made from.
+# Stems are the file names of that time (OVR112.C, SEG012.C ...); the files were renamed later.
+# SEG003, SEG004 and SEG021 match the modules of those split segments by target (SEG003A.ASM ..).
+# exclude is the result of the loop and the bisection (227 names whose files compile differently
+# with one shared declaration, or that tie in order with such a name).
+
+umbrella = "uw2.h"
+umbrella_comment = "what every header includes: union Link, the link word that chains objects into lists. Each header declares the struct tags its declarations name and includes the headers that define them, so every tag a source sees is complete."
+default_header = "sys.h"
+allow_divergent = true
+structs = "structs"
+comment_drop = "Elsewhere|Later in this file|in other files|^/\\* This file|referenced before|called before|Defined later|options panel.s handlers"
+exclude = [
+  "ActiveMob",
+  "AnimObjInPipe",
+  "Armor",
+  "ChangeLevel",
+  "Containers",
+  "CreateObj",
+  "Food",
+  "GetAutoMapLevel",
+  "HasOrIsObj",
+  "Interupt4_COM1_ovr132_0",
+  "Inventory",
+  "IsJoy",
+  "IsMobElem",
+  "JoyStickCalibration_seg011_1B8",
+  "Killorn_just_crashed",
+  "LastActiveMob",
+  "Lights",
+  "MapMemory_seg013_1D3C_C7",
+  "Map_Init",
+  "Missile",
+  "Obj_Add",
+  "Obj_AddEnd",
+  "Obj_Alloc",
+  "Obj_Check",
+  "Obj_Find",
+  "Obj_Find_Head",
+  "Obj_FreeChain",
+  "Obj_FreeLinkChain",
+  "Obj_InList",
+  "Obj_PtrTMem",
+  "Obj_Punt",
+  "Obj_Rem",
+  "ObjectActor",
+  "ObjectActorArg",
+  "ObjectCheck",
+  "OkEnoughMem_ovr167_463",
+  "Palettes",
+  "PickDist",
+  "PickUp",
+  "PlayerDat",
+  "PlayersMap",
+  "RemoveTrap",
+  "RestoreGame",
+  "RightPanel",
+  "SCD_dseg_67d6_8634",
+  "SaveAutoMapLevel",
+  "SaveGame",
+  "Sched_Delete",
+  "Sched_Migrate",
+  "Sched_SetAllClocks",
+  "ShowStupidFirstPersonWeapon",
+  "TerrainCheck",
+  "Time",
+  "Transparency",
+  "TxmTerr",
+  "Txm_Load",
+  "Txm_Save",
+  "UseObj",
+  "UseTrap",
+  "UseTrigger",
+  "UsingPole",
+  "ValidLightSlots",
+  "Weapons",
+  "_input_addkey",
+  "add_animobj",
+  "advance",
+  "always_decode",
+  "animcount",
+  "animobj_load",
+  "anti_magic_p",
+  "automap_area",
+  "bab_fun",
+  "babl_run",
+  "bltfromdrive",
+  "blttodrive",
+  "busywaiting_new_options",
+  "can_place",
+  "change_terrain",
+  "check_alert",
+  "check_pplate",
+  "check_weight",
+  "clearobj",
+  "close_arc",
+  "cmbModTH",
+  "creature_class_data",
+  "creature_init",
+  "crithit",
+  "crithittime",
+  "critptr",
+  "critter_set_goal",
+  "curBin",
+  "cur_font",
+  "damage_item",
+  "data_fopen",
+  "death_check",
+  "decode_obj_spell",
+  "disk_to_vid",
+  "display_screen",
+  "do_crit_phys",
+  "do_escape_key",
+  "do_keyboard_input",
+  "do_teleport",
+  "editexit",
+  "fadeout",
+  "find_anim",
+  "find_good_x_and_y",
+  "flip_switch",
+  "flood_path",
+  "foreground_color",
+  "free_world",
+  "freepaths",
+  "gameopts_buttongroup",
+  "get_arc",
+  "get_name",
+  "get_workspace",
+  "globals",
+  "grfx_init",
+  "grfx_palrange",
+  "grfx_quikpal",
+  "gronk_gr",
+  "gronk_whoami",
+  "gronkify_change_goal",
+  "hack_init",
+  "in_game",
+  "init_save",
+  "init_sounds",
+  "init_strings",
+  "init_timers",
+  "init_txtlib",
+  "inplist",
+  "input_addmouse",
+  "input_dispatch",
+  "instant_kill",
+  "invRemoveObject",
+  "lastDurCheck",
+  "lastcombattime",
+  "light_act",
+  "light_mod",
+  "line_of_sight",
+  "load_digi_fx",
+  "load_new_music",
+  "load_script",
+  "load_weapcm",
+  "loc_lght",
+  "mapdata",
+  "misc_init",
+  "missile_thwack",
+  "mous_in_3d",
+  "mouse_dragged",
+  "mouse_release",
+  "move_mobile",
+  "mpos",
+  "myxpost",
+  "myypost",
+  "near_mob_put_at",
+  "newFPS",
+  "nextSpellTime",
+  "npc_barter",
+  "npp_func",
+  "obj_deal",
+  "objdata",
+  "objptr",
+  "pFPS",
+  "play_barter",
+  "play_effect",
+  "play_effect_here",
+  "play_effect_on_mobile",
+  "playerMod",
+  "player_eat",
+  "player_look_grave",
+  "plyNotice",
+  "plyregen",
+  "preload_cr",
+  "punt_sound_stuff",
+  "put_arc",
+  "put_at",
+  "put_effect",
+  "quad",
+  "quit_buttongroup",
+  "read_quikpal",
+  "rect_class_data",
+  "remove_opponent",
+  "repair_item",
+  "replace_string",
+  "running_away",
+  "scroll_clear",
+  "scroll_print",
+  "seg011_2C6",
+  "seg011_6",
+  "seg013_1D3C_E4",
+  "set_curmagic",
+  "set_drugged",
+  "set_effect",
+  "set_light",
+  "set_loc",
+  "set_new_music",
+  "set_numbered_variable",
+  "set_resterr",
+  "set_screen_frame",
+  "show",
+  "show_cutscene",
+  "smooth_base",
+  "sp_study_monster",
+  "spec_class_data",
+  "stay_centered",
+  "stdat",
+  "stuff_class_data",
+  "talk_to_disembodied",
+  "teleport_critter",
+  "timercount",
+  "timerlist",
+  "trap_class_data",
+  "trap_init",
+  "trap_obj_del",
+  "typehit",
+  "update_converse_data",
+  "update_map_scraps",
+  "useNSpellCharges",
+  "using_altaras_dagger",
+  "using_punt",
+  "vort_rad",
+  "vort_timer",
+  "wdialog",
+  "ws_active",
+  "wyorn",
+  "xorread",
+  "xorwrite",
+]
+
+[titles]
+OVR091 = "animated object class data"
+OVR093 = "the .ark archives"
+OVR102 = "combining objects"
+OVR104 = "creature class data"
+OVR109 = "debugging hooks"
+OVR116 = "screenshots"
+OVR117 = "critter art pages"
+OVR118 = "graphics start-up, fonts and palettes"
+OVR120 = "hack class data"
+OVR122 = "saving and restoring the player's inventory in player.dat"
+OVR128 = "loading and saving the level map"
+OVR130 = "misc class data"
+OVR140 = "a level's texture map"
+OVR142 = "the player record's load and save, and spell effects"
+OVR151 = "SCD schedules"
+OVR152 = "lighting"
+OVR153 = "LZW-compressed save blocks"
+OVR163 = "spilling a container's contents, and critter loot"
+OVR165 = "screen changes"
+OVR167 = "file I/O helpers"
+PLAYER = "skills, levelling, sleep, eating, death and traps (ovr154)"
+SEG014 = "the icon bar"
+SEG034 = "sorting the 3D view"
+SEG036 = "Map_GetAddr and CreateObj"
+SEG038 = "skill checks, experience and levelling"
+SEG039 = "strings"
+SEG042 = "memory and the workspace"
+
+[[header]]
+name = "sys.h"
+desc = "The program's start-up, main loop and shutdown, memory and EMS, errors, small helpers, debugging hooks, and the C-like helpers in seg017"
+stems = ["OVR112", "SEG012", "SEG013", "SEG042", "OVR114", "SEG041", "OVR099", "OVR109", "OVR132", "OVR146", "SEG017", "SEG018", "SEG020", "SEG021", "OVR165", "OVR092", "SEG046", "SETPNT"]
+
+[[header]]
+name = "file.h"
+desc = "Files: the .ark archives, raw file I/O, compression, save games and the screenshot writer"
+stems = ["OVR093", "OVR167", "OVR127", "OVR153", "OVR122", "OVR149", "OVR116", "OVR162"]
+
+[[header]]
+name = "object.h"
+desc = "Objects: the object lists and their storage, object classes and their data, combining, damage, spilling, using and looking at objects, animated objects and timers"
+stems = ["SEG029", "SEG036", "OVR134", "OVR091", "OVR102", "OVR120", "OVR130", "OVR148", "OVR155", "OVR159", "SEG025", "OVR163", "SEG040", "OVR138", "OVR126", "SEG044"]
+
+[[header]]
+name = "map.h"
+desc = "The level map: loading and saving tiles, textures and lighting, and collision with the terrain"
+stems = ["OVR128", "OVR140", "OVR152", "SEG028"]
+
+[[header]]
+name = "player.h"
+desc = "The player: skills and levelling, timed updates, set-up, character creation, the player record, and the player's physics"
+stems = ["PLAYER", "OVR154", "SEG038", "OVR135", "OVR143", "OVR101", "OVR142", "SEG008"]
+
+[[header]]
+name = "critter.h"
+desc = "Critters: their motion, AI and goals, their class data, and the critter art pages"
+stems = ["SEG006", "SEG007", "OVR107", "OVR104", "OVR117"]
+
+[[header]]
+name = "motion.h"
+desc = "Motion and physics: moving objects through the tile grid, collisions, and the clock that drives them"
+stems = ["SEG030", "SEG031", "SEG035"]
+
+[[header]]
+name = "combat.h"
+desc = "Combat, missiles and spells"
+stems = ["SEG024", "SEG027", "OVR156", "OVR157", "OVR123"]
+
+[[header]]
+name = "gfx.h"
+desc = "Graphics: the sprite, screen and drawing modules, art loading, palettes and colour cycling, full-screen pictures, cutscenes and the screen furniture around the 3D view"
+stems = ["SEG000", "SEG001", "SEG002", "SEG003", "SEG009", "SEG023", "OVR118", "OVR119", "OVR150", "OVR108", "SEG037", "OVR131", "FARDATA"]
+
+[[header]]
+name = "view3d.h"
+desc = "The 3D view: building the render database, drawing objects into it, sorting, and the renderer"
+stems = ["SEG019", "SEG032", "SEG033", "SEG034", "SEG004"]
+
+[[header]]
+name = "ui.h"
+desc = "The user interface: input dispatch, joystick and mouse, the icon bar, the options panel, the game screen, the message scroll, strings, the main menu, the 3D view's mouse interaction and the automap"
+stems = ["SEG010", "SEG011", "SEG014", "SEG015", "OVR136", "OVR137", "OVR139", "SEG043", "OVR147", "SEG026", "OVR094", "SEG039"]
+
+[[header]]
+name = "inv.h"
+desc = "The inventory: its slots and panel, open bags"
+stems = ["OVR121", "OVR124", "OVR125"]
+
+[[header]]
+name = "sound.h"
+desc = "Sound and music, and the AIL driver API"
+stems = ["SEG016", "SEG022"]
+
+[[header]]
+name = "conv.h"
+desc = "Conversations: the babl interpreter, its built-ins, bartering, and the bytecode assembler's label table"
+stems = ["OVR095", "OVR096", "OVR097", "OVR103", "OVR106", "SEG045"]
+
+[[header]]
+name = "event.h"
+desc = "World events: teleports and quest hacks, SCD scheduled events, triggers and traps"
+stems = ["OVR110", "OVR113", "OVR166", "OVR151"]

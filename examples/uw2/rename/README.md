@@ -1,0 +1,10 @@
+# UW2's file names: finding original names (step 5)
+
+UW2Decomp commit e44f1fc renamed all 154 sources from IDA segment names (SEG012.C, OVR154.C) and grouped them in subsystem directories: 9 names are original, 34 inferred and 111 descriptive, recorded with their evidence in UW2Decomp's `map/filenames.tsv`. No UW2 build, string or document names a UW2 source file, so the evidence came from related code bases. These scripts are the UW2-specific search, kept as reference; they read the System Shock source release and UW2Decomp's tree and write JSON beside themselves.
+
+- `ssindex.py [DIR]`: indexes a source release (System Shock's, from Looking Glass in 1994, built on the Underworld engine; default `~/ShockMac`): for every file, the functions it defines and the identifiers it uses. Writes `ssindex.json`.
+- `uwfiles.py`: for every UW2 source, its target, its functions, those whose names are original (the FM Towns build's), which System Shock files define a function of the same name, and its strings. Writes `uwfiles.json`.
+- `sim.py`: for every UW2 source, the three System Shock files sharing the most rare identifiers (weighted by how few files use each) and definitions. A file defining the same functions for the same job gives an original name (`valloc.c` for seg001's valloc and vfree: `gfx/VALLOC.ASM`); a file with only a similar job gives an inferred one.
+- `refs.py FILE...`: rewrites references to old file names in text files (documents, comments) from `map.tsv` (old file, new path, kind, evidence: UW2Decomp's `map/filenames.tsv` without its segment column).
+
+What the rename had to respect (skills/readability-pass): Turbo C names a file's code segment after the file (`FILE_TEXT`), and so does TASM for a module written with `.model` and `.code`, so an assembly module sharing a segment with a C file must name that file's segment explicitly; tools find sources by segment, never by file name (tools/sources.py), so the link order needed no change; and the stem stays unique across directories, because objects and link modules are named by it.

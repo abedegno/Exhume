@@ -114,8 +114,9 @@ class Inventory:
             for e in ents:
                 k = e['kind']
                 if k == 'func_def': c[f'{where}: function definitions'] += 1
-                elif k == 'proto' and not e['static']: c[f'{where}: prototypes'] += 1
-                elif k == 'proto': c[f'{where}: static prototypes'] += 1
+                elif k == 'proto':
+                    c[f'{where}: prototypes'] += 1
+                    if e['static']: c[f'{where}: prototypes of statics'] += 1
                 elif k == 'extern': c[f'{where}: extern lines'] += e['endline'] - e['line'] + 1
                 elif k in ('struct_def', 'union_def'): c[f'{where}: struct and union definitions'] += 1
                 elif k == 'enum_def': c[f'{where}: enum definitions'] += 1
