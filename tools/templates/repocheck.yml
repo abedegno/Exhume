@@ -1,0 +1,30 @@
+# Hosted CI for a decompilation project: copy to .github/workflows/repocheck.yml. It runs only
+# what needs neither the toolchain nor the original program, which cannot be on GitHub:
+# Exhume's repocheck.py (script syntax, Markdown links, no executables, objects, libraries,
+# disk images or game data committed). The real gate is tools/gate.py check, run locally by
+# the pre-push hook (tools/install-hooks.sh). Pin EXHUME_REF to the commit you build with.
+name: repocheck
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+env:
+  EXHUME_REF: main
+jobs:
+  repocheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: abedegno/Exhume
+          ref: ${{ env.EXHUME_REF }}
+          path: .exhume
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python3 .exhume/tools/repocheck.py --root . --allow '^\.exhume/'

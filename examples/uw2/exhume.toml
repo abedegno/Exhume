@@ -63,8 +63,8 @@ library_segments = ["seg000", "seg005_105F"]
 # Segment table entries 50 to 78 are the far data segments, reported as FD50..FD78 (FD51 is
 # seg_370D, the graphics data; FD58 seg052_519C, the 3D renderer's; FD71 dseg062_62a6, seg021's).
 far_data_entries = [50, 78]
-# seg046 is the overlay manager, which the link takes from OVERLAY.LIB rather than its object
-library_objects = ["SEG046"]
+# seg046 (lib/OVERLAY.ASM) is the overlay manager, which the link takes from OVERLAY.LIB rather than its object; named by segment, so a renamed file needs no change
+library_objects = ["seg046"]
 # seg003's dispatcher (_seg003_0272_5311 in SEG003K) is handed a routine's offset in BP and
 # calls it with DS = ES = SS = seg_370D: `mov ax,seg seg_370D; mov ds,ax; mov es,ax; ...
 # mov ss,ds:[558Ch]`, where DS:558C holds that paragraph
@@ -75,3 +75,15 @@ dispatch = [{ register = "bp", ds = "FD51", es = "FD51", ss = "FD51" }]
 data = "${UW2_DATA:-~/UWGOG/UW2}"
 exe_name = "UW2.EXE"
 skip = ["SAVE0.pristine"]
+
+[gate]
+# tools/gate.py: the build driver and the gate (docs/readability.md). The link is the reference
+# implementation in this directory; the exact link equals UW2.EXE except the overlay segment
+# table's code flag for seg003 and seg004 (docs/case-study-uw2.md).
+link = "{python} {exhume}/examples/uw2/link.py --config {config}"
+mod_link = "{python} {exhume}/examples/uw2/link.py --mod --config {config}"
+exact_exe = "LINK/out/UW2.EXE"
+mod_exe = "MODLINK/out/UW2.EXE"
+known_diffs = [[0x6676C, 0x00, 0x01], [0x66774, 0x00, 0x01]]
+# `gate.py boot`: title, introduction, main menu
+boot = ["w:5000", "s:title", "w:15000", "s:intro", "k:Escape", "w:3000", "k:Escape", "w:3000", "s:menu"]

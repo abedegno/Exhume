@@ -8,7 +8,8 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 
 - `name`: a label.
 - `root`: the decompilation repository.
-- `src`, `targets`, `symbols`, `matched`, `map`: sources, target tables, the symbol map, the list of matched segments, the map directory.
+- `src`, `targets`, `symbols`, `matched`, `map`: sources, target tables, the symbol map, the list of matched segments, the map directory. Sources may sit in subdirectories of `src` (one per subsystem, say); every tool finds them through tools/sources.py, by stem (the file name without extension, upper case, unique across the tree) or by DOS segment.
+- `include`: the shared headers (default `src/include`), never searched for sources. tools/build.py stages them in C:\ beside each source, and tools/srcdeps.py hashes a source together with the headers it includes, so the gate and the modding build recompile every includer of a changed header.
 - `build`: where objects (`build/STEM/STEM.OBJ`, with `BUILD.LOG`), the link and the queue go. It may be outside root; Exhume's own proof sets it to `~/Exhume/build/uw2` so the UW2Decomp checkout is never written.
 - `queue`: the build queue directory, relative to build.
 
@@ -43,10 +44,24 @@ A second build with symbols. `image` (a flat code image), `symbols` (TSV: name, 
 For `tools/addrscan.py`, which lists addresses written as numbers (docs/link.md, "Layout audits"). All optional.
 
 - `far_data_entries`: `[first, last]` overlay segment table entries that hold far data; their paragraphs are reported as `FDnn`. Without it, every entry with flags 0 other than DGROUP's counts.
-- `library_objects`: stems whose objects are not scanned because the link takes that code from a library (UW2: `SEG046`, the overlay manager).
+- `library_objects`: stems, or target segments, whose objects are not scanned because the link takes that code from a library (UW2: `seg046`, the overlay manager).
 - `dispatch`: code entered through a dispatcher. Each entry is `{ register = "bp", ds = "FD51", es = "FD51", ss = "FD51" }`: a label whose offset is loaded into that register (`mov bp,offset X`) is entered with those segment registers.
 
 DGROUP is found by `[binary] dgroup_para`. The modding build also reads `[binary] listing` and `listing_para_bias`, for the `dw offset` tables in extracted data.
+
+## [gate]
+
+For tools/gate.py, the build driver and gate (docs/readability.md, "The gate"). Commands are split like a shell line, may use `{python}`, `{exhume}`, `{config}`, `{root}` and `{build}`, and run in the project root.
+
+- `link`, `mod_link`: the exact link and the modding build (UW2: `examples/uw2/link.py`, with `--mod` for the second).
+- `exact_exe`, `mod_exe`: where they write the EXE, relative to build.
+- `known_diffs`: `[offset, original byte, linked byte]` for each byte the exact link is known to get wrong (UW2: two). Any other difference fails the gate, and so does one of these not differing.
+- `sessions`, `batch`: DOS sessions at once (default 3) and sources per session (default 8).
+- `boot`: rungame.mjs steps for `gate.py boot`, which also uses [run].
+
+## [repocheck]
+
+Optional, for tools/repocheck.py when the config sits at the repository root: `ban`, more file extensions that must never be committed (a game's data formats), and `allow`, regular expressions for paths exempt from the binary checks.
 
 ## [run]
 
