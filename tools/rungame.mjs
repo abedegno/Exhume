@@ -9,6 +9,9 @@
 //   steps:  w:MS         wait MS milliseconds
 //           k:Key[,Key]  press keys (dos-mcp key names: Enter, Escape, KeyA, Digit1, ...)
 //           s:NAME       screenshot to OUTPREFIX + NAME + .png
+//           m:TEXT       search the guest's memory for TEXT (latin1) and print where it is
+//   Exit status 1 when a memory search found nothing, so a script can test for a marker a
+//   changed source writes or changes at run time.
 //
 // Example (UW2): node tools/rungame.mjs --data ~/UWGOG/UW2 --as UW2.EXE build/LINK/out/UW2.EXE shot- w:15000 s:title k:Escape w:3000 s:menu
 import { JsDosBackend } from "dos-mcp/dist/backend/jsdos.js";
@@ -31,13 +34,20 @@ const stage = mkdtempSync(join(tmpdir(), "exhume-run-"));
 cpSync(data, stage, { recursive: true, filter: s => !skip.some(k => s.includes(k)) });
 cpSync(exe, join(stage, name));
 const be = new JsDosBackend({ headless: true });
+let missing = 0;
 try {
   await be.loadBundle({ source: stage, autoexec: [name] });
   for (const st of steps) {
     const [op, arg] = [st.slice(0, 1), st.slice(2)];
     if (op === "w") await be.wait(Number(arg));
     else if (op === "k") { for (const k of arg.split(",")) { await be.sendKeySequence([k]); await be.wait(400); } }
+    else if (op === "m") {
+      const r = await be.searchMemory(Buffer.from(arg, "latin1"), { maxHits: 8 });
+      console.log(`memory "${arg}": ${r.hits.length ? r.hits.map(h => "0x" + h.toString(16).toUpperCase()).join(" ") : "not found"}`);
+      if (!r.hits.length) missing++;
+    }
     else if (op === "s") { const r = await be.screenshot("png"); writeFileSync(`${prefix}${arg}.png`, r.bytes); console.log("shot", `${prefix}${arg}.png`); }
     else console.log("unknown step " + st);
   }
 } finally { await be.shutdown(); rmSync(stage, { recursive: true, force: true }); }
+process.exit(missing ? 1 : 0);
