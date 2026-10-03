@@ -8,7 +8,7 @@ name = "Borland Turbo C++ 1.01 / TASM 2.0 / TLINK 3.01"
 # one DOS batch line per source; {opts} from the source's /* opts: */ line, {file} its DOS name
 command = "TCC -c {opts} -IC:\\ {file}"
 default_opts = "-mm -1 -G -O -Z"
-code_class = "CODE"          # segment class of compiled code in the object
+code_class = "CODE"          # a segment whose class ends in this, in any case, holds code (linker.md, "Segment classes")
 public_prefix = "_"          # C names gain a leading underscore
 name_limit = 32              # Turbo C keeps 32 characters of an identifier (33 with the underscore)
 

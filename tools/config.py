@@ -148,6 +148,15 @@ class Config:
         pre = c.get('public_prefix', '_'); lim = c.get('name_limit', 32)
         return (pre + name)[:lim + len(pre)]
 
+    def is_code_class(self, cls):
+        """True when an object's segment class marks code: it ends in the profile's
+        code_class, in any case. A program's assembly modules may use other classes ending
+        in CODE (UW2: ASMCODE, and lower-case code), which the linker orders and flags
+        differently (profiles/borland-tc101/linker.md, "Segment classes"), so never test
+        for the class spelled exactly."""
+        suffix = self.profile.get('c', {}).get('code_class', 'CODE').upper()
+        return bool(cls) and cls.upper().endswith(suffix)
+
     def is_library_name(self, name):
         return any(re.search(p, name) for p in self.profile.get('link', {}).get('library_name_patterns', []))
 

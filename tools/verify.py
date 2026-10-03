@@ -64,8 +64,7 @@ def main(argv=None, on_names=None):
     base, size, rows, org = CFG.load_targets(seg)
     FARHINT.clear(); FARHINT.update(CFG.far_hints)
     segs = o['segs']
-    code_class = CFG.profile.get('c', {}).get('code_class', 'CODE')
-    code = next(i for i, s in enumerate(segs) if s and s[1] == code_class)
+    code = next(i for i, s in enumerate(segs) if s and CFG.is_code_class(s[1]))
     datas = next(i for i, s in enumerate(segs) if s and s[0] == '_DATA')
     bss = next((i for i, s in enumerate(segs) if s and s[0] == '_BSS'), None)
     fars = {i for i, s in enumerate(segs) if s and s[1] == 'FAR_DATA'}

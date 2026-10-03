@@ -16,7 +16,7 @@ pubs = publics(d)
 pre = cfg.profile.get('c', {}).get('public_prefix', '_'); lim = cfg.profile.get('c', {}).get('name_limit', 32)
 # only publics in the code segment name functions; a data public can share an offset
 _, segs, _, _, _ = module_masked(d)
-code = next(i for i, x in enumerate(segs, 1) if x[1] == cfg.profile.get('c', {}).get('code_class', 'CODE'))
+code = next(i for i, x in enumerate(segs, 1) if cfg.is_code_class(x[1]))
 at = {o: n[len(pre):] if n.startswith(pre) else n for n, (s, o) in pubs.items() if s == code}
 t = os.path.join(cfg.targets, seg + '.tsv'); lines = open(t).read().split('\n')
 for j, l in enumerate(lines):

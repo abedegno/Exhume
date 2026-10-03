@@ -44,8 +44,7 @@ def dis(buf):
 
 
 def code_segment(cfg, segs):
-    cls = cfg.profile.get('c', {}).get('code_class', 'CODE')
-    return [i for i, (sn, cn, ln) in enumerate(segs, 1) if cn == cls]
+    return [i for i, (sn, cn, ln) in enumerate(segs, 1) if cfg.is_code_class(cn)]
 
 
 def main(argv):
