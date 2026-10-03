@@ -8,7 +8,7 @@ gate -> shared headers -> named constants -> struct fields -> file names -> comm
 
 ## The rule: the bytes do not change
 
-Every change in the pass is meant to keep the program identical, so the proof is the same for all of them: every source still matches and verifies, symbols.tsv rebuilds from scratch to the same names at the same addresses, the exact link still equals the original except its known bytes, and the modding build with nothing changed still equals the exact link. One command checks all of that, and nothing is committed until it passes. A change that alters the program belongs to the modding build, never to this pass.
+Every change in the pass is meant to keep the program identical, so the proof is the same for all of them: every source still matches and verifies, symbols.tsv rebuilds from scratch to the same names at the same addresses, the exact link is still byte-identical to the original, and the modding build with nothing changed still equals the exact link. One command checks all of that, and nothing is committed until it passes. A change that alters the program belongs to the modding build, never to this pass.
 
 This is why the gate comes first. Each later step touches most of the tree (the header step changed 92 of UW2's 99 C files), and only a check of the whole tree after every change makes that safe.
 
@@ -16,7 +16,7 @@ This is why the gate comes first. Each later step touches most of the tree (the 
 
 `tools/gate.py` is the build driver and the gate; a project wraps it in a Makefile (`tools/templates/Makefile`: `make`, `make exact`, `make check`, `make check-all`, `make boot`) with its facts in exhume.toml's `[gate]` (docs/config.md).
 
-- `check` compiles the sources that changed since they last passed, several to a DOS session and several sessions at once (one per core up to 12, or three in js-dos), then requires WHOLE SEGMENT MATCHES and a clean verify for every source, rebuilds symbols.tsv from scratch and compares it, and requires the exact link to equal the original except `[gate] known_diffs` and the unchanged modding build to equal the exact link. On UW2 it takes about 8 seconds from nothing and 5 when nothing changed in emu2, and about 74 and 11 in js-dos.
+- `check` compiles the sources that changed since they last passed, several to a DOS session and several sessions at once (one per core up to 12, or three in js-dos), then requires WHOLE SEGMENT MATCHES and a clean verify for every source, rebuilds symbols.tsv from scratch and compares it, and requires the exact link to be byte-identical to the original (or to differ in exactly `[gate] known_diffs`, when a project lists any) and the unchanged modding build to equal the exact link. On UW2 it takes about 8 seconds from nothing and 5 when nothing changed in emu2, and about 74 and 11 in js-dos.
 - A source counts as changed when its hash changes, and the hash covers the shared headers it includes (`tools/srcdeps.py`), its `/* opts: */`, its object and the toolchain. Editing a header recompiles exactly the files that include it.
 - `check --fast` compiles, matches and verifies only the changed sources, without the symbols rebuild or the links: the loop while editing, not the proof.
 - symbols.tsv is rebuilt in an order that does not depend on file names: overlays first, then by target, retrying any source that fails until a round adds nothing, since a file can need a name another file merges first. A fixed order by path stops working the moment files move into directories.

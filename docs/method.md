@@ -95,7 +95,7 @@ Make the sources changeable by any size, which is what a fix, a mod or a port ne
 
 Make the tree readable without changing a byte (skills/readability-pass, docs/readability.md), in six steps, each committed on its own and proved by the gate.
 
-- First the gate: `tools/gate.py check` proves the whole tree in one command (every source matches and verifies, symbols.tsv rebuilds from scratch, the exact link equals the original except its known bytes, the unchanged modding build equals the exact link), recompiling only what changed, including every source that includes a changed header. A pre-push hook runs it; hosted CI runs `tools/repocheck.py`, which needs neither the toolchain nor the program.
+- First the gate: `tools/gate.py check` proves the whole tree in one command (every source matches and verifies, symbols.tsv rebuilds from scratch, the exact link is byte-identical to the original, the unchanged modding build equals the exact link), recompiling only what changed, including every source that includes a changed header. A pre-push hook runs it; hosted CI runs `tools/repocheck.py`, which needs neither the toolchain nor the program.
 - Then shared headers (`tools/declinv.py`, `tools/structrec.py`, `tools/headergen.py`), named constants, struct fields and accessors (`tools/rawoffsets.py`, `tools/accessors.py`), original file names and subsystem directories (tools find sources by segment, `tools/sources.py`), and comments, subsystem notes and a findings page (`tools/comments.py`, which proves an edit changed only comments).
 
 ## What "done" means

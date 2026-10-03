@@ -1,6 +1,6 @@
 # Case study: Ultima Underworld II
 
-Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026.
+Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026; the byte-identical link is from 3 October.
 
 ## The target
 
@@ -13,13 +13,13 @@ Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin
 
 - **All C matched:** 337,327 of 337,327 bytes, 99 source files (about 47,700 lines), every one verified (fixups, initialised data, `_BSS`, far data, names).
 - **All assembly matched:** ten modules, 71,920 bytes, later split into their original modules (seg003, seg004 and seg021 are 14, 14 and 17 TASM modules), plus seg000, seg018 and SetPnt; 54 assembly sources in all (about 33,800 lines). seg045 turned out to be compiled C and is now `SEG045.C`. Every code segment outside the C runtime library rebuilds byte for byte.
-- **Linked:** TLINK in headless DOS produces an EXE of the same size, identical to the original byte for byte, relocation table order included, except two bytes: the overlay segment table's code flag for seg003 and seg004 (1 where UW2 has 0). It runs to the title and menu, and a changed string in a C source shows on screen.
+- **Linked:** TLINK in headless DOS produces an EXE byte-identical to the original (`cmp` finds no difference). For two days it differed in two bytes, the overlay segment table's code flag for seg003 and seg004, until those were traced to segment class names (below). It runs to the title and menu, and a changed string in a C source shows on screen.
 - **Names:** symbols.tsv holds 2,919 names: 2,291 original (from the FM Towns build), 12 runtime library, 616 provisional.
 - **Not yet source:** about 83 KB of far data (the graphics and 3D modules' tables and the 3D object models) and eight small, unreferenced DGROUP gaps, all taken from the user's EXE at link time.
 
 ## Timeline
 
-94 commits. The first function matches (ovr154, the whole of `PLAYER.C`, 6,967 bytes) landed at 23:53 on 30 September 2026. All C code matched by 14:41 on 1 October, all code by 16:58, the first running link at 17:56, and the two-byte link at 21:22: about 21.5 hours from first file to finished link.
+94 commits. The first function matches (ovr154, the whole of `PLAYER.C`, 6,967 bytes) landed at 23:53 on 30 September 2026. All C code matched by 14:41 on 1 October, all code by 16:58, the first running link at 17:56, and the two-byte link at 21:22: about 21.5 hours from first file to a link two bytes short. The byte-identical link (UW2Decomp commit 64c4665) came at 14:59 on 3 October.
 
 ## What each stage found
 
@@ -65,7 +65,7 @@ As recorded in the project notes:
 - TLINK stores the output name and the DOS date in the image: the link must be called `uwedit.exe` and run on 12 May 1993. UW2's C0 is Turbo C++'s C0.ASM with three changes.
 - The link exposed what matching could not: OVR112 called `strncmp` where UW2 calls `strnicmp`; SEG032 had a constant where UW2 has a segment relocation; nine overlay functions were static; provisional names that broke the overlay stub order (OVR124 suggested a wrong FM Towns assignment). Once the sources were corrected the link needed no patches.
 - The relocation order was reproduced exactly only after seg003, seg004 and seg021 were split into their original modules, found from the relocation order and TLINK's zero padding.
-- The last two bytes are unexplained: TLINK 3.01 sets the segment table's code flag only for a class spelled exactly `CODE`, and the class `Code` gives 0 but moves the segments.
+- **The last two bytes were segment classes.** For two days the relink differed from UW2.EXE only in the overlay segment table's code flag for seg003 and seg004 (file 0x6676C and 0x66774: 1 where UW2 has 0). TLINK 3.01 set the flag for class `CODE`, and the class `Code` gave 0 but moved the segments, so it looked like a different linker. The hunt ruled that out first: TLINK 3.0, from Turbo Assembler 2.0's package, linked 19,856 bytes different until C0's `_DATA` was made word-aligned, and then gave the same two bytes as 3.01; TLINK 4.0, from Borland C++ 2.0, gave the same two bytes; making the seg003 modules' segments stack instead of public left them too, and private or common changed 466,893 and 490,055 bytes. MASM 5.1 was fetched because it upper-cases class names unless run with `/Ml`, which bears on how a period source could have spelled one. Reading TLINK 3.01's code then gave the rule (profiles/borland-tc101/linker.md, "Segment classes"): segments are laid out in blocks by class, in the order the classes are first met, and the flag is set when the class of a frame's first segment ends in upper-case `CODE`. So the original had three classes: seg000 to seg002 in one that ends in `CODE` but is not `CODE` (it comes first and keeps the flag), seg003 and seg004 in one that does not end in upper-case `CODE`, and everything else in `CODE`. The class experiments rewrote the class names in the objects and relinked: `XCODE` and `GRAPH`, `FAR_CODE` and `Code`, `LIBCODE` and `code`, and separate classes for the graphics and 3D modules each gave 0 differences, in TLINK 3.01, in 4.0 and in 3.0 with the word-aligned `_DATA`; the control, block 1 left as `CODE` with block 2 `GRAPH`, moved seg000 to seg002 behind seg004 and changed 228,676 bytes. The EXE stores no class names, so the pattern is proved and the spellings are chosen: UW2Decomp uses `ASMCODE` and `code`. Its sources changed only in the class (VALLOC.ASM and LPFDELTA.ASM lost `.model`, since TASM keeps a `.model` segment's class), its tools now find code segments by a class ending in `CODE`, and its modding build zeroes the overlay padding TLINK fills from an uncleared buffer, which held 4 stale bytes once seg003 and seg004 had a class of their own.
 
 ### Run and liveness
 
@@ -146,6 +146,19 @@ Exhume's own runs, on the same machine, against a `git archive` snapshot of UW2D
 - The 154 objects (153 sources and FARDATA) from emu2, DOSBox-X and js-dos are the same record for record once the Borland dependency comments (COMENT class E9) are left out; none is byte-identical as it stands, since each carries the time stamps of its own staging. The exact link and its map are byte-identical across all three and to UW2Decomp's, and so are the modded EXEs from emu2 and js-dos.
 - An unpatched emu2 (the pinned commit without `tools/emu2-date.patch`) linked an EXE that differs in three bytes, the link date (2 October 2026 for 12 May 1993).
 - js-dos dropped sessions part of the way through 12-source batches: `build.py --all` lost 41 of 154 sources on one run. The lone retry of each failed source, which the gate already had, now runs in `build.py` and the modding build too. That run also found that a session that died could leave a zero-length object that counted as built; `dosrun.mjs` no longer copies back a damaged output and `build.py` requires each source's own log.
+
+## Exhume's reproduction of the byte-identical link (3 October 2026)
+
+Run against a `git archive` snapshot of UW2Decomp at 64c4665 (the toolchain linked in, UW2Decomp's own objects copied in for the comparisons), never the working checkout, in emu2.
+
+| Check | Result |
+| --- | --- |
+| `tools/gate.py check --all`, with no `known_diffs` in examples/uw2/exhume.toml | 153 of 153 sources compiled, matched and verified; symbols.tsv rebuilt from scratch, 2,917 names, equal to the committed file; exact link byte-identical to UW2.EXE; modding build byte-identical to it. 9 s from nothing, 5 s with nothing changed |
+| `cmp` of the exact link and of the unchanged modding build with UW2.EXE | no difference in either; the exact link is also byte-identical to UW2Decomp's own |
+| `link.py --mod`, no source changed | `clear_overlay_padding` zeroes 4 stale bytes, as UW2Decomp's does |
+| `prove.sh`, whole, with the boot | 1 min 45 s; every object equal to UW2Decomp's, matches, verifies and addrscan identical to UW2Decomp's tools, exediff `IDENTICAL`, the snapshot equal to UW2Decomp's, the modded EXE (675,328 bytes) booted to the 3D view with `EXHUME-1` in memory |
+| the recipe in reverse: `tools/omfclass.py` setting the 31 `ASMCODE` and `code` objects back to `CODE`, then the exact link | exactly the old two bytes differ, 0x6676C and 0x66774 |
+| `gate.py` with the two old `known_diffs` set | the identical EXE fails ("expected the 2 known bytes to differ, 0 do"), as it should |
 
 ## Exhume's reproduction of the readability pass (2 October 2026)
 

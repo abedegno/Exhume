@@ -7,18 +7,18 @@ description: Use when a byte-matched, exactly linked DOS decompilation is to be 
 
 A matched tree is correct but hard to read: every file declares what it uses for itself, numbers stand where names should, structs are reached through casts and offsets, files are named after IDA segments. This pass fixes that in six steps, in order, and every byte of the build stays identical through all of them; the gate passing after each step is the proof. docs/readability.md has the reasons and the UW2 numbers. Paths are relative to the Exhume checkout; tools take `--config` or `EXHUME_CONFIG`.
 
-Start only when every source matches and verifies, the exact link equals the original except its known bytes, and the modding build with nothing changed equals the exact link (skills/modding-build). Keep each step in its own commit, never mixed with a change meant to alter the program.
+Start only when every source matches and verifies, the exact link is byte-identical to the original, and the modding build with nothing changed equals the exact link (skills/modding-build). Keep each step in its own commit, never mixed with a change meant to alter the program.
 
 ## 1. Build driver and gate
 
 Make one command prove the whole tree, before anything else changes.
 
-- Fill in `[gate]` in exhume.toml (docs/config.md): the link commands, where they write the EXE, `known_diffs` (offset, original byte, linked byte for each byte the exact link is known to get wrong), boot steps. Copy `tools/templates/Makefile` to the project root.
-- `python3 tools/gate.py check --all` must pass on the untouched tree: every source compiled, WHOLE SEGMENT MATCHES and a clean verify for each, symbols.tsv rebuilt from scratch equal to the committed one, the exact link equal to the original but the known bytes, the unchanged modding build equal to the exact link. Then prove it can fail: change one constant in one source, see `check --fast` fail, revert.
+- Fill in `[gate]` in exhume.toml (docs/config.md): the link commands, where they write the EXE, boot steps. Leave out `known_diffs`: the exact link must be byte-identical (a project that still has a few unexplained bytes may list them there for now, as offset, original byte, linked byte). Copy `tools/templates/Makefile` to the project root.
+- `python3 tools/gate.py check --all` must pass on the untouched tree: every source compiled, WHOLE SEGMENT MATCHES and a clean verify for each, symbols.tsv rebuilt from scratch equal to the committed one, the exact link byte-identical to the original, the unchanged modding build equal to the exact link. Then prove it can fail: change one constant in one source, see `check --fast` fail, revert.
 - `gate.py check` recompiles only sources whose hash (text plus included headers), options, object or toolchain changed since they last passed. `check --fast` stops after match and verify of the changed sources: the edit loop, never the proof.
 - Install the pre-push hook (`sh tools/install-hooks.sh PROJECT`) and the CI workflow (`tools/templates/repocheck.yml`): hosted CI cannot have the toolchain or the program, so it runs only `tools/repocheck.py` (script syntax, Markdown links, no executables, objects, libraries, disk images or game data, by name or by header). The hook is the real gate. It checks the working tree, so commit or stash first.
 
-Traps: the exact link's own exit status is the comparison's and is nonzero while the known bytes differ, so judge the EXE, never the exit code; delete the old EXE first so a failed link is never judged by a stale one. symbols.tsv from scratch depends on order (a file can need a name another file merges first, such as a far address it refers to by its offset alone): merge overlays first then by target, and retry the failures until a round adds nothing. A fixed sort by path breaks when files move between directories.
+Traps: the exact link's own exit status is the comparison's (nonzero while any byte differs, known or not), so judge the EXE, never the exit code; delete the old EXE first so a failed link is never judged by a stale one. symbols.tsv from scratch depends on order (a file can need a name another file merges first, such as a far address it refers to by its offset alone): merge overlays first then by target, and retry the failures until a round adds nothing. A fixed sort by path breaks when files move between directories.
 
 ## 2. Shared headers
 

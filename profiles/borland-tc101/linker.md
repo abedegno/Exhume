@@ -1,6 +1,6 @@
 # Borland Turbo Link 3.01: the linker
 
-What Turbo Link 3.01 (TLINK.EXE from Turbo C++ 1.01), TLIB and Borland's VROOMM overlay manager do to the objects, and what the linked EXE records about the original link. Learned by relinking UW2.EXE from its matched sources: `examples/uw2/link.py` produces an EXE of the same size, identical to the original byte for byte, relocation table order included, except two bytes. The compiler is in `compiler.md`, the assembler in `assembler.md`.
+What Turbo Link 3.01 (TLINK.EXE from Turbo C++ 1.01), TLIB and Borland's VROOMM overlay manager do to the objects, and what the linked EXE records about the original link. Learned by relinking UW2.EXE from its matched sources: `examples/uw2/link.py` produces an EXE identical to the original byte for byte (`cmp` finds no difference). The compiler is in `compiler.md`, the assembler in `assembler.md`.
 
 ## The link checks what byte matching cannot
 
@@ -23,7 +23,7 @@ What Turbo Link 3.01 (TLINK.EXE from Turbo C++ 1.01), TLIB and Borland's VROOMM 
 
 ## Order and placement
 
-- **TLINK places segments in the order it first sees their names.** To put a segment early, declare it empty in a module linked first (UW2: XORDER declares seg000 to seg004 ahead of C0's `_TEXT`).
+- **TLINK places segments in the order it first sees their names**, within each class ("Segment classes" below). To put a segment early, declare it empty in a module linked first (UW2: XORDER declares seg000 to seg004 ahead of C0's `_TEXT`).
 - **TLINK writes relocations module by module**, so the relocation table records the original module order, and the overlay segment table records the segment order. UW2's link order came from these two.
 - **TLINK takes library modules in library order**, even ones it finds it needs on a later pass, so a library's relocation order is its module order. A module is pulled only by a named reference: write `offset name` (not the number) where another module uses its entry points.
 - **Zero bytes after a `ret`/`jmp` are TLINK's alignment padding between separately assembled modules** (UW2: word-aligned in seg003, paragraph-aligned in seg004 and seg021), which is how those segments were split into their original modules (14, 14 and 17).
@@ -35,7 +35,33 @@ What Turbo Link 3.01 (TLINK.EXE from Turbo C++ 1.01), TLIB and Borland's VROOMM 
 
 - **The output name** goes into `__EXENAME__`. UW2's is `uwedit.exe` in lower case, so the link must name its output that.
 - **The DOS date of the link** goes into `__EXEDATE__`. UW2's is 12 May 1993; the reference link sets the DOS date first with a tiny SETDATE program (`mov ah,2Bh; int 21h`, linked as a .COM in the same batch). So the DOS the link runs in must honour INT 21h AH=2Bh and keep the date for TLINK, which runs after SETDATE has exited. DOSBox-X, DOSBox Staging and js-dos do. emu2 runs each program as its own process and refuses to set the date; `tools/emu2-date.patch` (built by `tools/setup-emu2.sh`) keeps a date set this way in a file the later programs of the run read. With an unpatched emu2 the link takes today's date and three bytes of UW2's link differ.
-- **The code flag in the overlay segment table** is set only for a segment class spelled exactly `CODE`. UW2 has 0 for seg003 and seg004 where the relink gives 1; a class `Code` gives 0 but moves the segments, so the original's combination is unexplained (possibly a different TLINK 3.0x). These are the two bytes that still differ (file 0x6676C and 0x66774).
+- **The code flag in the overlay segment table** comes from segment classes, which the EXE does not store: see "Segment classes" below.
+
+## Segment classes
+
+A segment's class name never reaches the EXE, but TLINK uses it twice, and both uses show in the EXE. Read from TLINK 3.01's code (offsets in its load image):
+
+- **Order.** TLINK lays segments out in blocks by class, the classes in the order it first meets them, and within a block each segment in the order it first meets its name. A test link of three segments with classes `CODE`, `XC` and `CODE`, in that order, comes out A, C, B. So "TLINK places segments in the order it first sees their names" (above) holds only within one class.
+- **The code flag.** TLINK groups segments into physical frames (0x5A94 to 0x5E0E), and the first segment that creates a frame sets the frame's type. The classifier at 0x7FEF returns 1 for a class ending in `CODE` in upper case: it compares bytes, so `Code` and `code` do not count, and `ASMCODE` or `FAR_CODE` do. The writer of the overlay segment table at 0x6BAA sets bit 0 of an entry's flags when its frame's type is above 0. With `/c` (case-sensitive linking, which TCC passes) `Code` is also a different class from `CODE`, so it gets a block of its own.
+
+UW2 shows all of this. Its code segments came in three classes, in three blocks:
+
+| Block | Segments | Class |
+|---|---|---|
+| 1 | seg000 to seg002 (three assembly modules) | ends in `CODE` but is not `CODE`: it comes first and keeps the flag |
+| 2 | seg003 and seg004 (28 graphics and 3D assembly modules) | does not end in upper-case `CODE`: flag 0 |
+| 3 | C0's `_TEXT` and everything after it, every C file included | `CODE`, the class Turbo C gives a C file |
+
+Block 1 cannot be `CODE` (it would join block 3, which would then come first) and must end in upper-case `CODE` (for the flag); block 2 must not. That much is proved; the spellings are not recoverable, and UW2Decomp chose `ASMCODE` and `code`. Other spellings link to the same EXE (`XCODE` and `GRAPH`, `LIBCODE` and `code`, `FAR_CODE` and `Code`, separate classes for the graphics and the 3D modules), while making block 1 `CODE` too moves seg000 to seg002 behind seg004 and changes 228,676 bytes. The overlay manager's own `_OVRTEXT_` (in `OVERLAY.LIB`) is class `CODE` with flag 1, which fits. Until the classes were found the relink differed in two bytes, the flags of seg003 and seg004 (file 0x6676C and 0x66774), and nowhere else.
+
+How to use it:
+
+- **When a relink differs only in the overlay segment table's flags, or in the order of whole runs of segments, try class splits before suspecting the linker version.** Rewrite the class in the objects, with no assembler: `tools/omfclass.py OBJ SEGNAME CLASS` changes one segment's class in an object (its LNAMES entry, or a new one when the entry is shared). Change it in every object that declares the segment, the module that declares segments early to fix their order included (UW2's XORDER takes its classes from the objects, so it follows), in a copy of the build directory, relink, and compare. Run backwards on UW2, setting the 31 `ASMCODE` and `code` objects back to `CODE` brings back exactly the two old bytes. Once a pattern links the original, change the sources to match.
+- **Write the spellings down as inferred.** The EXE proves which segments shared a class, which class came first and which classes end in upper-case `CODE`, never the names.
+- **Tools must find a code segment by its class ending in `CODE`, in any case** (`Config.is_code_class`, from `code_class` in profile.toml), never by the class spelled exactly: once a module has `ASMCODE` or `code`, a test for `CODE` finds no code segment in it.
+- **Assemblers and class case.** TASM with `/ml` keeps a class as written; MASM 5.1 upper-cases class names unless run with `/Ml`, which would have made a period `segment 'code'` into `CODE`. TASM does not let a segment that `.model` declares take another class, so a `.model` module whose code needs another class declares its segment by hand under the same name and adds what `.model` gave it, the empty `_DATA` and the `DGROUP` group (assembler.md).
+- **The linker version may be undecidable.** TLINK 3.0 (from Turbo Assembler 2.0's package) links UW2 to the same two-byte result as 3.01 once C0's `_DATA` is word-aligned (with C0's paragraph-aligned `_DATA` it puts `_DATA` at file 65EA0 where 3.01 puts it at 65E94, and 19,856 bytes differ); TLINK 4.0, from Borland C++ 2.0, gives the same two bytes as well. With the classes split, all three link UW2 byte-identical (3.0 with the word-aligned `_DATA`), so the build keeps TLINK 3.01, the one in Turbo C++ 1.01. Combine types are not the cause either: making every seg003 module's segment stack instead of public left the same two bytes, and private or common changed 466,893 and 490,055 bytes.
+- **TLINK's overlay padding is not cleared.** It fills the paragraph padding after each overlay's code and fixup list from a buffer it does not clear, so those bytes depend on its heap, which depends on everything linked before. In UW2.EXE and the exact link they are all 0; UW2's modding link, whose extracted data names code offsets where the exact link has bytes, leaves 4 bytes of old code after one overlay's fixups once seg003 and seg004 have a class of their own. Nothing reads them (the overlay manager loads an overlay by the code and fixup sizes in its stub), but a gate that requires the unchanged modding build to equal the exact link must normalise them: `tools/modding.py`'s `clear_overlay_padding` sets them to 0 in the modding EXE only.
 
 ## Command line
 
