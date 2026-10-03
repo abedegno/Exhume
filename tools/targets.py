@@ -38,7 +38,7 @@ def main(argv):
     for i, (ida, o, st) in enumerate(procs):
         nxt = procs[i + 1][1] if i + 1 < len(procs) else end
         orig, how = names.get(ida, ('', ''))
-        c = orig if orig and how in ('anchor', 'confirmed') else ida
+        c = orig if orig and how in ('anchor', 'confirmed', 'kin-same', 'kin-near') else ida
         print(f'{c}\t{ida}\t0x{o - org:X}\t0x{nxt - o:X}')
 
 if __name__ == '__main__':
