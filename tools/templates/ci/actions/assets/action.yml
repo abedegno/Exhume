@@ -1,0 +1,30 @@
+{{assets_comment}}
+name: {{assets_title}}
+description: Fetch and decrypt the private game and toolchain bundle
+inputs:
+  deploy-key:
+    description: the read-only deploy key of {{bundle_repo}} (secrets.{{deploy_secret}})
+    required: true
+  age-key:
+    description: the bundle's age secret key (secrets.{{age_secret}})
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Fetch and decrypt the bundle
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.deploy-key }}
+        {{age_env}}: ${{ inputs.age-key }}
+      run: |
+        set -euo pipefail
+        umask 077
+        key="$RUNNER_TEMP/{{tmp_key}}"; hosts="$RUNNER_TEMP/{{tmp_hosts}}"
+        printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > "$key"
+        # GitHub's published host key (api.github.com/meta), so the clone trusts nothing else
+        echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$hosts"
+        GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$hosts -o StrictHostKeyChecking=yes" \
+          git clone -q --depth 1 git@github.com:{{bundle_repo}}.git "$RUNNER_TEMP/{{tmp_clone}}"
+        rm -f "$key" "$hosts"
+        {{ci_assets}} "$RUNNER_TEMP/{{tmp_clone}}/{{bundle_file}}" "$RUNNER_TEMP/{{tmp_assets}}"
+        rm -rf "$RUNNER_TEMP/{{tmp_clone}}"

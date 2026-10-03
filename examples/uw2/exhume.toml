@@ -16,7 +16,7 @@ matched = "${EXHUME_MATCHED:-matched.txt}"
 map = "${EXHUME_MAP:-map}"
 build = "${EXHUME_BUILD:-build}"       # objects (build/STEM/STEM.OBJ), the link, the queue
 queue = "queue"                        # relative to build
-exclude = ["port"]                     # relative to src: the host port's own code, which the DOS build never compiles
+exclude = ["port", "replay"]           # relative to src: the host port's own code and the record and replay C, which the DOS build never compiles as game sources
 
 [binary]
 exe = "${UW2_EXE:-~/UWGOG/UW2/UW2.EXE}"
@@ -87,3 +87,269 @@ exact_exe = "LINK/out/UW2.EXE"
 mod_exe = "MODLINK/out/UW2.EXE"
 # `gate.py boot`: title, introduction, main menu
 boot = ["w:5000", "s:title", "w:15000", "s:intro", "k:Escape", "w:3000", "k:Escape", "w:3000", "s:menu"]
+
+[port]
+# The native port (docs/port.md): tools/portcheck.py, portbuild.py, portstubs.py,
+# layoutcheck.py, intaudit.py. UW2Decomp's src/port holds compat.h, the stand-in headers, the
+# platform layer, the C that replaces the assembly modules, the translated modules and the stubs.
+dir = "src/port"
+shared = ["src/replay"]                # REPLAY.C: compiled by the port and by the replay DOS build
+out = "port"                           # <build>/port, <build>/port-debug, <build>/port-cov
+exe = "uw2port"
+backend = "sdl3"
+optimise = ["3d", "gfx", "x86"]        # the translated modules, their machine and the graphics C: -O2
+extracted_by = "tools/extract.py"
+
+[port.stub_notes]
+# what each generated stub file's names are, for its header (tools/portstubs.py)
+"exedata.c" = "the far data tools/extract.py takes from UW2.EXE (renderer tables, model data, stdat and the names inside it)"
+"dgroup.c" = "the DGROUP gaps tools/extract.py places (data no C source defines yet)"
+"borland.c" = "Borland's C library (the port's stand-in headers and compat.h)"
+
+[port.layout]
+# tools/layoutcheck.py: the records UW2 reads from or writes to its files, or lays over bytes
+# read from them; each must have the same layout on the host as under Turbo C
+io_calls = ['fread', 'fwrite', 'read', 'write', 'intoFarBuffer\w*', 'FarWrite\w*', 'movedata', 'memcpy',
+            'memmove', '_fmemcpy', 'get_arc', 'put_arc', 'xorread', 'xorwrite']
+[port.layout.file_records]
+Player = "PLAYER.DAT: xorread and xorwrite move 0x37D bytes of it (PLAYDATA.C)"
+PlayerStore = "PlayerDat, the same 0x37E bytes seen whole"
+LevelBlock = "a LEV.ARK level block, 0x7E08 bytes, read and written whole"
+Object = "the mobile object records inside a LevelBlock"
+StaticObj = "the 8-byte static object records inside a LevelBlock"
+Tile = "the tile map inside a LevelBlock"
+Link = "the link words inside objects and tiles"
+Anim = "the animation overlay records of LEV.ARK"
+ATM = "the automap note records of LEV.ARK"
+SCDWork = "the schedule work area, which SCD.ARK blocks are read into"
+SCDRow = "SCD.ARK schedule rows"
+SCDParams = "the parameters inside an SCD row"
+SCDClock = "the per-level clocks of an SCD block"
+Creature = "OBJECTS.DAT critter records, 0x30 bytes each (CREATURE.C)"
+ComObj = "COMOBJ.DAT, the common object table"
+Weapon = "OBJECTS.DAT weapon records"
+Armour = "OBJECTS.DAT armour records"
+Container = "OBJECTS.DAT container records"
+Light = "OBJECTS.DAT light records"
+FontInfo = "the 12-byte header of a .SYS font file (GRFX.C)"
+Bitmap = "the header of a picture read from an art file"
+
+[[port.vendor]]
+# fetched by tools/setup-sound.sh, never committed (LGPL-2.1; docs/third-party.md)
+name = "Nuked OPL3"
+dir = "tools/nuked-opl3"
+sources = ["opl3.c"]
+define = "UW2_HAVE_OPL"
+for = "sound/audio.c"
+missing = "no OPL emulator (tools/setup-sound.sh)"
+
+[[port.pkg]]
+# libmt32emu (munt, LGPL-2.1-or-later), linked dynamically when pkg-config finds it
+name = "mt32emu"
+define = "UW2_HAVE_MT32EMU"
+for = "sound/audio.c"
+label = "libmt32emu"
+missing = "no libmt32emu (brew install mt32emu, or make setup-libs)"
+
+[fuzz]
+# tools/fuzzasm.py: UW2's 35 routine targets and fuzzhost.c's UW2 side (regions, C entries)
+targets = "${EXHUME}/examples/uw2/port/fuzz_targets.py"
+host_glue = "${EXHUME}/examples/uw2/port/fuzzhost-uw2.c"
+main = "sys/main.c"                    # the port file fuzzhost replaces
+
+[asm2c]
+# tools/asm2c.py: UW2's 26 translated modules and their hand-written ranges; the overrides (C for
+# single instructions of UW2's) are UW2Decomp's own, in its tools/asm2c.py
+spec = "${EXHUME}/examples/uw2/port/asm2c_spec.py"
+overrides = "tools/asm2c.py"
+
+[sound]
+# tools/ailcheck.py: UW2's AIL 2 music drivers, by runtime/port/sound/aildrv.h's kinds, in the
+# game's directory ([replay] data): Ad Lib, Sound Blaster FM, SB Pro 1, Pro Audio Spectrum,
+# SB Pro 2, MT-32
+drivers = { 1 = "SOUND/DM02.ADV", 2 = "SOUND/DM03.ADV", 3 = "SOUND/DM04.ADV", 4 = "SOUND/DM06.ADV", 5 = "SOUND/DM07.ADV", 6 = "SOUND/DM05.ADV" }
+# the project's own C for the sound library: the FM drivers' time-variant effects (Origin's
+# ALE.INC, translated from DM03.ADV in UW2Decomp), which plug into runtime/port/sound/yamaha.c's
+# struct AilFmExt as uw2_tvfx (port/ailgame.h's AIL_FM_EXT). Exhume holds no game code.
+extensions = ["src/port/sound/tvfx.c"]
+
+[ci]
+# tools/citemplates.py: UW2Decomp's values for the CI templates (docs/ci-bundle.md)
+vars = "${EXHUME}/examples/uw2/ci.toml"
+
+[replay]
+# The record and replay harness (docs/port.md, "Verifying a port"): tools/replay.py,
+# golden.py, replaydos.mjs. Sessions are tests/replay/NAME.rec (with NAME.cfg for a sound
+# card); goldens tests/replay/golden/NAME. REPLAY.C is runtime/replay/replay.c's instance.
+sessions = "tests/replay"
+golden = "tests/replay/golden"
+magic = "UW2R"
+exe_name = "UW2.EXE"
+data = "${UW2_DIR:-~/UWGOG/UW2}"
+data_skip = ["SAVE0.pristine"]
+cfg_path = "DATA/UW.CFG"               # a session's sound configuration, in the game's tree
+saves = ["SAVE1", "SAVE2", "SAVE3", "SAVE4"]
+shared_opts = "-mm -1 -G -O -Y -d"     # REPLAY.C in the replay DOS build
+# the replay DOS build's link: the modding build, to which replay.py adds --out, --obj, --add
+link = "{python} {exhume}/examples/uw2/link.py --config {config} --mod"
+port_sound_logs = ["--ail-log", "--hw-log"]
+driver_check = "{python} {exhume}/tools/ailcheck.py --config {config} {ail} {hw}"
+driver_marker = "register_driver"      # a session whose AIL log registers no driver has no music card
+order = ["newgame", "walk", "sound", "soundfm", "soundmt", "items", "talk", "load"]
+c0_signature_at = 8                    # DGROUP starts 4 bytes before C0's _DATA (docs/case-study-uw2.md)
+stage_from = { load = "items" }
+
+[replay.segments]
+# far pointers kept in game state: SEGS' first block is seg_370D (EXE paragraph 370Dh), and
+# every EXE paragraph from 3705h (the far data) to 7600h (past DGROUP) moves with the load
+# segment. The slots are all the eight sessions have: seg003's data at 07D2 (the frame
+# buffer's), 0958, 0B0C and 0B1A, the far pointers GRDISP.ASM keeps at 553C..5541, and the
+# saved SS at 558C and 55EC.
+first_block_para = 0x370D
+exe_range = [0x3705, 0x7600]
+slots = { "GFX" = [0x7D2, 0x958, 0xB0C, 0xB1A, 0x553C, 0x553E, 0x5540, 0x558C, 0x55EC] }
+
+[replay.nulls]
+# DS:0..3 is the tail of ovr167's last overlay stub entry: CD 3F's 27 06 00 while ovr167 is
+# not loaded, 06 and the overlay's segment while it is (docs/port.md, "Null pointers"), then 00
+ds_forms = ["27060000", "06????00"]
+sum_from = 4                           # UW2's C0 sums DS:4..30h, where stock Turbo C's sums from DS:0
+sum_to = 0x31
+sum_expect = 0xCA5
+
+[[replay.mask]]
+section = "GFX"
+lo = 0x4E00
+hi = 0x4FA8
+scope = "always"
+why = "seg003's private stack (GRCORE.ASM switches to 370D:4FA8): interrupts push onto it whenever they come"
+[[replay.mask]]
+section = "GFX"
+lo = 0x5480
+hi = 0x5548
+scope = "always"
+why = "the stack GRENTRY.ASM and GRDISP.ASM switch to (SP 5548h, saved at 5588h); with a sound card the Sound Blaster's interrupt pushes onto it too, down to 54E9h (the bytes below are never written)"
+[[replay.mask]]
+section = "GFX"
+lo = 0x652
+hi = 0x654
+scope = "always"
+why = "GRMISC.ASM's _46: the low word of the real clock after each 3D frame, for the retrace wait's time-out"
+[[replay.mask]]
+section = "NULL"
+lo = 0x67                              # 33h + 4 * 0Dh
+hi = 0x6B
+scope = "always"
+why = "IRQ 5's vector (int 0Dh), which the digital driver points at its handler while a buffer plays"
+[[replay.mask]]
+section = "NULL"
+lo = 0x6F                              # 33h + 4 * 0Fh
+hi = 0x73
+scope = "always"
+why = "IRQ 7's vector (int 0Fh), the same at the Sound Blaster's usual IRQ"
+[[replay.mask]]
+section = "GFX"
+lo = 0x558A
+hi = 0x558E
+scope = "cross"
+why = "GRDISP.ASM's saved SS:SP"
+
+[[replay.string_junk]]
+# GRCORE's string entries copy the string, its 0 and one byte more to 370D:4FA8
+section = "GFX"
+start = 0x4FA8
+len = 0x84
+
+[replay.cfgs]
+# DATA\UW.CFG for the sessions with sound: the music card (3, Sound Blaster FM, DM03.ADV, or 5,
+# Roland MT-32, DM05.ADV, on js-dos's MPU-401 at 330h) and the speech card (1, Sound Blaster
+# digital, DD01.ADV, or 0 for none, so every effect is played on the music card), each with its
+# IRQ, port and DMA
+sound = "3 7 220 1 sound\r\n1 7 220 1 speech\r\n"
+soundfm = "3 7 220 1 sound\r\n0 -1 -1 -1 speech\r\n"
+soundmt = "5 2 330 -1 sound\r\n0 -1 -1 -1 speech\r\n"
+
+[replay.derive]
+# soundfm: sound with every effect on the FM chip; soundmt: on a Roland MT-32, with every wait
+# doubled (DM05.ADV uploads each theme's timbres as system exclusive messages with a wait of
+# vertical retraces after each, so the way into the game takes longer)
+soundfm = { from = "sound" }
+soundmt = { from = "sound", wait_scale = 2 }
+
+[replay.steps]
+# Steps for tools/replaydos.mjs. Timings are generous: the recording does not depend on them,
+# only on the inputs arriving where the game reads them. "@NAME" takes NAME's steps.
+# the way into the game: the title cutscene, Escape twice through the introduction (no saved
+# game, so it starts after the title), Create Character with Enter for every default (male,
+# right-handed, fighter, two skill picks, the first portrait, standard difficulty), the name
+# Avatar, and Yes; a name starting with _ is not a session
+_chargen = [
+    "w:14000", "k:Escape", "w:2500", "k:Escape", "w:3500", "k:Enter", "w:4000", "k:Enter",
+    "w:2000", "k:Enter", "w:2000", "k:Enter", "w:2000", "k:Enter", "w:2000", "k:Enter", "w:2000",
+    "k:Enter", "w:2000", "k:Enter", "w:2000", "k:Enter", "w:2000", "t:Avatar", "w:1000", "k:Enter",
+    "w:2000", "k:Enter"
+]
+# boot, the title cutscene, the main menu, a new character, sixteen seconds in the game;
+# tools/replaydos.mjs then sends F12
+newgame = [
+    "@_chargen", "w:4000", "s:ingame1", "w:6000", "s:ingame2", "w:6000"
+]
+# newgame's way into the game, then about forty seconds in the 3D view: walk forward (w held),
+# turn left and right (a, d), look up and down and level again (1, 3, 2), step back (s), slide
+# (z, c) and click in the view, so that frames from many positions, a pitched view and a pick
+# frame are compared
+walk = [
+    "@_chargen", "w:6000", "s:ingame1", "h:w,1200", "w:800", "h:a,700", "w:600", "h:w,1500",
+    "w:600", "h:d,1400", "w:600", "k:1", "w:800", "k:1", "w:800", "s:lookup", "k:3", "w:600",
+    "k:3", "w:600", "k:3", "w:800", "s:lookdown", "k:2", "w:800", "h:s,600", "w:600", "h:z,600",
+    "w:600", "h:c,600", "w:600", "h:d,900", "w:600", "h:w,2000", "w:800", "s:ingame2",
+    "c:left,150", "w:2000", "h:a,1200", "w:600", "h:w,1500", "w:3000", "s:ingame3"
+]
+# the way into the game with a sound card ([replay.cfgs]), then fight mode (F1, which draws the
+# weapon and asks for theme 5), attacks into the air (the right button held in the view: the
+# swing's effects on the digital channel), walking and turning, and the music playing on long
+# enough for theme 5 (60 s) to end and the game to choose the next
+sound = [
+    "@_chargen", "w:6000", "s:ingame1", "k:F1", "w:800", "c:right,1200", "w:1500", "c:right,1200",
+    "w:1500", "h:w,1200", "w:800", "h:a,700", "w:600", "c:right,1200", "w:1500", "h:w,1500",
+    "w:600", "h:d,1400", "w:600", "c:right,1500", "w:2000", "s:ingame2", "w:12000", "s:ingame3",
+    "w:40000", "s:ingame4"
+]
+# a saved game loaded from the main menu ([replay.stage_from]: the one the items session saves):
+# the title, Escape twice, Journey Onward (Enter), slot 1 "first" (Enter), and a step
+load = [
+    "w:14000", "k:Escape", "w:2500", "k:Escape", "w:3500", "s:menu", "k:Enter", "w:3000",
+    "s:slots", "k:Enter", "w:6000", "s:loaded", "h:w,800", "w:1500", "s:load_end"
+]
+# the Avatar's room (pointer moves are a corner slam, M, then a move in the 640 by 400 frame):
+# get mode (F3) and the book on the floor into the second inventory slot; a step towards the
+# sack, the sack into the first slot; use mode (F2) on it, which opens it; the map in it, which
+# opens the automap; a note there, "hello"; Escape back; look mode (F5) at the next thing in
+# the sack; the statistics panel and back (F7 twice); a save to slot 1 described "first"
+# (Ctrl+S, Enter), a turn, a restore of slot 1 (Ctrl+R, Enter) and a few steps
+items = [
+    "@_chargen", "w:6000", "k:F3", "w:500", "M", "m:395,265", "w:300", "c:right,200", "w:1500",
+    "M", "m:530,185", "w:300", "c:left,200", "w:1500", "s:items1", "h:d,390", "w:500", "h:w,250",
+    "w:600", "M", "m:232,235", "w:300", "c:right,200", "w:1500", "M", "m:500,178", "w:300",
+    "c:left,200", "w:1500", "k:F2", "w:500", "M", "m:500,178", "w:300", "c:right,200", "w:2000",
+    "s:items2", "M", "m:500,178", "w:300", "c:right,200", "w:3000", "M", "m:300,200", "w:300",
+    "c:left,200", "w:1500", "t:hello", "w:500", "k:Enter", "w:1500", "s:automap", "k:Escape",
+    "w:2500", "k:F5", "w:500", "M", "m:535,178", "w:300", "c:right,200", "w:2000", "k:F7",
+    "w:2000", "s:stats", "k:F7", "w:2000", "k:Control+s", "w:1500", "k:Enter", "w:1500", "t:first",
+    "w:800", "k:Enter", "w:4000", "s:saved", "h:a,1000", "w:800", "k:Control+r", "w:1500",
+    "k:Enter", "w:5000", "s:restored", "h:w,600", "w:1500", "s:items3"
+]
+# out of the Avatar's room (left, forward, use mode on the door, through it), east along the
+# corridor to the great hall and into it, where Nystul is: talk mode (F4) on him, and the
+# answers to his conversation (1). The screenshots are part of the session: they take time,
+# and where the people in the hall stand depends on it
+talk = [
+    "@_chargen", "w:6000", "h:a,2400", "w:500", "h:w,700", "w:400", "h:w,700", "w:400", "h:w,700",
+    "w:400", "k:F2", "w:400", "M", "m:240,150", "w:300", "c:right,200", "w:2500", "h:w,1500",
+    "w:400", "h:w,1500", "w:400", "h:a,1200", "w:400", "h:d,2400", "w:400", "h:w,2000", "w:400",
+    "h:w,2000", "w:400", "h:a,1200", "w:400", "s:corridor", "h:d,440", "w:400", "s:east",
+    "h:w,2600", "w:400", "s:hall_door", "h:a,780", "w:400", "s:north", "h:w,900", "w:400",
+    "s:hall", "h:w,600", "w:400", "s:nystul_near", "k:F4", "w:400", "M", "m:240,170", "w:300",
+    "c:right,200", "w:3000", "s:nystul", "k:1", "w:3000", "s:talk1", "k:1", "w:3000", "s:talk2",
+    "k:1", "w:3000", "s:talk_end"
+]

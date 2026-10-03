@@ -1,0 +1,68 @@
+{{linux_tools_comment}}
+name: Linux tools
+description: Install and cache the tools the gate and the port need on an Ubuntu runner
+inputs:
+  full:
+    description: also install DOSBox-X and the LLVM tools ({{test_full}})
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: System packages
+      shell: bash
+      env:
+        FULL: ${{ inputs.full }}
+      run: |
+        pkgs="clang mtools p7zip-full age ninja-build pkg-config"
+        if [ "$FULL" = true ]; then pkgs="$pkgs dosbox-x llvm-18 libclang-rt-18-dev"; fi
+        sudo apt-get update -qq
+        # shellcheck disable=SC2086
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $pkgs >/dev/null
+        clang --version | head -1
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+        cache-dependency-path: {{requirements}}
+    - name: Python packages
+      shell: bash
+      run: |
+        python -m venv {{venv}}
+        {{venv}}/bin/pip install -q -r {{requirements}}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: npm
+{{node_cache_path}}
+    - name: Node packages
+      shell: bash
+      # dos-mcp's headless Chrome is only for js-dos, which CI never uses (emu2 and DOSBox-X)
+      env:
+        PUPPETEER_SKIP_DOWNLOAD: "true"
+      run: {{npm_ci}}
+    - name: Cache emu2
+      uses: actions/cache@v4
+      with:
+        path: {{emu2_dir}}
+        key: emu2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('{{emu2_script}}', '{{emu2_patch}}') }}
+    - name: Cache SDL3 and libmt32emu
+      uses: actions/cache@v4
+      with:
+        path: {{libs_dir}}
+        key: libs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('{{libs_script}}') }}
+    - name: Cache Nuked OPL3
+      uses: actions/cache@v4
+      with:
+        path: {{nuked_dir}}
+        key: nuked-opl3-${{ hashFiles('{{sound_script}}') }}
+    - name: Build what is not cached
+      shell: bash
+      run: |
+        sh {{emu2_script}}
+        sh {{libs_script}}{{libs_args}}
+        export PKG_CONFIG_PATH="$PWD/{{libs_dir}}/lib/pkgconfig"
+        sh {{sound_script}}{{sound_args}}
+        {
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          echo "LD_LIBRARY_PATH=$PWD/{{libs_dir}}/lib"
+        } >> "$GITHUB_ENV"

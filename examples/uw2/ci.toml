@@ -1,0 +1,88 @@
+# UW2Decomp's values for tools/citemplates.py ([ci] vars in examples/uw2/exhume.toml): with
+# them the templates give UW2Decomp's own workflows and actions, byte for byte
+# (examples/uw2/prove-port.sh ci). UW2Decomp keeps its own copies of the setup scripts in
+# tools/, so nothing checks out Exhume.
+
+test = "make test"
+test_full = "make test-full"
+test_full_summary = "==== make test-full:"
+setup_name = "make setup (Turbo C++ and TASM from the bundle's disk images)"
+setup = "make setup"
+setup_libs = "make setup-libs"
+setup_sound = "make setup-sound"
+port = "make port"
+port_check = "make port-check"
+port_windows = "make PY=python port"
+port_check_windows = "make PY=python port-check"
+repocheck = "python3 tools/repocheck.py"
+nightly_cron = "17 3 * * *"
+exhume_checkout = ""
+repocheck_env = ""
+repocheck_exhume_checkout = ""
+requirements = "tools/requirements.txt"
+venv = ".venv"
+node_cache_path = ""
+npm_ci = "npm ci --no-audit --no-fund"
+emu2_dir = "tools/emu2"
+emu2_script = "tools/setup-emu2.sh"
+emu2_patch = "tools/emu2-date.patch"
+libs_dir = "tools/libs"
+libs_script = "tools/setup-libs.sh"
+libs_args = ""
+nuked_dir = "tools/nuked-opl3"
+sound_script = "tools/setup-sound.sh"
+sound_args = ""
+verify_dir = "build/replay/verify"
+golden_dir = "tests/replay/golden"
+coverage_doc = "docs/COVERAGE.md"
+coverage_data = "build/coverage/all.profdata"
+cleanup = "TC TASM build"
+assets_action = "uw2-assets"
+assets_title = "UW2 assets"
+deploy_secret = "UW2_ASSETS_DEPLOY_KEY"
+age_secret = "UW2_ASSETS_AGE_KEY"
+age_env = "UW2_ASSETS_AGE_KEY"
+bundle_repo = "abedegno/uw2-ci-assets"
+bundle_file = "uw2-ci-assets.tar.gz.age"
+tmp_assets = "uw2-assets"
+tmp_clone = "uw2-ci-assets"
+tmp_key = "uw2-assets-deploy-key"
+tmp_hosts = "uw2-known-hosts"
+ci_assets = "sh tools/ci-assets.sh"
+
+accuracy_comment = '''
+# make test, the accuracy suite (docs/BUILDING.md, "Testing" and "Continuous integration"):
+# the byte-exact DOS build gate, the port build, the quick routine fuzzing and the eight replay
+# sessions against their goldens. It needs the game and the Borland toolchain, which come from
+# the private bundle (the uw2-assets action), so it runs only where the repository's secrets
+# are given: pushes to main, a manual run, and pull requests from branches of this repository.
+# A pull request from a fork gets port.yml and repocheck.yml, which need no secrets.'''
+nightly_comment = '''
+# make test-full, nightly (docs/BUILDING.md, "Testing" and "Continuous integration"): the gate,
+# both port builds, every golden made again from DOS in DOSBox-X (each session twice, checked
+# identical), the sessions in the port and in the UBSan build, the sound drivers against the
+# real ones, the deep routine fuzzing and the coverage report. Like accuracy.yml it needs the
+# private bundle, so it runs only on the schedule and by hand. The job fails when a regenerated
+# golden differs from the committed one, and the coverage totals go to the job summary.'''
+port_comment = '''
+# The native port builds on Linux, macOS and Windows (docs/BUILDING.md, "Continuous
+# integration"): make port (compile and link with SDL3) and make port-check (the compile-only
+# measurement). Only the sources are needed: no game data, no Borland toolchain and no secrets,
+# so this runs on every push and every pull request, forks included. Nothing is run.'''
+repocheck_comment = '''
+# tools/repocheck.py (Python and script syntax, Markdown links, no game data or Borland
+# binaries committed), which needs neither the Borland toolchain nor UW2.EXE, so it runs on
+# every push and pull request, forks included. The gate itself runs in the pre-push hook
+# (`make hooks`) and in accuracy.yml (docs/BUILDING.md, "Continuous integration").'''
+linux_tools_comment = '''
+# The Linux side of `make setup` for CI (docs/BUILDING.md, "Continuous integration"): system
+# packages, Python with tools/requirements.txt in .venv, Node with dos-mcp, and the tools built
+# from source (emu2, SDL3 and libmt32emu, Nuked OPL3), each cached by the script that pins it.
+# Nothing here touches the game or the Borland toolchain, so every cached path is free of both.'''
+assets_comment = '''
+# Fetch and decrypt the CI asset bundle (docs/BUILDING.md, "Continuous integration"): the
+# owner's UW2 game files and Borland disk images, from the private repository uw2-ci-assets,
+# with its read-only deploy key, decrypted with the age key into $RUNNER_TEMP/uw2-assets. Sets
+# UW2_EXE, UW2_DIR, TC_DISKS and TASM_DISKS for the later steps. Nothing is listed or printed.
+# The calling workflow must remove $RUNNER_TEMP/uw2-assets, TC, TASM and build in a final
+# `if: always()` step, and must never cache or upload anything from them.'''

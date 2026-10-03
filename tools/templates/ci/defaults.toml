@@ -1,0 +1,107 @@
+# tools/citemplates.py's defaults: a decompilation project that keeps Exhume as a checkout in
+# .exhume (pinned by EXHUME_REF), uses tools/templates/Makefile, and has its port configured in
+# exhume.toml ([port], [replay], [fuzz]). Its private bundle (docs/ci-bundle.md) holds game/
+# (the user's own copy of the program), tc/ and tasm/ (the Borland disk images). A project
+# overrides any of these in the file [ci] vars names; examples/uw2/ci.toml is UW2Decomp's.
+
+# the commands
+test = "make EXHUME=.exhume test"
+test_full = "make EXHUME=.exhume test-full"
+test_full_summary = "==== test full:"
+setup_name = "Unpack Turbo C++ and TASM from the bundle's disk images"
+setup = "sh .exhume/profiles/borland-tc101/setup-tc.sh \"$TC_DISKS\" toolchain/TC && sh .exhume/profiles/borland-tc101/setup-tasm.sh \"$TASM_DISKS\" toolchain/TASM"
+setup_libs = "sh .exhume/tools/setup-libs.sh tools/libs"
+setup_sound = "sh .exhume/tools/setup-sound.sh tools/nuked-opl3"
+port = "make EXHUME=.exhume port"
+port_check = "make EXHUME=.exhume port-check"
+port_windows = "make EXHUME=.exhume PY=python port"
+port_check_windows = "make EXHUME=.exhume PY=python port-check"
+repocheck = "python3 .exhume/tools/repocheck.py --root . --allow '^\\.exhume/'"
+nightly_cron = "17 3 * * *"
+
+# Exhume itself: checked out beside the project in every job that builds
+exhume_checkout = '''
+      - uses: actions/checkout@v4
+        with:
+          repository: abedegno/Exhume
+          ref: ${{ vars.EXHUME_REF || 'main' }}
+          path: .exhume
+          persist-credentials: false'''
+repocheck_env = ""
+repocheck_exhume_checkout = '''
+      - uses: actions/checkout@v4
+        with:
+          repository: abedegno/Exhume
+          ref: ${{ vars.EXHUME_REF || 'main' }}
+          path: .exhume'''
+
+# where things are
+requirements = ".exhume/tools/requirements.txt"
+venv = ".exhume/.venv"
+node_cache_path = "        cache-dependency-path: .exhume/package-lock.json"
+npm_ci = "npm ci --no-audit --no-fund --prefix .exhume"
+emu2_dir = ".exhume/tools/emu2"
+emu2_script = ".exhume/tools/setup-emu2.sh"
+emu2_patch = ".exhume/tools/emu2-date.patch"
+libs_dir = "tools/libs"
+libs_script = ".exhume/tools/setup-libs.sh"
+libs_args = " tools/libs"
+nuked_dir = "tools/nuked-opl3"
+sound_script = ".exhume/tools/setup-sound.sh"
+sound_args = " tools/nuked-opl3"
+verify_dir = "build/replay/verify"
+golden_dir = "tests/replay/golden"
+coverage_doc = "docs/COVERAGE.md"
+coverage_data = "build/coverage/all.profdata"
+cleanup = "toolchain build"
+
+# the private bundle (docs/ci-bundle.md)
+assets_action = "game-assets"
+assets_title = "Game assets"
+deploy_secret = "ASSETS_DEPLOY_KEY"
+age_secret = "ASSETS_AGE_KEY"
+age_env = "ASSETS_AGE_KEY"
+bundle_repo = "OWNER/PROJECT-ci-assets"
+bundle_file = "ci-assets.tar.gz.age"
+tmp_assets = "game-assets"
+tmp_clone = "ci-assets"
+tmp_key = "assets-deploy-key"
+tmp_hosts = "assets-known-hosts"
+ci_assets = "sh .exhume/tools/ci-assets.sh"
+
+# the header comments
+accuracy_comment = '''
+# The accuracy suite (Exhume's docs/port.md, "Verifying a port"; docs/ci-bundle.md): the gate
+# (the exact link byte-identical to the original), the port build, the quick routine fuzzing and
+# every replay session against its golden. It needs the program and the Borland toolchain,
+# which come from the private bundle (the assets action), so it runs only where the
+# repository's secrets are given: pushes to main, a manual run, and pull requests from branches
+# of this repository. A pull request from a fork gets port.yml and repocheck.yml.'''
+nightly_comment = '''
+# The long tier, nightly (Exhume's tools/test.py full): the gate, both port builds, every golden
+# made again from DOS in DOSBox-X (each session twice, checked identical), the sessions in the
+# port and in the UBSan build, the sound drivers against the real ones, the deep routine fuzzing
+# and the coverage report. It needs the private bundle, so it runs only on the schedule and by
+# hand. The job fails when a regenerated golden differs from the committed one, and the coverage
+# totals go to the job summary.'''
+port_comment = '''
+# The native port builds on Linux, macOS and Windows: the port's build and its compile-only
+# measurement. Only the sources are needed: no game data, no toolchain and no secrets, so this
+# runs on every push and every pull request, forks included. Nothing is run.'''
+repocheck_comment = '''
+# Exhume's tools/repocheck.py (script syntax, Markdown links, no executables, objects,
+# libraries, disk images or game data committed), which needs neither the toolchain nor the
+# program, so it runs on every push and pull request, forks included. The gate runs in the
+# pre-push hook and in accuracy.yml.'''
+linux_tools_comment = '''
+# The Linux tools for CI (docs/ci-bundle.md): system packages, Python with Exhume's
+# requirements, Node with dos-mcp, and the tools built from source (emu2, SDL3 and libmt32emu,
+# Nuked OPL3), each cached by the script that pins it. Nothing here touches the game or the
+# toolchain, so every cached path is free of both.'''
+assets_comment = '''
+# Fetch and decrypt the CI asset bundle (docs/ci-bundle.md): the owner's own copy of the
+# program and the Borland disk images, from a private repository with Actions disabled, cloned
+# with its read-only deploy key and decrypted with the age key into $RUNNER_TEMP. Sets the
+# variables tools/ci-assets.sh prints for the later steps. Nothing is listed or printed. The
+# calling workflow must remove the decrypted tree and everything built from it in a final
+# `if: always()` step, and must never cache or upload anything from them.'''

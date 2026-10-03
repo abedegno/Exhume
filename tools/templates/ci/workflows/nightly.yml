@@ -1,0 +1,85 @@
+{{nightly_comment}}
+name: nightly
+on:
+  schedule:
+    - cron: "{{nightly_cron}}"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+jobs:
+  make-test-full:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+{{exhume_checkout}}
+      - uses: ./.github/actions/linux-tools
+        with:
+          full: "true"
+      - uses: ./.github/actions/{{assets_action}}
+        with:
+          deploy-key: ${{ secrets.{{deploy_secret}} }}
+          age-key: ${{ secrets.{{age_secret}} }}
+      - name: {{setup_name}}
+        run: {{setup}}
+      - name: {{test_full}}
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/logs"
+          {{test_full}} 2>&1 | tee "$RUNNER_TEMP/logs/make-test-full.log"
+      - name: The goldens made again are the committed ones
+        if: success() || failure()
+        run: |
+          git status --porcelain --untracked-files=all -- {{golden_dir}} > "$RUNNER_TEMP/logs/golden-changes.txt"
+          n=$(grep -c . "$RUNNER_TEMP/logs/golden-changes.txt" || true)
+          if [ "$n" != 0 ]; then
+            # the changed screens (DOS screenshots), for the artifact
+            git status --porcelain --untracked-files=all -- '{{golden_dir}}/*.png' | awk '{print $NF}' | while read -r f; do
+              [ -f "$f" ] && mkdir -p "$RUNNER_TEMP/golden-changed/$(dirname "$f")" && cp "$f" "$RUNNER_TEMP/golden-changed/$f"
+            done
+            echo "::error::$n files under {{golden_dir}} differ from the committed goldens (golden-changes.txt in the artifact)"
+            exit 1
+          fi
+          echo "every regenerated golden is identical to the committed one"
+      - name: Summary
+        if: success() || failure()
+        run: |
+          {
+            echo "## {{test_full}}"
+            echo '```'
+            sed -n '/^{{test_full_summary}}/,$p' "$RUNNER_TEMP/logs/make-test-full.log" 2>/dev/null || echo "(no summary: {{test_full}} did not finish)"
+            echo '```'
+            if [ -s "$RUNNER_TEMP/logs/golden-changes.txt" ]; then
+              echo "**Goldens:** $(grep -c . "$RUNNER_TEMP/logs/golden-changes.txt") files differ from the committed ones."
+            fi
+            if [ -f {{coverage_data}} ]; then
+              echo "## Coverage"
+              sed -n '/^## Totals/,/^## By directory/p' {{coverage_doc}} | sed '1d;$d'
+              git diff --quiet -- {{coverage_doc}} || echo "(tonight's {{coverage_doc}} differs from the committed one)"
+            else
+              echo "No coverage report: the coverage step did not run."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      # Only pictures and text logs (see accuracy.yml). The regenerated goldens' screens are
+      # DOS screenshots and may go too; their golden.json files hold only digests.
+      - name: Upload the difference pictures and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: make-test-full-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/logs/*.log
+            ${{ runner.temp }}/logs/*.txt
+            {{verify_dir}}/**/diff_ck*.png
+            {{verify_dir}}/**/port.log
+            ${{ runner.temp }}/golden-changed/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the game data and everything built from it
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/{{tmp_assets}}" "$RUNNER_TEMP/{{tmp_clone}}" "$RUNNER_TEMP/{{tmp_key}}" {{cleanup}}

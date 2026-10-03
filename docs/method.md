@@ -4,6 +4,7 @@ Exhume rebuilds an old DOS program from source that the original tools compile, 
 
 ```
 fingerprint -> map -> match -> verify -> link -> run -> prove liveness -> modding build -> readability pass
+            -> port, verified against DOS -> CI with private data
 ```
 
 Every stage ends in a check that a machine can repeat. Nothing is accepted on judgement alone: a function matches or it does not, a file verifies or it does not, the linked EXE equals the original or exediff says where it differs.
@@ -25,6 +26,8 @@ Every compile, assembly, library and link goes through `tools/dosrun.mjs`, which
 - `auto`, or unset: emu2 if it is built, else DOSBox-X if it is installed, else js-dos. `node tools/dosbackend.mjs` prints the one in use.
 
 `EXHUME_EMU2`, `EXHUME_DOSBOX_X` and `EXHUME_DOSBOX_STAGING` name a binary. The program itself (`tools/rungame.mjs`, `gate.py boot`) always runs in js-dos, which gives it a screen, keys and memory reads.
+
+On a case-sensitive host (Linux, and so CI), emu2 creates each file under the case the DOS program gave it (Turbo C writes `skills.obj` for `SKILLS.C`), so tools/dosbackend.mjs finds a run's outputs without regard to case; any tool that reads DOS outputs or a game's files on Linux must do the same (the port's platform layer looks up every DOS path a component at a time without case). js-dos drops sessions part of the way through a batch now and then, more often with several at once: the build tools retry a failed batch's sources alone. And dos-mcp's `fsRead` refuses to read a path twice, even one that failed because the file was not there yet: poll for a file by listing its directory, then read it once.
 
 How many DOS sessions run at once follows the backend (`tools/dosbatch.py`): one per core up to 12 in a native DOS, three in js-dos, where each session is a headless Chrome and more of them slow each other and damage more outputs. `EXHUME_DOS_SESSIONS` or `[toolchain] sessions` overrides it. The gate, `build.py --all` and the modding build put several sources in each session and build each source that failed in a batch once more alone.
 
@@ -98,6 +101,18 @@ Make the tree readable without changing a byte (skills/readability-pass, docs/re
 - First the gate: `tools/gate.py check` proves the whole tree in one command (every source matches and verifies, symbols.tsv rebuilds from scratch, the exact link is byte-identical to the original, the unchanged modding build equals the exact link), recompiling only what changed, including every source that includes a changed header. A pre-push hook runs it; hosted CI runs `tools/repocheck.py`, which needs neither the toolchain nor the program.
 - Then shared headers (`tools/declinv.py`, `tools/structrec.py`, `tools/headergen.py`), named constants, struct fields and accessors (`tools/rawoffsets.py`, `tools/accessors.py`), original file names and subsystem directories (tools find sources by segment, `tools/sources.py`), and comments, subsystem notes and a findings page (`tools/comments.py`, which proves an edit changed only comments).
 
+## 10. Port and verify
+
+Build the same sources natively for a modern host, and prove the port behaves as the original (skills/port-and-verify, docs/port.md). One tree, two builds: every shared-source change is the original tokens under the original compiler, so the gate keeps proving the DOS bytes.
+
+- Measure first (`tools/portcheck.py`), then make the shared C compile and link with a portability layer (runtime/port/compat.h and stand-in headers), explicit widths (`tools/widths.py`), a promotion audit (`tools/intaudit.py`), a struct layout check against Turbo C in DOS (`tools/layoutcheck.py`) and link stubs (`tools/portstubs.py`), then replace the stubs: a platform layer with no SDL in its API, a paragraph map for segment arithmetic, the emulated hardware, the assembly modules.
+- Assembly that cannot be rewritten first goes through a static recompiler (`tools/asm2c.py`): instruction by instruction from the matched source and the bytes the gate proves, self-modifying code read as data, no JIT. It becomes readable C a routine at a time, one implementation of each.
+- Verify by differential replay: hooks at every read of the outside world, a replay DOS build that records and replays them, state dumps compared at every checkpoint, golden references made from DOS (twice, identical) so the port is checked in seconds on every push, routine fuzzing against the original's bytes in Unicorn (`tools/fuzzasm.py`), and for a Miles AIL 2 game the sound drivers against the real ones (`tools/ailcheck.py`). The pre-push hook runs `make test`.
+
+## 11. CI with private data
+
+Run the gate and the accuracy suite on free public runners from an encrypted bundle in a private repository, opened only by the repository's own workflows, with safeguards that keep the data from ever being cached, uploaded or printed (skills/ci-bundle, docs/ci-bundle.md; `tools/citemplates.py` writes the workflows).
+
 ## What "done" means
 
 - Every code segment outside the C runtime library has source that matches whole and verifies.
@@ -106,3 +121,4 @@ Make the tree readable without changing a byte (skills/readability-pass, docs/re
 - Data no source owns yet is listed (UW2: about 83 KB of far data from the graphics and 3D modules, and eight small DGROUP gaps).
 - The modding build links changed sources of any size and runs, and the layout audit lists what still has to keep its length (UW2: the extracted far data and the assembly modules that address it by number).
 - The tree reads as source: shared headers, names for constants and fields, file names with their evidence, every file commented, the findings written down; and one command, run before every push, proves it still builds the original.
+- For a port: the same tree builds natively and replays every recorded session with the original's state and screen at every checkpoint, the saves byte-compatible both ways, on every host it supports; and the tests run before every push and in CI.

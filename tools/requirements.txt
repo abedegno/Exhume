@@ -1,0 +1,5 @@
+# The Python packages Exhume's tools use: python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
+# (CI caches them by this file). iced-x86 decodes instructions (match, verify, asm2c); Unicorn
+# runs original code for tools/fuzzasm.py and tools/ailcheck.py, development tools only (GPL-2.0).
+iced-x86==1.21.0
+unicorn==2.1.4

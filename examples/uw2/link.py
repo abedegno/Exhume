@@ -1,7 +1,7 @@
 """Link UW2.EXE from the matched objects with Turbo Link 3.01, headless in DOS, and compare.
 
     python3 examples/uw2/link.py [--config PATH] [--no-extract] [--out DIR] [--obj STEM=PATH ...]
-    python3 examples/uw2/link.py --mod [--config PATH] [--out DIR] [--obj STEM=PATH ...]
+    python3 examples/uw2/link.py --mod [--config PATH] [--out DIR] [--obj STEM=PATH ...] [--add STEM=PATH ...]
 
 REFERENCE IMPLEMENTATION, UW2 only, kept as UW2Decomp wrote it with paths from exhume.toml.
 The general parts (the date and name TLINK stores, the response file, library order,
@@ -10,6 +10,10 @@ profiles/borland-tc101/linker.md; the C0 patches and module lists are UW2's.
 
 --obj links another build of one object in place of <build>/STEM/STEM.OBJ (to try a changed
 source without disturbing the matched build).
+
+--add (with --mod only) links one more resident module that no source in the matched build has,
+after the last resident code module: the replay DOS build adds the record and replay code
+(UW2Decomp's src/replay/REPLAY.C, tools/replay.py's [replay] link) this way.
 
 --mod is the modding build (docs/link.md, "The modding build"): sources may change by any
 size. The layout comes from the last exact run (<build>/LINK/base, written by extract.py when
@@ -185,6 +189,13 @@ def main():
                            'tools/bssorder.py key sorts differently from the original\'s')
             open(os.path.join(objdir, k + '.OBJ'), 'wb').write(d)
             files.append(os.path.join(objdir, k + '.OBJ'))
+    added = [x.split('=', 1) for k, x in enumerate(a) if k and a[k - 1] == '--add']
+    if added and not mod: sys.exit('--add needs --mod: the exact link has only the matched objects')
+    resident = list(man['resident'])
+    for k, p in added:
+        open(os.path.join(objdir, k + '.OBJ'), 'wb').write(open(p, 'rb').read())
+        files.append(os.path.join(objdir, k + '.OBJ'))
+        resident.insert(resident.index('XFAR') if 'XFAR' in resident else len(resident), k)
     if bad: sys.exit('sources to correct before linking:\n  ' + '\n  '.join(bad))
     # through a response file: the module list is longer than a DOS command line
     late = ['+' + k for k in man['late']]
@@ -192,7 +203,7 @@ def main():
         ''.join(' '.join(late[i:i + 8]) + (' &\r\n' if i + 8 < len(late) else '\r\n') for i in range(0, len(late), 8)))
     files.append(os.path.join(LINKDIR, 'LIB.RSP'))
     batch.append('TLIB UWLIB @LIB.RSP')
-    objs = man['resident'] + ['/o'] + man['overlays'] + ['/o-']
+    objs = resident + ['/o'] + man['overlays'] + ['/o-']
     lines = []
     for i in range(0, len(objs), 8):
         lines.append(' '.join(objs[i:i + 8]) + (' +' if i + 8 < len(objs) else ''))

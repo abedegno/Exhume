@@ -5,7 +5,7 @@ description: Use when a byte-matching decompilation is complete or nearly so and
 
 # Prepare a matched decompilation for porting
 
-A matched decompilation is a reference, not yet a portable program. UW2 has not been ported; this list comes from what matching and linking it left open. Paths are relative to the Exhume checkout.
+A matched decompilation is a reference, not yet a portable program. This list comes from what matching and linking UW2 left open, and UW2Decomp's native port then met each item (docs/case-study-uw2.md, "The port"). When the list is done, skills/port-and-verify is the port itself. Paths are relative to the Exhume checkout.
 
 ## First: the modding build
 
@@ -17,8 +17,8 @@ A port reads the code before it changes it. Make the matched tree readable first
 
 ## Keep the matching tree as the reference
 
-- Never change the matched sources in place for a port. Branch or copy. The matched tree, its link and `exediff` are the regression test for any later clean-up that is meant to keep the bytes.
-- Clean-ups that keep the bytes (names, comments, types that compile the same, shared headers) go into the matched tree, each one proved by the gate (`tools/gate.py check`; skills/readability-pass).
+- One tree, two builds: the DOS build and the port compile the same sources (docs/port.md). Every change to a shared source must still compile to the original bytes, proved by the gate (`tools/gate.py check`); what cannot be spelled that way goes in the port's own C, never in a shared source. The matched tree, its link and `exediff` are the regression test for every port change.
+- Clean-ups that keep the bytes (names, comments, types that compile the same, shared headers, the portability macros of runtime/include/portable.h) go into the matched tree, each one proved by the gate (skills/readability-pass).
 
 ## What the matched tree still lacks (check each)
 
@@ -33,6 +33,7 @@ A port reads the code before it changes it. Make the matched tree readable first
 
 ## Checks that keep a port honest
 
-- Differential testing against the original running in DOS: drive both with the same inputs and compare saves, memory (dos-mcp `read_memory`, `search_memory`) and screenshots (`tools/rungame.mjs`).
-- Keep the save-file and data-file formats byte-compatible with the original unless there is a reason not to, and test round trips both ways.
-- Port one subsystem at a time behind the platform layer, and keep the DOS build linking and matching until the last DOS-only file goes.
+- Differential testing against the original running in DOS, at the program's own boundary: record every value it reads from the outside world, replay it in DOS and in the port, and compare the state at every checkpoint (`tools/replay.py`, golden references made from DOS, `tools/replay.py verify` on every push; docs/port.md, "Verifying a port"). Single routines on inputs no session gives them: `tools/fuzzasm.py`. Sound drivers write for write: `tools/ailcheck.py`. Screens pixel for pixel: the dumps hold video memory.
+- Keep the save-file and data-file formats byte-compatible with the original unless there is a reason not to, and test round trips both ways (UW2's sessions compare the saves DOS and the port write, byte for byte).
+- Port one subsystem at a time behind the platform layer, with link stubs for the rest (`tools/portstubs.py`), and keep the DOS build linking and matching the whole time.
+- Run the tests where they cannot be skipped: a pre-push hook (`make test`) and CI from an encrypted bundle (skills/ci-bundle).

@@ -1,0 +1,199 @@
+"""The port's configuration: exhume.toml's [port], [replay], [fuzz], [asm2c], [sound] and [test]
+sections with their defaults, for the tools that build, test and verify a native port of a
+matched decompilation (docs/port.md). Every path is relative to [project] root unless absolute.
+
+    import config, portcfg
+    cfg = config.load(path); P = portcfg.port(cfg); R = portcfg.replay(cfg)
+
+[port] (tools/portcheck.py, portbuild.py, portstubs.py, layoutcheck.py, intaudit.py, widths.py)
+    dir          the port's own C (default src/port): its compat.h, stand-in headers, platform
+                 layer, replacements and link stubs; the DOS build never sees it ([project] exclude)
+    compat       force-included into every game source (default DIR/compat.h)
+    stand_ins    Borland's headers for the host (default DIR/include), ahead of the host's
+    shared       directories of C that both the port and the replay DOS build compile, and the
+                 gate does not (default ["src/replay"]: the record and replay code)
+    out          the build directory's name under [project] build (default "port"; the debug and
+                 coverage builds go to OUT-debug and OUT-cov)
+    exe          the linked program's name (default "port")
+    name         the prefix of the program's messages, which tools read from its log (default exe)
+    backend      the platform backend under DIR/platform/ (default "sdl3"), its flags from pkg-config
+    optimise     directories under DIR compiled with -O2 in the normal build (default none)
+    game_std, port_std   the C dialects (default gnu89 for the game's C, gnu11 for the port's)
+    dos_only     the header comment that keeps a game source out of the port (default "port: dos-only")
+    defines      extra -D flags for every host compile (default ["-D_POSIX_C_SOURCE=200809L"])
+    stubs        the link stubs' directory (default DIR/stubs)
+    exe_data     the label portcheck gives names that are far data taken from the EXE
+    [[port.vendor]]  third-party C fetched at setup and compiled in when present: name, dir,
+                 sources, define, for (the port file that gets the define), hint
+    [[port.pkg]]     pkg-config packages linked when found: name, define, for, label, hint
+    [port.layout]    tools/layoutcheck.py: file_records {tag = why}, probe (the DOS compile line)
+    [port.audit]     tools/intaudit.py: width_types {name = [dos type, host type]}
+"""
+import os, sys
+here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
+EXHUME = os.path.dirname(here)
+
+
+class _NS(dict):
+    __getattr__ = dict.__getitem__
+
+
+def _path(cfg, p):
+    if p is None: return None
+    return os.path.normpath(os.path.join(cfg.root, os.path.expanduser(p)))
+
+
+def cli():
+    """(cfg, rest of the command line): `--config PATH` taken from this process's arguments
+    (sys.argv itself is never changed), and EXHUME_CONFIG set to it, so that every tool this one
+    imports or starts reads the same exhume.toml."""
+    import config
+    path, rest = config.pop_config(sys.argv[1:])
+    if path: os.environ['EXHUME_CONFIG'] = os.path.abspath(path)
+    return config.load(path), rest
+
+
+def port(cfg):
+    p = cfg.raw.get('port', {})
+    d = _path(cfg, p.get('dir', 'src/port'))
+    out = p.get('out', 'port')
+    exe = p.get('exe', 'port')
+    r = _NS(
+        dir=d,
+        compat=_path(cfg, p['compat']) if p.get('compat') else os.path.join(d, 'compat.h'),
+        stand_ins=_path(cfg, p['stand_ins']) if p.get('stand_ins') else os.path.join(d, 'include'),
+        shared=[_path(cfg, x) for x in p.get('shared', ['src/replay'])],
+        out=os.path.join(cfg.build, out),
+        out_name=out,
+        exe=exe,
+        name=p.get('name', exe),
+        backend=p.get('backend', 'sdl3'),
+        optimise=[os.path.join(d, x) + os.sep for x in p.get('optimise', [])],
+        game_std=p.get('game_std', 'gnu89'),
+        port_std=p.get('port_std', 'gnu11'),
+        dos_only=p.get('dos_only', 'port: dos-only'),
+        defines=list(p.get('defines', ['-D_POSIX_C_SOURCE=200809L'])),
+        stubs=_path(cfg, p['stubs']) if p.get('stubs') else os.path.join(d, 'stubs'),
+        vendor=[dict(v, dir=_path(cfg, v['dir'])) for v in p.get('vendor', [])],
+        pkg=list(p.get('pkg', [])),
+        layout=p.get('layout', {}),
+        audit=p.get('audit', {}),
+        size_probe_skip=p.get('size_probe_skip', ['portable.h']),
+    )
+    return r
+
+
+def variant_out(cfg, variant):
+    """build/port, build/port-debug or build/port-cov: the normal, UBSan and coverage builds."""
+    P = port(cfg)
+    return P.out if not variant else P.out + '-' + variant
+
+
+def shared_sources(cfg):
+    """The .C files both the port and the replay DOS build compile ([port] shared)."""
+    import glob
+    out = []
+    for d in port(cfg).shared:
+        out += glob.glob(os.path.join(d, '*.C')) + glob.glob(os.path.join(d, '*.c'))
+    return sorted(set(os.path.normpath(p) for p in out))
+
+
+def dos_only(cfg, path):
+    """A game source whose header comment carries [port] dos_only is DOS-specific (UW2: EMS.C's
+    int 67h calls); the port replaces it in its own C and never compiles it."""
+    return port(cfg).dos_only in open(path, encoding='latin1').read(4000)
+
+
+def game_sources(cfg):
+    """The game's C the port compiles: every .C of the DOS build but the dos-only ones, and the
+    shared C."""
+    import sources
+    srcs = [p for p in sources.all_sources(cfg) if p.upper().endswith('.C') and not dos_only(cfg, p)]
+    return srcs + shared_sources(cfg)
+
+
+def replay(cfg):
+    """[replay]: the record and replay harness, its sessions and the golden references
+    (tools/replay.py, golden.py, replaydos.mjs; docs/port.md, "Verifying a port")."""
+    r = cfg.raw.get('replay', {})
+    P = port(cfg)
+    run = cfg.raw.get('run', {})
+    out = _NS(
+        sessions=_path(cfg, r.get('sessions', 'tests/replay')),
+        golden=_path(cfg, r.get('golden', os.path.join(r.get('sessions', 'tests/replay'), 'golden'))),
+        work=os.path.join(cfg.build, r.get('work', 'replay')),
+        magic=r.get('magic', 'EXHR').encode('latin1'),
+        exe_name=r.get('exe_name', run.get('exe_name', 'GAME.EXE')),
+        data=os.path.expanduser(r.get('data', run.get('data', ''))),
+        data_skip=list(r.get('data_skip', run.get('skip', []))),
+        cfg_path=r.get('cfg_path'),                 # where a session's .cfg goes in the game's tree
+        saves=list(r.get('saves', [])),
+        hooks=list(r.get('hooks', ['GAME_TIME', 'KEY', 'MOUSE', 'MBUTTONS', 'JOY_READ', 'JOY_BUTTONS',
+                                    'WALL_TIME', 'SRAND', 'CHECKPOINT', 'STACK_JUNK', 'SND_READ', 'SLAVE_TIMER'])),
+        shared_opts=r.get('shared_opts', cfg.c_opts),
+        env=list(r.get('env', ['UWRPCK', 'UWRPTRACE', 'UWRPFB'])),
+        out_files=list(r.get('out_files', ['RECORD.OUT', 'STATE.OUT', 'NULLTRAP.LOG', 'TRACE.OUT', 'SNDCHECK.OUT'])),
+        link=r.get('link'),                         # the modding link command, with {out}, {objs}
+        port_args=list(r.get('port_args', ['--hidden', '--exit-on-halt', '--exit-after', '600000'])),
+        port_data_flag=r.get('port_data_flag', '--data'),
+        port_home_flag=r.get('port_home_flag', '--home'),
+        port_replay_flag=r.get('port_replay_flag', '--replay'),
+        port_sound_logs=list(r.get('port_sound_logs', [])),   # flags for the driver logs: [ail, hw]
+        order=list(r.get('order', [])),
+        stage_from=dict(r.get('stage_from', {})),
+        steps=dict(r.get('steps', {})),
+        cfgs=dict(r.get('cfgs', {})),
+        derive=dict(r.get('derive', {})),
+        mask=list(r.get('mask', [])),
+        string_junk=list(r.get('string_junk', [])),
+        segments=dict(r.get('segments', {})),
+        nulls=dict(r.get('nulls', {})),
+        sound_check=r.get('sound_check', True),
+        driver_check=r.get('driver_check'),          # a command run on the port's driver logs
+        dos_jobs=dict(r.get('dos_jobs', {'dosbox-x': 8, 'jsdos': 4})),
+        dosbox_conf=_path(cfg, r['dosbox_conf']) if r.get('dosbox_conf') else None,
+        c0_signature=r.get('c0_signature', cfg.profile.get('fingerprint', {}).get('dgroup_anchor', '')),
+        c0_signature_at=int(r.get('c0_signature_at', cfg.profile.get('fingerprint', {}).get('dgroup_anchor_offset', 4))),
+        port_exe_name=P.exe,
+        port_name=P.name,
+    )
+    return out
+
+
+def fuzz(cfg):
+    f = cfg.raw.get('fuzz', {})
+    return _NS(
+        targets=_path(cfg, f['targets']) if f.get('targets') else None,
+        host_glue=_path(cfg, f['host_glue']) if f.get('host_glue') else None,
+        main=f.get('main', 'sys/main.c'),            # the port file fuzzhost replaces
+    )
+
+
+def asm2c(cfg):
+    a = cfg.raw.get('asm2c', {})
+    return _NS(spec=_path(cfg, a['spec']) if a.get('spec') else None,
+               # a project Python file whose OVERRIDES (and PATCH_OVERRIDDEN) are used: C for
+               # single instructions is the game's code, so it stays in the project's repository
+               overrides=_path(cfg, a['overrides']) if a.get('overrides') else None)
+
+
+def sound(cfg):
+    """[sound]: drivers (tools/ailcheck.py) and extensions, the project's own C for the sound
+    library (UW2: src/port/sound/tvfx.c, the FM drivers' time-variant effects, which plug into
+    runtime/port/sound/yamaha.c's struct AilFmExt), relative to [project] root."""
+    s = cfg.raw.get('sound', {})
+    return _NS(drivers=dict(s.get('drivers', {})),
+               extensions=[_path(cfg, x) for x in s.get('extensions', [])])
+
+
+def test(cfg):
+    return cfg.raw.get('test', {})
+
+
+def load_module(path, name):
+    """A Python file named by the config (fuzz targets, asm2c's spec) as a module."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m

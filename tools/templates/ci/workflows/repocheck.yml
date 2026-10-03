@@ -1,0 +1,21 @@
+{{repocheck_comment}}
+name: repocheck
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+{{repocheck_env}}
+jobs:
+  repocheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+{{repocheck_exhume_checkout}}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: {{repocheck}}

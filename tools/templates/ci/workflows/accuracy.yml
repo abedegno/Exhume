@@ -1,0 +1,51 @@
+{{accuracy_comment}}
+name: accuracy
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: accuracy-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  make-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+{{exhume_checkout}}
+      - uses: ./.github/actions/linux-tools
+      - uses: ./.github/actions/{{assets_action}}
+        with:
+          deploy-key: ${{ secrets.{{deploy_secret}} }}
+          age-key: ${{ secrets.{{age_secret}} }}
+      - name: {{setup_name}}
+        run: {{setup}}
+      - name: {{test}}
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/logs"
+          {{test}} 2>&1 | tee "$RUNNER_TEMP/logs/make-test.log"
+      # Only pictures and text logs: the difference pictures of a session that differs from its
+      # golden, the port's own log of each replay, and this run's output. Never the state dumps,
+      # the saved games, objects, EXEs or anything else under build/.
+      - name: Upload the difference pictures and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: make-test-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/logs/*.log
+            {{verify_dir}}/**/diff_ck*.png
+            {{verify_dir}}/**/port.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the game data and everything built from it
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/{{tmp_assets}}" "$RUNNER_TEMP/{{tmp_clone}}" "$RUNNER_TEMP/{{tmp_key}}" {{cleanup}}

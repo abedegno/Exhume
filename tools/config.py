@@ -4,7 +4,8 @@ A project is described by an `exhume.toml` (see examples/uw2/exhume.toml). Tools
 `--config PATH` (handled by each tool that accepts it), then the EXHUME_CONFIG environment
 variable, then the first exhume.toml in the current directory or a parent. Relative paths in
 it are relative to [project] root, and root is relative to the config file. `~` and
-`${VAR}` / `${VAR:-default}` are expanded in every string.
+`${VAR}` / `${VAR:-default}` are expanded in every string; `${EXHUME}` is
+this Exhume checkout.
 
 The config names the toolchain profile (profiles/<name>/profile.toml), which holds what is
 true of the compiler, assembler and linker rather than of one game: command lines, name
@@ -15,6 +16,8 @@ rules, the library-name patterns, the linker's call rewrite.
 import os, re, sys, struct, tomllib
 
 EXHUME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ${EXHUME} in exhume.toml names this checkout (a project's config can point at its examples)
+os.environ.setdefault('EXHUME', EXHUME)
 
 
 def _expand(s):

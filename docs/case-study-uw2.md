@@ -1,6 +1,6 @@
 # Case study: Ultima Underworld II
 
-Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026; the byte-identical link is from 3 October.
+Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026; the byte-identical link and the port are from 3 October.
 
 ## The target
 
@@ -89,6 +89,49 @@ On 2 October UW2Decomp made the matched tree readable in seven commits (12516e4 
 - **File names** (e44f1fc): all 154 sources renamed and grouped in 15 subsystem directories: 9 names original (from System Shock's source and Miles' AIL 2.14: VALLOC, INTERP, INPUT, DAMAGE, GAMESTRN, WRAPPER, GAMEWRAP, PLAYER, AIL), 34 inferred, 111 descriptive. Tools find sources by segment, so the link needed no change.
 - **Comments** (3c9afb9, 198a7b3): every file has a header comment and routine notes, with `match:` and `name:` tags; 14 subsystem notes. The first pass was cut short by a session limit after commenting agents fanned out into nested agents (skills/orchestrate).
 - **Findings** (f9bf8b5): docs/FINDINGS.md lists 17 likely bugs in the original, each re-checked against the source and the FM Towns build, with confidence, effect in the game and whether a port should reproduce it (two candidates dropped on re-reading), plus game rules recovered from the code, engine findings, dead code and open questions.
+
+## The port
+
+From 2 to 3 October UW2Decomp built a native port from the same sources (its docs/PORT.md has the design and every result): about 21 hours from Milestone 1 (17:37 on 2 October) to Milestone 6a (14:42 on 3 October), then CI. The DOS build never changed: the gate passed after every commit, and `make check-all` after each milestone. At the CI commit (6252fdf) the port's own C is about 68,300 lines: 56,500 translated from the assembly by `tools/asm2c.py` and 11,800 written by hand; the shared game C is the decompilation's own.
+
+| Milestone | Commit | What it took | Exit test, as measured |
+| --- | --- | --- | --- |
+| 1. Measure | 67ab669, 2 Oct 17:37 | compat.h, the stand-in headers, `make port-check` | 92 of 99 sources compile; 18 errors and 233 warnings; 308 names a link still needs, 218 of them the port's work |
+| 2. Compile and link | 277c5e0, 19:20 | eight gated steps: errors, 30 near pointers in integers, 87 calls without prototypes, explicit widths (1,210 specifiers), the layout check, the promotion audit (1,894 sites, 15 fixed), the null-pointer pass, the far pointer macros and stubs | 98 of 98 compile with 0 errors and 61 warnings; all 21 file records identical under Turbo C and clang (38 of 46 records, the 8 others hold pointers); a 788 KB arm64 binary with 160 stub functions and 80 stub variables, stopping at the first stub |
+| 3. Boot to the title | 729bd40, 20:22 | the SDL3 platform layer, the paragraph map, far heap and EMS, Borland's library, seg021 in C, the parts of the graphics library the opening screens need, AIL with no driver | `init_world` runs to its end on the user's data; the Origin and Looking Glass screens differ from DOS in 0 of 64,000 pixels; 38 stub functions left |
+| 4. Replay | f0660c9, 23:34 | the replay hooks in 19 files, the replay DOS build, `state_dump`, the rest of the graphics library, the cutscene player's planar writes, `STACK_JUNK` for one local | a 27 KB recording of 28 million hook calls replays twice in DOS identically at all 43 checkpoints; the port is identical at the first 37, up to the 3D renderer |
+| The 3D renderer | ca5ac4d, 3 Oct 07:33 | 26 assembly modules translated by asm2c.py (70,114 lines added), the machine they run on, the render interface and sprite hook | `newgame` identical at all 43 checkpoints, `walk` at all 68; with the frame buffer in every dump every 20h ticks, 337 frame buffers (82 distinct 3D frames) identical to DOS's |
+| 5. Sound and the game loop | c58e5b7 (checkpoint, 11:46), 50459d1, 13:14 | AIL in C, the drivers from AIL 2.14's source with UW2's own differences, Nuked OPL3, libmt32emu, the DAC, `SND_READ`, `SLAVE_TIMER`, recording format 3; DOS-compatible saves; one implementation per routine (about 12,000 duplicated lines removed) | eight sessions identical to DOS at every checkpoint, saves byte for byte; 0 differing driver reads of 1,795,103 (`sound`), 1,832,854 (`soundfm`) and 3,092,157 (`soundmt`); the drivers' writes identical to DM03.ADV's and DM05.ADV's in Unicorn |
+| 6a. Fast tests | 2e4848f, 14:42 | golden references, unthrottled replays, DOSBox-X for the DOS side, parallel sessions, routine fuzzing, coverage, `make test` and the pre-push hook | goldens for all 8 sessions (550 checkpoints, 355 PNGs, 7 MB), identical from DOSBox-X and js-dos; the port replays all 8 in 14 s one at a time (58 s before), 3.5 s in parallel; DOS 165 s in DOSBox-X against 590 s in js-dos; 35 fuzz targets, 5,560 cases in 13 s, clean; coverage 45.4% of lines; `make test` 23 s, `make test-full` 12.5 minutes |
+| CI | 6252fdf, 15:46 | the encrypted bundle, accuracy and nightly workflows, the port on three systems | `make test` passes on Ubuntu 24.04 on x86-64 and arm64; x86-64 found the one layout-dependent overflow (BAGS.C's `OpenTheBag`), fixed by keeping the two arrays in one |
+
+What the replays found that no audit did: the value macro that evaluated its argument twice; a propagated return taken for a normal one in the translated polygon clipper; a patched shift count read as a constant; a far pointer's split that the graphics library keeps in its row records; two locals read before they are set (`held`, `head`); a stream and its handle disagreeing about the file position; DOSBox's Sound Blaster ending transfers early.
+
+## Exhume's reproduction of the port (3 October 2026)
+
+`examples/uw2/prove-port.sh --dos` runs Exhume's port tools and runtime against `git archive` snapshots of UW2Decomp at its CI commit (6252fdf), with the toolchain copied in, never the working checkout, on an Apple M4 Pro:
+
+| Check | Result |
+| --- | --- |
+| Exhume's gate (emu2) | passes: 153 of 153 sources, symbols.tsv rebuilt, exact link and unchanged modding build byte-identical to UW2.EXE |
+| `tools/portbuild.py` | `uw2port` byte-identical to the one UW2Decomp's own portbuild.py links in the same tree, all 173 objects equal |
+| `tools/replay.py build` | the replay DOS build is the EXE the committed goldens were made with (the same SHA-256) |
+| `tools/replay.py verify all` | all 8 sessions identical to UW2Decomp's committed goldens, at all 550 checkpoints, saved games included, 3.4 s in parallel |
+| `tools/replay.py golden all --check` (DOSBox-X) | each session twice in DOS, the two runs identical and both identical to the committed golden, 57 s for the sixteen runs |
+| runtime/include/portable.h and runtime/replay/replay.c with UW2's bindings in place of UW2Decomp's | the gate passes (no DOS byte changed); the port verifies all 8; the replay DOS build made from Exhume's replay.c reproduces every golden in DOSBox-X, twice per session |
+| `tools/fuzzasm.py` with examples/uw2/port's targets | 35 routines, 5,560 cases, no difference, the same report as UW2Decomp's but for the timings; a target changed to compare registers the C does not set fails all 200 cases |
+| `tools/asm2c.py` | `--check` clean; with the 27 generated files deleted, it writes all 27 again byte-identical to UW2Decomp's |
+| runtime/port/x86/asmrt with asmgame.h (UW2Decomp's own divfault.c) | the port verifies all 8 sessions and fuzzes clean |
+| portcheck, portstubs `--check`, widths `--diff`, intaudit, layoutcheck | the same output as UW2Decomp's tools in the same tree (layoutcheck's DOS and host probe outputs too) |
+| the whole portability layer from runtime/port with UW2's bindings | gate passes; port verifies all 8; fuzzing clean; stubs current; portcheck 0 errors, 56 warnings, as before |
+| runtime/port/sound and sys/pit.c too (UW2Decomp's tvfx.c through yamaha.h's `struct AilFmExt`) | all 8 verify; ailcheck.py: DM03.ADV 13,608 writes over 195 calls and 14,041 over 270, DM05.ADV 25,726 bytes over 280, all identical; the WAV of everything the cards play in `sound` (22,557,836 bytes) and `soundfm` is byte-identical to UW2Decomp's port's |
+| the same with no FM extension (yamaha.c as YAMAHA.INC without `OSI_ALE`) | builds and runs; all 8 still verify (no game state depends on the synthesiser); ailcheck: DM03.ADV's TVFX writes missing (13,189 of 13,608 and 13,245 of 14,041), DM05.ADV identical |
+| `tools/test.py fast` | the gate, the port, the quick fuzzing and the 8 sessions in 24 s |
+| `tools/coverage.py` | 45.4% of lines, 1,335 of 2,274 functions, the fuzzing adding 652 lines and 7 functions: UW2Decomp's figures (its committed page predates the CI commit's few changed lines) |
+| `tools/citemplates.py` with examples/uw2/ci.toml | UW2Decomp's four workflows and two actions at 6252fdf, byte for byte; actionlint finds nothing in them or in the defaults' |
+| `tools/ci-assets.sh` | on a dummy bundle with a throwaway age key, the output and tree of UW2Decomp's own |
+
+The steps that need nothing of Exhume's runtime (build, verify, fuzz, asm2c) also pass against UW2Decomp's later commits (467afb5, its release work), whose port Exhume's portbuild.py still links byte-identically; the runtime installs do not apply there, since that work extended the platform API (a folder dialog, the game directory search), and its CI has since been edited away from the templates.
 
 ## Exhume's reproduction (1 October 2026)
 
