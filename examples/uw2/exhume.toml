@@ -79,12 +79,11 @@ skip = ["SAVE0.pristine"]
 
 [gate]
 # tools/gate.py: the build driver and the gate (docs/readability.md). The link is the reference
-# implementation in this directory; the exact link equals UW2.EXE except the overlay segment
-# table's code flag for seg003 and seg004 (docs/case-study-uw2.md).
+# implementation in this directory; the exact link is byte-identical to UW2.EXE, so there are
+# no known_diffs (docs/case-study-uw2.md).
 link = "{python} {exhume}/examples/uw2/link.py --config {config}"
 mod_link = "{python} {exhume}/examples/uw2/link.py --mod --config {config}"
 exact_exe = "LINK/out/UW2.EXE"
 mod_exe = "MODLINK/out/UW2.EXE"
-known_diffs = [[0x6676C, 0x00, 0x01], [0x66774, 0x00, 0x01]]
 # `gate.py boot`: title, introduction, main menu
 boot = ["w:5000", "s:title", "w:15000", "s:intro", "k:Escape", "w:3000", "k:Escape", "w:3000", "s:menu"]

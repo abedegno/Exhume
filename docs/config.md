@@ -58,7 +58,7 @@ For tools/gate.py, the build driver and gate (docs/readability.md, "The gate"). 
 
 - `link`, `mod_link`: the exact link and the modding build (UW2: `examples/uw2/link.py`, with `--mod` for the second).
 - `exact_exe`, `mod_exe`: where they write the EXE, relative to build.
-- `known_diffs`: `[offset, original byte, linked byte]` for each byte the exact link is known to get wrong (UW2: two). Any other difference fails the gate, and so does one of these not differing.
+- `known_diffs`: optional, and best left out. Without it the exact link must be byte-identical to the original, as UW2's is. A project whose exact link still gets a few bytes wrong can list each as `[offset, original byte, linked byte]` while it looks for the cause; then any other difference fails the gate, and so does one of these not differing. UW2 had two such bytes until their cause was found (profiles/borland-tc101/linker.md, "Segment classes").
 - `sessions`, `batch`: DOS sessions at once for the gate alone (default: `[toolchain] sessions`, else what suits the DOS in use; `EXHUME_DOS_SESSIONS` wins) and sources per session (default 8).
 - `boot`: rungame.mjs steps for `gate.py boot`, which also uses [run].
 

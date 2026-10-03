@@ -1,9 +1,9 @@
 # A decompilation project's build driver, over Exhume's tools/gate.py. Copy it to the
 # project's root beside its exhume.toml; the gate's logic and the project's facts (link
-# commands, known differing bytes, boot steps) are in exhume.toml's [gate] section.
+# commands, where they write the EXE, boot steps) are in exhume.toml's [gate] section.
 #
 #   make / make game   modding build, prints the EXE's path
-#   make exact         exact link, compared with your original EXE
+#   make exact         exact link, which must be byte-identical to your original EXE
 #   make check         the full gate; recompiles only sources changed since they last passed
 #   make check-all     the full gate, recompiling every source
 #   make fast          compile, match and verify the changed sources only (not a proof)

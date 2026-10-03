@@ -1,7 +1,8 @@
 """The build driver and gate: one command that proves the whole tree still rebuilds the original.
 
     python3 tools/gate.py [--config PATH] check [--all] [--fast]   the gate every change must pass
-    python3 tools/gate.py [--config PATH] exact                    the exact link, judged by [gate] known_diffs
+    python3 tools/gate.py [--config PATH] exact                    the exact link: byte-identical to the original
+                                                                   (or equal but for [gate] known_diffs)
     python3 tools/gate.py [--config PATH] game                     the modding build; prints the EXE's path
     python3 tools/gate.py [--config PATH] symbols                  step 3 of the gate alone
     python3 tools/gate.py [--config PATH] boot [EXE]               boot the modding build (or EXE) and screenshot it
@@ -25,8 +26,10 @@ The gate, `check`:
    round adds nothing (a file can need a name another file merges first: a far address it
    refers to by its offset alone, data placed only by its publics). A name the committed
    file marks 'library' by hand may come out 'provisional', since no object carries the mark.
-4. The exact link must equal the original except the bytes in [gate] known_diffs, and the
-   modding build with no source changed must be byte-identical to it.
+4. The exact link must be byte-identical to the original, and the modding build with no
+   source changed must be byte-identical to the exact link. A project whose exact link still
+   gets a few bytes wrong can list them in [gate] known_diffs while it looks for the cause;
+   then those bytes, and only those, must differ.
 Exit status 0 only when everything passes. --fast stops after step 2 and checks only the
 sources that changed: the quick loop while editing, never the proof.
 
@@ -37,7 +40,8 @@ steps 4 need). Commands are split like a shell line and may use {python}, {exhum
     mod_link = "{python} {exhume}/examples/uw2/link.py --mod --config {config}"
     exact_exe = "LINK/out/UW2.EXE"       # relative to [project] build
     mod_exe = "MODLINK/out/UW2.EXE"
-    known_diffs = [[0x6676C, 0x00, 0x01]]   # file offset, original byte, linked byte
+    known_diffs = [[0x1234, 0x00, 0x01]]  # optional, default none: file offset, original byte, linked
+                                          # byte of each byte the exact link is known to get wrong
     sessions = 12                         # DOS sessions at once (default: tools/dosbatch.py's sessions())
     batch = 8                             # sources per session
     boot = ["w:5000", "s:title"]          # rungame.mjs steps for `boot` ([run] data, exe_name, skip)
@@ -219,15 +223,18 @@ class Gate:
         r = subprocess.run(self.command('mod_link' if mod else 'link'), capture_output=True, text=True, cwd=self.cfg.root)
         text = r.stdout + r.stderr
         if mod and r.returncode: return None, text
-        # the exact link's own exit status is exediff's, nonzero while the known bytes differ:
+        # the exact link's own exit status is exediff's (nonzero while any known byte differs):
         # judge it by its bytes
         return (out if os.path.exists(out) else None), text
 
     def exact_diff(self, path):
-        """None when path equals the original but for the known bytes, else what differs."""
+        """None when path is byte-identical to the original (or, with [gate] known_diffs, differs
+        in exactly those bytes), else what differs."""
         a = self.cfg.exe; b = open(path, 'rb').read()
         if len(a) != len(b): return f'size {len(b):#x}, the original {len(a):#x}'
         diff = [i for i in range(len(a)) if a[i] != b[i]] if a != b else []
+        if not self.known:
+            return f'{len(diff)} bytes differ from the original, the first at {diff[0]:#x} (tools/exediff.py shows where)' if diff else None
         extra = [i for i in diff if self.known.get(i) != (a[i], b[i])]
         if extra: return f'{len(extra)} bytes differ beyond the known {len(self.known)}, first at {extra[0]:#x}'
         if len(diff) != len(self.known):
@@ -235,7 +242,7 @@ class Gate:
         return None
 
     def known_text(self):
-        return 'equal' if not self.known else 'equal except ' + ', '.join(f'{o:#x}' for o in sorted(self.known))
+        return 'byte-identical' if not self.known else 'equal except ' + ', '.join(f'{o:#x}' for o in sorted(self.known))
 
     # ---- commands -------------------------------------------------------------------------
     def check(self, force, fast):
