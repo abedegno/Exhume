@@ -91,7 +91,7 @@ install_runtime() {
     cp "$RT"/port/include/*.h "$pp/include/"
     cp "$RT/port/platform/files.c" "$RT/port/platform/png.c" "$pp/platform/"; cp "$RT/port/platform/sdl3/plat_sdl3.c" "$pp/platform/sdl3/"
     cp "$RT/port/mem/parmap.c" "$RT/port/mem/frame.c" "$pp/mem/"; cp "$UB/nulls-uw2.c" "$pp/mem/nulls.c"
-    cp "$RT/port/gfx/vga.c" "$pp/gfx/"; cp "$RT/port/sys/records.c" "$RT/port/sys/crash.c" "$RT/port/sys/borland.c" "$pp/sys/"
+    cp "$RT/port/gfx/vga.c" "$pp/gfx/"; cp "$RT/port/sys/records.c" "$RT/port/sys/crash.c" "$RT/port/sys/borland.c" "$RT/port/sys/blackbox.c" "$pp/sys/"
     cp "$RT/port/stubs/stub.c" "$RT/port/stubs/stub.h" "$pp/stubs/"
     cp "$RT/port/x86/asmrt.h" "$RT/port/x86/asmrt.c" "$UB/asmgame.h" "$pp/x86/"
     [ -f "$pp/x86/divfault.c" ] || { echo "   UW2Decomp has no src/port/x86/divfault.c (asm_divfault): apply the patch (PATCH)"; exit 1; } ;;
@@ -204,7 +204,7 @@ toolkit)
   same intaudit intaudit.py intaudit.py build/port/intaudit.txt
   same layoutcheck layoutcheck.py layoutcheck.py build/layout/dos.txt build/layout/host.txt
   X "$S" portbuild.py > /dev/null      # the port's objects again, which portcheck rewrote
-  echo "   the runtime's portability layer in place of UW2Decomp's (compat.h, the stand-in headers, port.h, plat.h, files.c, png.c, the SDL3 backend, parmap, frame, vga, records, crash, borland, the stubs' body, asmrt):"
+  echo "   the runtime's portability layer in place of UW2Decomp's (compat.h, the stand-in headers, port.h, plat.h, files.c, png.c, the SDL3 backend, parmap, frame, vga, records, crash, borland, blackbox, the stubs' body, asmrt):"
   K="$OUT/snap-toolkit"; snapshot "$K"; install_runtime "$K" replay port
   X "$K" gate.py check > "$P/tk-gate.txt" 2>&1 && echo "   gate: $(tail -1 "$P/tk-gate.txt")" || echo "   gate FAILED ($P/tk-gate.txt)"
   X "$K" portbuild.py > "$P/tk-portbuild.txt" 2>&1 && tail -1 "$P/tk-portbuild.txt" | sed 's/^/   /' || { echo "   portbuild FAILED"; tail -20 "$P/tk-portbuild.txt"; }

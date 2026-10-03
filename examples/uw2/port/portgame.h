@@ -10,6 +10,9 @@
 #define PORT_CTYPE_AT 0x1BF6
 void seg021_exit_chain(void);                   /* sys/sysentry.c */
 #define PORT_EXIT_CHAIN() seg021_exit_chain()
+/* the black box (sys/blackbox.c): stage/ leaves out the port's settings file */
+#define PORT_BLACKBOX 1
+#define BLACKBOX_SKIP "uw2port.cfg"
 /* the sound library's environment variables (sound/ail.c, sound/audio.c) */
 #define AIL_SNDCHECK_ENV "UW2PORT_SNDCHECK"     /* list each sound read that differs from DOS's */
 #define AUDIO_ROMS_ENV "UW2PORT_MT32_ROMS"      /* the user's MT-32 or CM-32L ROMs */

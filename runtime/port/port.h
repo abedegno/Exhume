@@ -7,7 +7,8 @@
    the prefix of its messages), may move the load segment and the far heap (PORT_LOAD_SEG,
    PORT_HEAP_FIRST, PORT_HEAP_END), gives DGROUP's paragraph (PORT_DGROUP_PARA) and where the
    C library's _ctype table sits in it (PORT_CTYPE_AT), the termination chain exit runs
-   (PORT_EXIT_CHAIN()), and declares the program's own far blocks. UW2's is
+   (PORT_EXIT_CHAIN()), whether the port has the black box (PORT_BLACKBOX, with BLACKBOX_KEEP
+   and BLACKBOX_SKIP: sys/blackbox.c), and declares the program's own far blocks. UW2's is
    examples/uw2/port/portgame.h. */
 #ifndef EXHUME_PORT_H
 #define EXHUME_PORT_H
@@ -39,6 +40,11 @@ void port_halt(const char *why) __attribute__((noreturn));
 /* Called after each grPageFlip from C (a full screen the game has just shown): writes the
    screenshots --shot-at-flip asks for (sys/main.c). */
 void port_on_flip(void);
+/* The black box (sys/blackbox.c): a player's session recorded to the home directory's
+   recordings/, and its streams written out at a fault or at the game's exit. portgame.h
+   defines PORT_BLACKBOX when the port links it. */
+int port_blackbox_start(const char *home);
+void port_blackbox_close(int crashed);
 
 /* The paragraph map (mem/parmap.c, docs/port.md "Far pointers and segments"): host memory
    given DOS paragraph numbers, so that MK_FP, FP_SEG, FP_OFF and segment arithmetic work.
@@ -86,6 +92,7 @@ void vga_write(uint16_t off, uint8_t v);       /* a CPU write to A000:off */
 uint8_t vga_read(uint16_t off);                /* a CPU read of A000:off (loads the latches) */
 void vga_set_mode(int mode);                   /* int 10h, AH = 0 */
 void vga_scanout(uint8_t *pixels, int *w, int *h, uint8_t rgb6[768]);
+void vga_scanout_now(uint8_t *pixels, int *w, int *h, uint8_t rgb6[768]);
 void vga_get_dac(uint8_t rgb6[768]);
 const uint8_t *vga_plane(int p);               /* for the state dump */
 void vga_window_init(void);                    /* A000:0000 in the paragraph map */

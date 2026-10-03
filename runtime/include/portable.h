@@ -94,8 +94,21 @@ static void nulltrap_hit(char *file, int line)
 #else
 void *port_null_near(const char *file, int line);
 void *port_null_far(const char *file, int line);
+void *port_null_far_record(const char *layout, unsigned host_size, const char *file, int line);
 #define NULLTRAP(p)     ((p) ? (p) : (__typeof__(p))port_null_near(__FILE__, __LINE__))
 #define FARNULLTRAP(p)  ((p) ? (p) : (__typeof__(p))port_null_far(__FILE__, __LINE__))
+#define FARNULLREC(p, layout) ((p) ? (p) : (__typeof__(p))port_null_far_record((layout), sizeof *(p), __FILE__, __LINE__))
+#endif
+
+/* FARNULLREC(p, layout): FARNULLTRAP for a far pointer to a struct that holds pointers, whose
+   host layout is not DOS's (HOST_LAYOUT_BEGIN), so that the vector table's bytes would land
+   in the wrong fields: on the host a null p becomes a host struct filled from the vector
+   table by the struct's DOS layout, one letter a field as FILE_RECORDS takes it (w a word,
+   n a near pointer, f a far pointer, the pointers null; runtime/port/sys/records.c). UW2:
+   BAGS.C compares a slot with OpenBag->obj while no bag is open, and DOS reads the int 2
+   vector there. FARNULLTRAP everywhere else, so the DOS bytes are the same. */
+#if defined(__TURBOC__)
+#define FARNULLREC(p, layout) FARNULLTRAP(p)
 #endif
 
 /* FAR_COPY(dst, src, n): copy n bytes between far buffers, written in DOS as
@@ -214,16 +227,48 @@ RpTimerFn far rp_slave_timer(RpTimerFn f, unsigned hz);
 /* FRAME_LEN(dos, host) and FRAME_TAIL(arr, i, var): a local array that the original copies
    past its end on purpose, into the stack slots Turbo C laid out after it, and a local that
    is in fact the array's element i (UW2: SCROLL.C's scroll_print copies 49 bytes into a
-   47-byte array and uses the 49th as its terminator, `sentinel`). Under Turbo C the original
-   tokens: the array has its DOS length and the variable is itself, so the bytes are the
-   same. On the host the frame is the compiler's, so the array is given the length the code
-   uses and the variable becomes that element of it. */
+   47-byte array and the 2-byte slot after it, and uses the byte after those 49 as its
+   terminator, `sentinel`). Under Turbo C the original tokens: the array has its DOS length
+   and the variable is itself, so the bytes are the same. On the host the frame is the
+   compiler's, so the array is given the length the code uses and the variable becomes that
+   element of it. Take i from the original's frame in the assembly (the store's offset from
+   the array's), never from the C: UW2's port first put the terminator one byte early, and
+   the game then split its message text at other places, with the same pixels on the screen
+   and different scratch state behind them. */
 #ifdef __TURBOC__
 #define FRAME_LEN(dos, host) dos
 #define FRAME_TAIL(arr, i, var) var
 #else
 #define FRAME_LEN(dos, host) host
 #define FRAME_TAIL(arr, i, var) ((arr)[i])
+#endif
+
+/* FRAME_INDEX(arr, i, below): element i of a local array, where i can be -1 and the original
+   then reads the stack slot Turbo C laid out below the array; below is what DOS finds there,
+   read from the original's frame in the assembly (UW2: CRITTIME.C indexes two local tables
+   by a value one below their range for one character, and reads the last entry of the table
+   below and the high byte of a saved register). Under Turbo C the original tokens; on the
+   host, where the frame is the compiler's, below for a negative index. */
+#ifdef __TURBOC__
+#define FRAME_INDEX(arr, i, below) arr[i]
+#else
+#define FRAME_INDEX(arr, i, below) ((i) < 0 ? (below) : (arr)[i])
+#endif
+
+/* TABLE_NEXT(arr, i, n, next) and TABLE_PREV(arr, i, prev, nprev): element i of a table of n
+   entries that the original indexes past its end, or before its start, where DOS has the
+   table next defined right after it, or prev (nprev entries) right before it, so that it
+   reads those (UW2: a mode-button table read at [6..10], which is the next table's start, and
+   a key table read at [-1], the last entry of the table before). The original index under
+   Turbo C; on the host, where the compiler and linker lay the tables out, the neighbour's
+   entry. A normal build can pass such a read by luck, its tables falling in DOS's order; a
+   build with another layout (AddressSanitizer's, another compiler's) then differs from DOS. */
+#ifdef __TURBOC__
+#define TABLE_NEXT(arr, i, n, next) arr[i]
+#define TABLE_PREV(arr, i, prev, nprev) arr[i]
+#else
+#define TABLE_NEXT(arr, i, n, next) ((i) >= (n) ? (next)[(i) - (n)] : (arr)[i])
+#define TABLE_PREV(arr, i, prev, nprev) ((i) < 0 ? (prev)[(nprev) + (i)] : (arr)[i])
 #endif
 
 /* READ_PAIR(fd, a, b): read(fd, &a, 4), where the original reads two words into a one-word
@@ -247,8 +292,12 @@ RpTimerFn far rp_slave_timer(RpTimerFn f, unsigned hz);
 #endif
 
 /* WRITABLE_STR(s): a string literal the code writes into (UW2: SOUND.C builds the driver's and
-   the music's file names in place). The literal under Turbo C; on the host a literal is
-   read-only, so it is an array of the same characters, which the code may change. */
+   the music's file names in place, another file patches a picture name's last letter, another
+   writes a number's digits into " 0\n"). The literal under Turbo C, where DOS's literals are
+   writable; on the host a literal is read-only, so a write through it faults, and here it is
+   an array of the same characters, which the code may change. clang's -Wwrite-strings over
+   the game's C lists every literal that reaches a char pointer; read each of those to find
+   the ones written through (skills/port-and-verify, "Host hazards"). */
 #ifdef __TURBOC__
 #define WRITABLE_STR(s) s
 #else
@@ -283,6 +332,39 @@ void *port_file_records(void *p, int n, const char *layout, unsigned host_size);
 void *port_file_records_end(const void *q);
 #define FILE_RECORDS(T, p, n, layout) ((T *)port_file_records((p), (n), (layout), sizeof(T)))
 #define FILE_RECORDS_END(q, n) port_file_records_end(q)
+#endif
+
+/* DOS_SIZEOF(T, n) and HOST_TABLE(p, n): a table of pointers the original allocates from a
+   heap of its own, which takes n bytes in DOS (UW2: BABL.C's conversation heap gives out a
+   table of far function pointers). DOS_SIZEOF is sizeof(T) under Turbo C and n, DOS's size,
+   on the host, so that the heap gives out the same blocks at the same places as in DOS;
+   HOST_TABLE is the heap's block p under Turbo C and on the host a table of n host pointers
+   in host memory (one per call site, kept from one call to the next), since the host's
+   pointers do not fit DOS's block (and with a full heap, where DOS would write the table over
+   the vector table, the port still has it). Both the original tokens under Turbo C. */
+#ifdef __TURBOC__
+#define DOS_SIZEOF(T, n) sizeof(T)
+#define HOST_TABLE(p, n) p
+#else
+#define DOS_SIZEOF(T, n) (n)
+#define HOST_TABLE(p, n) __extension__ ({ static void *port_table_; __typeof__(p) port_dos_ = (p); \
+    port_table_ = realloc(port_table_, (size_t)(n) * sizeof(*port_dos_) + 1); \
+    (void)port_dos_; (__typeof__(p))port_table_; })
+#endif
+
+/* TAG_SLOT(b, i) and TAG_VAL(p): a heap of the game's own that tags each block with a far
+   pointer in its last four bytes, slot i of the block b taken as an array of far pointers,
+   and checks the tag when it frees the block (UW2: BABL.C). Under Turbo C the original
+   tokens. On the host a pointer is eight bytes, so slot i of a pointer array lies twice as
+   far in, past the block's end and into the blocks after it; the host keeps the tag in DOS's
+   four bytes instead, as the low 32 bits of the pointer (TAG_VAL), so that the heap's blocks
+   hold what they hold in DOS. */
+#ifdef __TURBOC__
+#define TAG_SLOT(b, i) ((char far * far *)b)[i]
+#define TAG_VAL(p) p
+#else
+#define TAG_SLOT(b, i) (*(uint32_t *)((char *)(b) + (i) * 4))
+#define TAG_VAL(p) ((uint32_t)(uintptr_t)(p))
 #endif
 
 /* STACK_JUNK(v): the initialiser of a local the original reads before it ever sets it. In DOS

@@ -313,6 +313,9 @@ long bc_clock(void) { return (long)pit_bios_ticks(); }
 void bc_exit(int status)
 {
     fflush(stdout);
+#ifdef PORT_BLACKBOX
+    port_blackbox_close(0);
+#endif
 #ifdef PORT_EXIT_CHAIN
     PORT_EXIT_CHAIN();
 #endif

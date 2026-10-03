@@ -90,7 +90,8 @@ if (stageDir) cpSync(stageDir, stage, { recursive: true });
 const t0 = Date.now();
 const log = (...m) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...m);
 // the replay build's own switches, passed from this process's environment (UW2: UWRPCK, the
-// periodic dump interval; UWRPFB, the 3D frame buffer in every dump; UWRPTRACE, a trace)
+// periodic dump interval; UWRPFB, the 3D frame buffer in every dump; UWRPTRACE, a trace;
+// UWRPFULL and UWRPHOOK, full dumps in a clock range or a hook call range)
 const env = envNames.filter(k => process.env[k]).map(k => `set ${k}=${process.env[k]}`);
 if (backend === "auto") backend = replay && binary("dosbox-x") ? "dosbox-x" : "jsdos";
 if (!["jsdos", "dosbox-x"].includes(backend)) { console.error(`replaydos: --backend ${backend}: not jsdos or dosbox-x`); process.exit(2); }

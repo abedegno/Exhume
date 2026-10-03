@@ -26,8 +26,9 @@ r"""Record a session in DOS and replay it in DOS and in the port, comparing the 
                                                                      the goldens (tools/golden.py has both)
 
 The replay DOS build is the modding build with every source that uses the hooks of
-portable.h ([replay] hooks) compiled with -DREPLAY (and every source with a NULLTRAP mark with
--DNULLTRAP, so the marked null pointers it reaches go to NULLTRAP.LOG), and the [port] shared C
+portable.h ([replay] hooks) compiled with -DREPLAY (and every source with a NULLTRAP or
+FARNULLREC mark with -DNULLTRAP, so the marked null pointers it reaches go to NULLTRAP.LOG),
+and the [port] shared C
 (the record and replay code, runtime/replay/replay.c's instance) linked in as more resident
 modules: [replay] link is the modding link's command, to which this adds --out, --obj STEM=PATH
 for each recompiled source and --add STEM=PATH for each shared one. Recording runs in js-dos
@@ -69,7 +70,7 @@ PY = os.path.join(EXHUME, '.venv', 'bin', 'python')
 if not os.path.exists(PY): PY = sys.executable
 DATA = RC.data
 HOOKS = re.compile(r'\b(' + '|'.join(RC.hooks) + r')\(')
-KINDS = {1: 'checkpoint', 2: 'periodic', 3: 'input', 4: 'end', 5: 'DESYNC'}
+KINDS = {1: 'checkpoint', 2: 'periodic', 3: 'input', 4: 'end', 5: 'DESYNC', 6: 'hook'}
 STREAMS = {1: 'TIME', 2: 'KEY', 3: 'MOUSE', 4: 'BUTTONS', 5: 'JOY', 6: 'JOYB', 7: 'MISC', 8: 'SOUND'}
 
 
@@ -142,7 +143,7 @@ def build_plan():
         text = open(src, encoding='latin1').read()
         defs = []
         if HOOKS.search(text) or src in shared: defs.append('-DREPLAY')
-        if 'NULLTRAP(' in text: defs.append('-DNULLTRAP')
+        if 'NULLTRAP(' in text or 'NULLREC(' in text: defs.append('-DNULLTRAP')
         if defs: todo.append((sources.stem(src), src, (opts_of(src) if src not in shared else RC.shared_opts) + ' ' + ' '.join(defs)))
     lay = os.path.join(CFG.build, 'LINK', 'base', 'layout.json')
     base = json.load(open(lay))['sources'] if os.path.exists(lay) else None
@@ -538,7 +539,7 @@ def run_port(rec, out, extra=(), stage=None, quiet=False):
             shutil.copytree(os.path.join(home, d), os.path.join(out, d))
     ub = [l for l in (r.stdout + r.stderr).splitlines() if 'runtime error' in l]
     if quiet: return r.returncode
-    if debug: print(f'port: UBSan reported {len(ub)} null dereferences' + ''.join('\n  ' + l for l in sorted(set(ub))[:20]))
+    if debug: print(f'port: UBSan reported {len(ub)} runtime errors' + ''.join('\n  ' + l for l in sorted(set(ub))[:20]))
     tail = [l for l in (r.stdout + r.stderr).splitlines() if RC.port_name in l][-3:]
     print('port:', r.returncode, *tail, sep='\n  ')
     return r.returncode

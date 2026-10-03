@@ -131,7 +131,7 @@ def replay(cfg):
         hooks=list(r.get('hooks', ['GAME_TIME', 'KEY', 'MOUSE', 'MBUTTONS', 'JOY_READ', 'JOY_BUTTONS',
                                     'WALL_TIME', 'SRAND', 'CHECKPOINT', 'STACK_JUNK', 'SND_READ', 'SLAVE_TIMER'])),
         shared_opts=r.get('shared_opts', cfg.c_opts),
-        env=list(r.get('env', ['UWRPCK', 'UWRPTRACE', 'UWRPFB'])),
+        env=list(r.get('env', ['UWRPCK', 'UWRPTRACE', 'UWRPFB', 'UWRPFULL', 'UWRPHOOK'])),
         out_files=list(r.get('out_files', ['RECORD.OUT', 'STATE.OUT', 'NULLTRAP.LOG', 'TRACE.OUT', 'SNDCHECK.OUT'])),
         link=r.get('link'),                         # the modding link command, with {out}, {objs}
         port_args=list(r.get('port_args', ['--hidden', '--exit-on-halt', '--exit-after', '600000'])),

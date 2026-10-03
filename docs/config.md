@@ -96,6 +96,7 @@ The record and replay harness and its golden references (tools/replay.py, golden
 - `link`: the modding link command, to which tools/replay.py adds `--out`, `--obj STEM=PATH` and `--add STEM=PATH` (the shared C).
 - `shared_opts`: the compiler switches of the shared C in the DOS build.
 - `hooks`: the portable.h hooks whose use means a source is compiled with `-DREPLAY`.
+- `env`, `out_files`: the environment variables passed to the replay DOS build when set (default `UWRPCK`, `UWRPTRACE`, `UWRPFB`, `UWRPFULL`, `UWRPHOOK`: runtime/replay/replay.c's first comment) and the files a DOS run brings back.
 - `port_args`, `port_sound_logs`, `driver_check`, `driver_marker`: how the port is run under replay, the flags of its sound driver logs, and the command that checks them against the real driver (`{ail}`, `{hw}`).
 - `order`, `stage_from`: the sessions' order, and the sessions that replay a saved game another one writes.
 - `c0_signature`, `c0_signature_at`: the C runtime's copyright string and its DS offset, by which the null-pointer check finds DGROUP in js-dos after the program exits (default the profile's).

@@ -8,6 +8,12 @@ tools/portcheck.py does, compile the port's own C ([port] dir), and link them in
                                                          in <out>-debug; a null dereference is reported
                                                          with its file and line and the program goes on,
                                                          so a replay lists every one it meets
+    python3 tools/portbuild.py [--config PATH] --debug --sanitize address   the debug build with other
+                                                         sanitizers in place of null (a comma-separated
+                                                         list for -fsanitize=: address, array-bounds),
+                                                         for the host hazard audits
+                                                         (skills/port-and-verify); replay.py verify
+                                                         --debug replays every session in it
     python3 tools/portbuild.py [--config PATH] --coverage  clang's source-based coverage, in <out>-cov:
                                                          each run writes a .profraw (LLVM_PROFILE_FILE),
                                                          for tools/coverage.py
@@ -143,6 +149,7 @@ def main(argv):
     ap.add_argument('--cc', default=portcheck.host_cc())
     ap.add_argument('--run', action='store_true')
     ap.add_argument('--debug', action='store_true')
+    ap.add_argument('--sanitize', default='null')
     ap.add_argument('--coverage', action='store_true')
     a = ap.parse_args(argv)
     global OUT, EXE
@@ -153,10 +160,10 @@ def main(argv):
         OUT = portcfg.variant_out(CFG, 'debug')
         EXE = os.path.join(OUT, P.exe)
         portcheck.OUT = OUT
-        san = ['-g', '-fsanitize=null']
+        san = ['-g', f'-fsanitize={a.sanitize}']
         portcheck.FLAGS = portcheck.FLAGS + san
         PORT_FLAGS.extend(san)
-        link_extra = ['-fsanitize=null']
+        link_extra = [f'-fsanitize={a.sanitize}']
     if a.coverage:
         OUT = portcfg.variant_out(CFG, 'cov')
         EXE = os.path.join(OUT, P.exe)

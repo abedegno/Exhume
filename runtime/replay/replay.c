@@ -72,10 +72,19 @@
                 none. Sessions with no sound card never read one.
    Recording stops at RP_STOP_SCAN: the call count goes into the header. Replay stops at that
    call, or when a stream runs out, with a last dump; then the game shuts down as at the end of
-   main (RP_SHUTDOWN) and exits, through C0's null pointer check in DOS.
+   main (RP_SHUTDOWN) and exits, through C0's null pointer check in DOS. A count of FFFFFFFFh
+   means no last call: the replay runs on until a stream runs out.
+
+   The black box, in the port only: a player's session recorded with no state dumps, to the
+   file rp_blackbox_name names (runtime/port/sys/blackbox.c sets rp_blackbox and the name, and
+   rp_request to record), not stopped by RP_STOP_SCAN, and closed by rp_blackbox_close at the
+   game's exit or at a host fault, with the call count left at FFFFFFFFh: live play wraps the
+   32-bit count within minutes, and a replay of a crash must run on into the code that
+   crashed.
 
    The dumps, STATE.OUT: a record per checkpoint, "CKPT", kind (word: 1 a CHECKPOINT, 2 every
-   400h ticks of the replayed clock, 3 an input event, 4 the end, 5 the replay lost step),
+   400h ticks of the replayed clock, 3 an input event, 4 the end, 5 the replay lost step, 6 a
+   hook call, UWRPHOOK's),
    number (word), hook calls so far (dword), the clock (dword), sections (word), then each
    section: a four-character tag, its length (dword), its bytes. The common sections:
      RAND  Borland's rand seed (dword)
@@ -95,8 +104,11 @@
 
    Environment, in both builds: UWRPCK=n (hex) a periodic dump every n clock ticks instead of
    400h; UWRPFB=1 sets fb for RP_DUMP (UW2: the frame buffer in every dump); UWRPTRACE=lo,hi
-   every hook call while the clock is in [lo, hi) to TRACE.OUT, with its caller. The names
-   are UW2's, kept so that its recordings and tools need no change. */
+   every hook call while the clock is in [lo, hi) to TRACE.OUT, with its caller; UWRPFULL=lo,hi
+   the periodic dumps while the clock is in [lo, hi) full ones; UWRPHOOK=lo,hi a full dump
+   (kind 6) at every hook call whose count is in [lo, hi), to find the call after which a
+   section first differs. The names are UW2's, kept so that its recordings and tools need no
+   change. */
 #include <io.h>
 #include <fcntl.h>
 #include <dos.h>
@@ -129,6 +141,7 @@
 #define CK_INPUT    3
 #define CK_END      4
 #define CK_DESYNC   5
+#define CK_HOOK     6                   /* UWRPHOOK: a full dump at a hook call */
 
 #define KSTATE_LEN  RP_KEYSTATE_LEN
 #define STOP_SCAN   RP_STOP_SCAN
@@ -160,6 +173,23 @@ struct Stream {
 };
 
 int16 rp_request = RP_AUTO;             /* the port sets it before the game starts */
+#ifndef __TURBOC__
+/* The port's black box (runtime/port/sys/blackbox.c): every player's session is recorded,
+   with no state dumps and no stop at RP_STOP_SCAN, to the name blackbox.c gives, so that a
+   crash can be replayed. */
+int16 rp_blackbox;
+const char *rp_blackbox_name;
+#define BLACKBOX rp_blackbox
+#define RECORD_NAME (rp_blackbox ? rp_blackbox_name : "RECORD.OUT")
+/* a black box recording has no last call: live play can make tens of millions of hook calls
+   a second (UW2: some 30 million, so the 32-bit count wraps every two minutes or so), and a
+   replay of one runs on to the end of its streams (or into the code that crashed) */
+#define NO_STOP (stop_at == 0xFFFFFFFFUL)
+#else
+#define BLACKBOX 0
+#define RECORD_NAME "RECORD.OUT"
+#define NO_STOP 0
+#endif
 static int16 rp_mode = -1;              /* RP_OFF, RP_RECORD or RP_REPLAY once started */
 static int16 rp_version = 3;            /* of the file replayed: 2 has no SOUND moments */
 static int16 log_fd = -1, dump_fd = -1;
@@ -171,6 +201,8 @@ static uint32 t_last;                   /* TIME: the last run's clock, for the d
 static uint32 last_ck_time;
 static uint32 ck_mask = ~(uint32)0x3FF;   /* periodic dumps every 400h ticks; UWRPCK=n (hex) for n */
 static int dump_fb;                        /* UWRPFB: every dump holds the 3D frame buffer */
+static uint32 full_lo, full_hi;            /* UWRPFULL=lo,hi: the periodic dumps in that clock range are full */
+static uint32 hook_lo, hook_hi;            /* UWRPHOOK=lo,hi: a full dump at each hook call in that range */
 static uint32 calls[NSTREAMS];
 /* UWRPTRACE=lo,hi (hex clock values): every hook call while the clock is in [lo, hi) goes to
    TRACE.OUT as a line: the call count, the stream, the value, and in DOS the caller's return
@@ -395,14 +427,25 @@ static void rp_start(void)
             return;
     }
     if (rp_mode == RP_OFF) {
-        log_fd = open("RECORD.OUT", O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0x180);
+        log_fd = open(RECORD_NAME, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0x180);
         if (log_fd < 0) return;
         rp_mode = RP_RECORD;
         write(log_fd, hdr, HDR_LEN);
     }
+    if (BLACKBOX) return;
     dump_fd = open("STATE.OUT", O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0x180);
     if (getenv("UWRPCK")) ck_mask = ~(strtoul(getenv("UWRPCK"), 0, 16) - 1);
     if (getenv("UWRPFB")) dump_fb = 1;
+    if (getenv("UWRPFULL")) {
+        char *e = getenv("UWRPFULL");
+        full_lo = strtoul(e, &e, 16);
+        full_hi = *e ? strtoul(e + 1, 0, 16) : 0xFFFFFFFFUL;
+    }
+    if (getenv("UWRPHOOK")) {
+        char *e = getenv("UWRPHOOK");
+        hook_lo = strtoul(e, &e, 16);
+        hook_hi = *e ? strtoul(e + 1, 0, 16) : 0xFFFFFFFFUL;
+    }
     if (getenv("UWRPTRACE")) {
         char *e = getenv("UWRPTRACE");
         trace_lo = strtoul(e, &e, 16);
@@ -636,7 +679,8 @@ static int begin(void)
     rp_start();
     if (rp_mode == RP_OFF || finishing) return 0;
     events++;
-    if (rp_mode == RP_REPLAY && events == stop_at) rp_finish(CK_END);
+    if (rp_mode == RP_REPLAY && events == stop_at && !NO_STOP) rp_finish(CK_END);
+    if (events >= hook_lo && events < hook_hi && dump_fd >= 0) rp_dump(CK_HOOK, 0, 1);
     return 1;
 }
 
@@ -764,7 +808,7 @@ uint32 far rp_time(void)
         if (trace_fd >= 0) trace(S_TIME, t_now, CALLER_CS, CALLER_IP);
         if ((t_now ^ last_ck_time) & ck_mask) {
             last_ck_time = t_now;
-            rp_dump(CK_PERIODIC, 0, 0);
+            rp_dump(CK_PERIODIC, 0, t_now >= full_lo && t_now < full_hi);
         }
         t = t_now;
     }
@@ -782,7 +826,7 @@ int far rp_key(void)
     if (!begin()) return RP_KEY_READ();
     if (rp_mode == RP_RECORD) {
         r = RP_KEY_READ();
-        if ((r >> 8 & 0xFF) == STOP_SCAN) rp_finish(CK_END);
+        if ((r >> 8 & 0xFF) == STOP_SCAN && !BLACKBOX) rp_finish(CK_END);
         for (n = 0, i = 0; i < KSTATE_LEN; i++)
             if (RP_KEYSTATE[i] != kstate[i]) n++;
         if (n || !kstate_known) {
@@ -1025,3 +1069,22 @@ void far rp_checkpoint(int n)
     if (misc(M_CKPT, (unsigned)n, 0) != (unsigned)n) desync(S_MISC, M_CKPT);
     rp_dump(CK_NAMED, n, 1);
 }
+
+#ifndef __TURBOC__
+/* The black box's end: the streams' last runs and chunks written, and the header's call count
+   left at FFFFFFFFh (NO_STOP), so that a replay goes on to the end of the streams, and after a
+   crash into the code that crashed, instead of stopping at a count that has wrapped. Called
+   from the fault handler too, on the game thread that faulted, so it only writes. crashed is
+   for the log. */
+void rp_blackbox_close(int crashed)
+{
+    static const unsigned char none[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+    (void)crashed;
+    if (!rp_blackbox || rp_mode != RP_RECORD || finishing) return;
+    finishing = 1;
+    record_close();
+    lseek(log_fd, 8, SEEK_SET);
+    write(log_fd, none, 4);
+    close(log_fd);
+}
+#endif

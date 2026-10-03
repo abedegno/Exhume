@@ -3,8 +3,10 @@
    records are copied into host structs field by field: each field is aligned to its own size
    (8 for a pointer), as clang lays out a struct between HOST_LAYOUT_BEGIN and _END, and the
    pointer fields start null. Each conversion is remembered by its result, so that
-   FILE_RECORDS_END can give the file's bytes after the records. */
+   FILE_RECORDS_END can give the file's bytes after the records. FARNULLREC's null records are
+   made the same way, from the vector table. */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "port.h"
@@ -58,4 +60,22 @@ void *port_file_records_end(const void *q)
     for (i = 0; i < nconv; i++)
         if (conv[i].host == q) return conv[i].file + (size_t)conv[i].n * conv[i].dos_size;
     port_fatal("FILE_RECORDS_END: not a FILE_RECORDS result");
+}
+
+/* FARNULLREC (portable.h): a null far pointer to a struct with the host's layout reads the
+   vector table by the struct's DOS layout; one conversion per layout, kept, and logged as
+   port_null_far's reads are. */
+void *port_null_far_record(const char *layout, unsigned host_size, const char *file, int line)
+{
+    static struct { const char *layout; void *host; } done[8];
+    unsigned char *port_null_copy(int far_table);
+    int i;
+    fprintf(stderr, PORT_NAME ": far null pointer read at %s:%d\n", file, line);
+    for (i = 0; i < 8 && done[i].layout; i++)
+        if (!strcmp(done[i].layout, layout)) return done[i].host;
+    if (i == 8) port_fatal("FARNULLREC: more than 8 layouts");
+    done[i].layout = layout;
+    done[i].host = port_file_records(port_null_copy(1), 1, layout, host_size);
+    nconv--;                            /* not a FILE_RECORDS result */
+    return done[i].host;
 }
