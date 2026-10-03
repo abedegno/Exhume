@@ -160,7 +160,10 @@ def main():
         for l in open(os.path.join(kcfg.map, 'functions.tsv')):
             if l.startswith('#'): continue
             f = l.rstrip('\n').split('\t')
-            if len(f) > 4 and f[4]: kf[(f[0], f[1])] = f[4].rstrip('_')
+            # only names the kin's map anchored or confirmed: its candidates ("size only",
+            # "calls disagree") were names it rejected (on UW1 they named a console printer
+            # free_speech_stuff and _ld_close free_timers)
+            if len(f) > 5 and f[4] and f[5] in ('anchor', 'confirmed'): kf[(f[0], f[1])] = f[4].rstrip('_')
         for t in os.listdir(kcfg.targets):
             if not t.endswith('.tsv'): continue
             seg = t[:-4]
