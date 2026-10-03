@@ -29,7 +29,7 @@ You are rebuilding one original source file (one code segment) as C that the ori
 - Calls to functions later in the same file: put a prototype or stub definition above the caller in a work file; only the merged file, with the real callee at its true offset, matches every displacement byte.
 - Initialised data and string literals must be defined in the file in the original order (data in definition order, then the literal pool in order of first use).
 - For statics in `_BSS` with no original name, choose names whose layout key puts them where the original has them (`python3 profiles/borland-tc101/bssorder.py NAMES...`), and say in a comment the name was chosen for layout.
-- A function the original had `static` has no overlay stub entry; verify reports such publics.
+- A function the original had `static` has no overlay stub entry; verify reports such publics. In an overlay, verify also checks the names against the stub table: the compiler lists publics in ascending order of a hash of the name (profiles/borland-tc101/bssorder.py), and TLINK numbers the stub entries in that order, so a wrongly named function shows as a `stub order` problem even when every byte matches. Choose a name whose key falls between its neighbours' (`python3 profiles/borland-tc101/bssorder.py NAMES...`).
 - Only edit your own source file. No git commands. Do not edit tools, target tables, other sources, symbols.tsv or matched.txt. Keep scratch files in a subfolder named after your file; other agents share the scratch area.
 - If a function will not match after about 20 builds, keep the best version and move on; report the remaining difference.
 

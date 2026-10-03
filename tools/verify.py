@@ -38,6 +38,16 @@ from fixups import fixups, target_name
 CFG = None
 DS_FILE = DS_PARA = None
 
+def stub_key():
+    """The toolchain profile's name key for the order of publics (bssorder.py's key), or None."""
+    p = os.path.join(config.EXHUME, 'profiles', CFG.profile_name, 'bssorder.py') if hasattr(CFG, 'profile_name') else None
+    if not p or not os.path.exists(p): return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('bssorder', p); m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m.key
+
+
 def read_symbols():
     """symbols.tsv as {name: address text}."""
     return {n: v for n, (v, _) in CFG.load_symbols().items()}
@@ -277,6 +287,19 @@ def main(argv=None, on_names=None):
             if off in stub[1]: pubs[name] = ('FAR', stub[0], stub[1][off])
             else: problems.append(f'{name} is public, but the overlay stub has no entry for +{off:X}: the original had it static')
     print(f'{len(o["fixups"])} fixups: {len(syms)} externs resolved, {internal} internal references, {len(pubs)} publics placed')
+    # an overlay's stub entries follow the order the compiler lists its publics, which for
+    # Turbo C is set by a hash of each name (the profile's bssorder.py): so the names of an
+    # overlay's functions must give the EXE's stub order, which the masked compare cannot see
+    if stub:
+        order = sorted((stub[1][off], name) for name, (si, off) in o['pubs'].items() if si == code and off in stub[1])
+        ko = stub_key()
+        if ko and len(order) > 1:
+            ks = [(e, n, ko(n[1:] if n.startswith('_') else n)) for e, n in order]   # the compiler's one underscore
+            for (e1, n1, k1), (e2, n2, k2) in zip(ks, ks[1:]):
+                if k2 < k1:
+                    problems.append(f'stub order: {n2} (key {k2}, stub +{e2:X}) follows {n1} (key {k1}, stub +{e1:X}), '
+                                    f'but the compiler lists publics by ascending key: one of the two names is wrong')
+            if not any(p.startswith('stub order') for p in problems): print(f'stub order: {len(ks)} entries agree with their names')
     # without --update, still check the names against symbols.tsv, read-only
     if on_names: on_names(syms)
     update(syms, pubs, problems, write='--update' in a)
