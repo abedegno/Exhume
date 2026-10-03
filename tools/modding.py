@@ -20,6 +20,10 @@ place it. The modding build therefore works from a snapshot the last exact link 
   holds as plain words (handler tables a module jumps through), found from the IDA listing's
   `dw offset` lines, so that a link can write them as `dw offset NAME`.
 
+- clear_overlay_padding(): zero the paragraph padding TLINK leaves after each overlay of a
+  Borland VROOMM EXE, which it fills from a buffer it does not clear, so that the unchanged
+  modding build can be compared byte for byte with the exact link.
+
 A link reference implementation (examples/uw2/extract.py and link.py) calls these: the exact
 run writes the snapshot, the --mod run lays the image out from it, links the changed objects
 in place of the matched ones, and skips the checks that only an exact link can pass (overlay
@@ -148,3 +152,33 @@ def code_offset_tables(found, exe, inside, name_at):
                     break
                 near[g] = n; g += 2
     return near
+
+
+def clear_overlay_padding(path):
+    """Zero the padding TLINK leaves after each overlay's code and fixup list in a Borland
+    VROOMM EXE, up to the next overlay's paragraph (or the end of the FBOV area), and return
+    how many of those bytes were not 0 (the file is rewritten only then; 0 for an EXE with no
+    FBOV block).
+
+    Nothing reads those bytes: the overlay manager loads an overlay's code and fixups by the
+    sizes in its stub (code size at stub+8, fixup size at stub+10, the overlay's offset in
+    the FBOV area at stub+4). TLINK fills them from a buffer it does not clear, so what lands
+    there depends on its heap and so on everything linked before. On UW2 they are all 0 in the
+    original and the exact link, but the modding link, whose extracted data names code
+    offsets where the exact link has bytes, leaves 4 bytes of old code after one overlay's
+    fixups (profiles/borland-tc101/linker.md, "Segment classes"). A gate that requires the
+    unchanged modding build to equal the exact link has to apply this to the modding EXE.
+    Never apply it to the exact link: that EXE is TLINK's own."""
+    d = bytearray(open(path, 'rb').read())
+    w16 = lambda i: struct.unpack_from('<H', d, i)[0]
+    hdr = w16(8) * 16; end = (w16(4) - 1) * 512 + w16(2) if w16(2) else w16(4) * 512
+    if d[end:end + 4] != b'FBOV': return 0
+    size, segtab, nseg = struct.unpack_from('<III', d, end + 4); base = end + 16
+    ovl = sorted((struct.unpack_from('<I', d, hdr + para * 16 + 4)[0], w16(hdr + para * 16 + 8), w16(hdr + para * 16 + 10))
+                 for para, _, fl, _ in (struct.unpack_from('<4H', d, segtab + 8 * i) for i in range(nseg)) if fl == 3)
+    n = 0
+    for k, (at, code, fix) in enumerate(ovl):
+        lo, hi = base + at + code + fix, base + (ovl[k + 1][0] if k + 1 < len(ovl) else size)
+        n += sum(1 for b in d[lo:hi] if b); d[lo:hi] = bytes(hi - lo)
+    if n: open(path, 'wb').write(d)
+    return n

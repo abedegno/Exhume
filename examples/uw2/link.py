@@ -17,7 +17,8 @@ every object verified), the sources whose text differs from that run's are compi
 <build>/MODLINK/src (the matched objects in <build> are left alone; tools/modding.py), and the
 EXE goes to <build>/MODLINK/out. Nothing is compared with your EXE, and an overlay's publics
 may come in any order (TLINK then numbers its stub entries differently, which nothing depends
-on: every call to them is a fixup).
+on: every call to them is a fixup). The paragraph padding after each overlay is set to 0, as
+UW2.EXE and the exact link have it (tools/modding.py, clear_overlay_padding).
 
 1. extract.py writes the data-only modules, manifest.json and renames.json under
    build/LINK (skip with --no-extract when they are current). Before it, a far data source
@@ -216,6 +217,8 @@ def main():
     if r.returncode: sys.exit(r.returncode)
     if mod:
         if not os.path.exists(os.path.join(out, 'UW2.EXE')) or errs: sys.exit('the modding link failed')
+        n = modding.clear_overlay_padding(os.path.join(out, 'UW2.EXE'))
+        if n: print(f'modding build: {n} stale bytes in the overlays\' paragraph padding set to 0 (tools/modding.py, clear_overlay_padding)')
         print(f'modding build: {os.path.join(out, "UW2.EXE")}, '
               f'{os.path.getsize(os.path.join(out, "UW2.EXE"))} bytes (yours: {len(CFG.exe)})')
         return
