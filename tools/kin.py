@@ -20,8 +20,10 @@ bytes are `same` or `near`, and the kin file that supplies most of them, which i
 file to seed the target segment's source from (skills/map-binary, "Seeding from kin").
 
 --functions also writes <map>/functions.tsv, which targets.py reads, for a target with no
-symbol-bearing sibling: each `same` or `near` procedure gets its kin's original name (the
-kin's functions.tsv), with how `kin-same` or `kin-near`. A procedure much larger than any
+symbol-bearing sibling: each `same` or `near` procedure of six or more instructions, whose
+`same` kin is unique, gets its kin's name (its target tables' cname, else its functions.tsv),
+with how `kin-same` or `kin-near`. (On UW1 a 7-byte `return 0` was `same` as a COMBINE.C
+function and was named after it.) A procedure much larger than any
 kin's (an IDA proc running on over data) is reported, not paired."""
 import sys, os, re, difflib, collections
 from iced_x86 import Decoder, Formatter, FormatterSyntax, OpKind, Register
@@ -173,8 +175,12 @@ def main():
                 if not l.startswith('#'):
                     x = l.rstrip('\n').split('\t')
                     if len(x) > 1 and x[1] not in ('None', ''): segbase[x[0]] = int(x[1], 16)
-            for r in rows:
-                name = kf.get((r[6], r[7]), '') if r[4] in ('same', 'near') else ''
+            # a short body (a `return 0`, an empty function) is the same as many kin functions,
+            # so its pairing names nothing: only a unique `same` or a `near` of at least six
+            # instructions passes a name on
+            for r, t in zip(rows, tn):
+                ok = r[4] == 'near' or (r[4] == 'same' and len(exact.get(tuple(t), ())) == 1)
+                name = kf.get((r[6], r[7]), '') if ok and len(t) >= 6 else ''
                 f.write(f'{r[0]}\t{r[1]}\t{r[2] - segbase[r[0]]:X}\t{r[3]:X}\t{name}\t{"kin-" + r[4] if name else ""}\t0\t0\n')
     T = sum(tot.values())
     print(f'all: {T} bytes in {len(rows)} procs: same {tot["same"] * 100 // T}%, near {tot["near"] * 100 // T}%, '
