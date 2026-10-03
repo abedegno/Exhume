@@ -23,7 +23,11 @@ def main(argv):
     cfg = config.load(path); seg = a[0]
     M = lambda p: [l.rstrip('\n').split('\t') for l in open(os.path.join(cfg.map, p)) if not l.startswith('#')]
     base = next(int(r[1], 16) for r in M('segments.tsv') if r[0] == seg and r[1])
-    procs = [(r[1], int(r[2], 16), r[3]) for r in M('procs.tsv') if r[0] == seg]
+    # a listed proc with no offset (a label IDA could not place) or one past any 16-bit
+    # segment (a stray address IDA named) is not a function of this segment
+    bad = [r[1] for r in M('procs.tsv') if r[0] == seg and (r[2] in ('None', '') or int(r[2], 16) > 0xFFFF)]
+    if bad: print(f'# skipped listing entries: {", ".join(bad)}', file=sys.stderr)
+    procs = [(r[1], int(r[2], 16), r[3]) for r in M('procs.tsv') if r[0] == seg and r[1] not in bad]
     names = {r[1]: (r[4].rstrip('_'), r[5]) for r in M('functions.tsv') if r[0] == seg}
     procs.sort(key=lambda p: p[1])
     exe = cfg.exe
