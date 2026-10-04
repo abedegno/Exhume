@@ -299,6 +299,16 @@ def main(argv=None, on_names=None):
                 if k2 < k1:
                     problems.append(f'stub order: {n2} (key {k2}, stub +{e2:X}) follows {n1} (key {k1}, stub +{e1:X}), '
                                     f'but the compiler lists publics by ascending key: one of the two names is wrong')
+            # the order itself, ties of equal keys included: TLINK numbers the stub entries from
+            # the last public the object lists, so the object's own order, reversed, is the EXE's
+            listed = [n for n, (si, off) in o['pubs'].items() if si == code and off in stub[1]][::-1]
+            want = [n for _, n in order]
+            if not any(p.startswith('stub order') for p in problems) and listed != want:
+                i = next(i for i, (a, b) in enumerate(zip(listed, want)) if a != b)
+                problems.append(f'stub order: the object lists {listed[i]} where the stub has {want[i]} (stub entry {i + 1} '
+                                f'of {len(want)}): their keys are equal, and the compiler breaks the tie by the order '
+                                f'it first sees the names (the first seen is listed last, so it takes the earlier stub entry): '
+                                f'name {want[i]} before {listed[i]}, with a prototype at the top of the file if need be')
             if not any(p.startswith('stub order') for p in problems): print(f'stub order: {len(ks)} entries agree with their names')
     # without --update, still check the names against symbols.tsv, read-only
     if on_names: on_names(syms)

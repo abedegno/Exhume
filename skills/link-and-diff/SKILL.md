@@ -27,6 +27,10 @@ Paths are relative to the Exhume checkout. The link is the strongest check there
 
 A DGROUP address written as a number (`mov si,6742h` for `offset DGROUP:_Palettes`) assembles to the same bytes as the name, so it matches and links exactly. Only a link that moves data exposes it. Run `tools/addrscan.py` and the layout audit in skills/modding-build before any change that alters sizes.
 
+## TLINK leaves memory uncleared
+
+TLINK does not clear the memory it builds the image in. Padding and data no record covers come out as whatever was there, so the same link can give different bytes in different DOS set-ups or as the module list changes (UW1: 35 bytes of DGROUP padding were stale code under emu2 with 640 KB, and 0 under DOSBox-X or emu2 at 512 KB, `EMU2_LOWMEM`; UW2's modding build met it in overlay padding). When a difference is a few bytes of padding holding old code, change the DOS's memory before suspecting the objects.
+
 ## Reading exediff
 
 - Relocations with the same set in a different order: a segment that was several modules is one source here, or modules are in the wrong order. Split by the linker's padding and the relocation order.
