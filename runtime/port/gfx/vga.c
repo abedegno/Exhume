@@ -238,9 +238,13 @@ void vga_get_dac(uint8_t rgb6[768])
 static uint8_t window[0x30000];
 #define WINDOW (window + 0x10000)
 
+/* The window's host memory, for the x86 machine's accesses (x86/asmrt.h). */
+uint8_t *asm_vga_base;
+
 void vga_window_init(void)
 {
     pm_add("A000 the VGA window", WINDOW, 0x10000, 0xA000);
+    asm_vga_base = WINDOW;
 }
 
 int vga_in_window(const volatile void *p)

@@ -125,7 +125,7 @@ def load_exe():
 
 def load_target(name):
     for l in open(os.path.join(TARGETS, name + '.tsv')):
-        m = re.match(r'# segment \S+ base 0x([0-9A-F]+) size 0x([0-9A-F]+)(?: org 0x([0-9A-F]+))?', l)
+        m = re.match(r'# segment \S+ base 0x([0-9A-Fa-f]+) size 0x([0-9A-Fa-f]+)(?: org 0x([0-9A-Fa-f]+))?', l)
         if m: return int(m.group(1), 16), int(m.group(2), 16), int(m.group(3) or '0', 16)
     die('no segment line in targets/%s.tsv' % name)
 
@@ -174,6 +174,9 @@ class Item:
         s.addr = None; s.len = 0; s.ins = None; s.labels = []; s.data = None; s.co = None
 
 
+DGROUP_NAMES = {}
+
+
 def parse(path):
     """The items of the module's code segment: labels, instructions and data, with the comment
     block before each proc."""
@@ -181,6 +184,9 @@ def parse(path):
     text = '\n'.join(lines)
     target = re.search(r'/\*\s*target:\s*(\w+)\s*\*/', text).group(1)
     items = []; incode = False; pending = []; block = []
+    # names declared in DGROUP's data (an extrn inside _DATA or .data): C objects in the port,
+    # which an operand naming one cannot reach through a segment register (emit)
+    indata = False; dgroup = set()
     for no, raw in enumerate(lines, 1):
         code, _, comment = raw.partition(';')
         if "'" in code and ';' in raw:
@@ -188,10 +194,17 @@ def parse(path):
             m = re.match(r"^([^;']*'[^']*'[^;]*)(;.*)?$", raw)
             if m: code = m.group(1); comment = (m.group(2) or ';')[1:]
         s = code.strip()
+        if re.match(r'_DATA\s+segment\b|\.data\b', s, re.I): indata = True
+        elif re.match(r'_DATA\s+ends\b|\.code\b|\w+\s+segment\b', s, re.I): indata = False
+        if indata:
+            for n in re.findall(r'\bextrn\s+(.*)', s, re.I):
+                dgroup.update(x.split(':')[0].strip() for x in n.split(','))
         if not incode:
-            if re.match(r'\w+_TEXT\s+segment\b', s, re.I): incode = True
+            # a code segment by name, or TASM's simplified .code
+            if re.match(r'\w+_TEXT\s+segment\b', s, re.I) or re.match(r'\.code\b', s, re.I): incode = True
             continue
-        if re.match(r'\w+_TEXT\s+ends\b', s, re.I): incode = False; continue
+        if re.match(r'\w+_TEXT\s+ends\b', s, re.I) or re.match(r'\.(data|data\?|fardata|fardata\?|const|stack)\b', s, re.I):
+            incode = False; continue
         if not s:
             if comment.strip() or raw.strip().startswith(';'): block.append(comment.rstrip())
             else: block = []
@@ -223,6 +236,7 @@ def parse(path):
         if re.match(r'even\b', s, re.I):
             items.append(Item('even', no, s)); continue
         it = Item('ins', no, s, comment.strip()); items.append(it); block = []
+    DGROUP_NAMES[path] = dgroup
     return target, items
 
 
@@ -258,6 +272,16 @@ def layout(path, exe, hdr):
         # shorten, and do_goursurfv's `db 0A8h` (test al, swallowing the next lodsw)
         execd = it.kind == 'data' and it.dkind == 'db' and (
             re.search(r'\bjmp\b', it.comment) is not None or 'test al,' in it.comment)
+        # an instruction the source writes as bytes to keep the original's encoding, which its
+        # comment names ("match: mov bx,word ptr [bp+8]: disp16, ..."): run it when the bytes
+        # decode to that instruction, all of them
+        if not execd and it.kind == 'data' and it.dkind == 'db':
+            mm = re.match(r'\s*match:\s*(\w+)\b', it.comment)
+            if mm:
+                pos = base + (addr - org)
+                ins = I.Decoder(16, exe[pos:pos + 16], ip=addr).decode()
+                got = SYN.get(MN[ins.mnemonic], MN[ins.mnemonic]) if not ins.is_invalid else None
+                execd = got is not None and got == SYN.get(mm.group(1).lower(), mm.group(1).lower()) and ins.len == it.len
         if it.kind in ('ins', 'even') or execd:
             pos = base + (addr - org)
             dec = I.Decoder(16, exe[pos:pos + 16], ip=addr)
@@ -299,6 +323,29 @@ def layout(path, exe, hdr):
             out.append(it)
             addr += it.len; k += 1; continue
         die('item kind ' + it.kind)
+    # A jump into the middle of an instruction (`L5EE9 equ $+1` after a `test ax,0FBD1h` whose
+    # immediate runs as `sar bx,1`): the bytes from the target on are decoded as instructions of
+    # their own until they meet the module's instruction stream again, and translated as well.
+    starts = {x.addr for x in out if x.kind == 'ins'}
+    spans = [(x.addr, x.addr + x.len) for x in out if x.kind == 'ins']
+    targets = {x.ins.near_branch16 for x in out if x.kind == 'ins' and x.ins is not None
+               and x.ins.op_count and x.ins.op_kind(0) == OK_.NEAR_BRANCH16}
+    for lab in [x for x in items if x.kind == 'label' and x.addr is not None]:
+        a = lab.addr
+        if a in starts or a not in targets or not any(lo < a < hi for lo, hi in spans): continue
+        first = True
+        while a not in starts:
+            pos = base + (a - org)
+            dec = I.Decoder(16, exe[pos:pos + 16], ip=a)
+            ins = dec.decode()
+            if ins.is_invalid: die(f'{path}:{lab.line}: cannot decode the bytes {lab.name} jumps into')
+            syn = Item('ins', lab.line, '', f'the bytes from {lab.name} on, run as instructions of their own')
+            syn.ins = ins; syn.co = dec.get_constant_offsets(ins); syn.len = ins.len; syn.addr = a; syn.pos = pos
+            syn.labels = [lab] if first else []
+            out.append(syn); starts.add(a)
+            first = False
+            a += ins.len
+            if ins.flow_control not in (FC.NEXT, FC.CALL, FC.CONDITIONAL_BRANCH): break
     labels = {}
     for it in items:
         if it.kind == 'label':
@@ -572,10 +619,22 @@ def emit(mod, it, patched, entries):
     key = (mod['name'], it.addr)
     if key in OVERRIDES: return OVERRIDES[key][0].split('\n')
     if 'DGROUP:' in it.src: die(f"{mod['path']}:{it.line}: a DGROUP offset: the port's DGROUP is C objects (OVERRIDES)")
+    for n in DGROUP_NAMES.get(mod['path'], ()):
+        if re.search(r'(?<![\w@$?])' + re.escape(n) + r'(?![\w@$?])', it.src):
+            die(f"{mod['path']}:{it.line}: {n} is DGROUP data: the port's DGROUP is C objects (OVERRIDES)")
     # a patched opcode byte
     if (seg, it.addr) in patched and (seg, it.addr) not in PATCH_OVERRIDDEN:
         if ins.flow_control == FC.CONDITIONAL_BRANCH and it.len == 2 and 0x70 <= ins.code_size + 0x70:
             return [f'if (asm_jcc({mod["cs"]}[0x{it.addr:04X}])) {jtarget(mod, ins.near_branch16)}']
+        # add r16,r/m16 (03h) and sub r16,r/m16 (2Bh) share their ModRM: code that turns one
+        # into the other writes the opcode byte, so the translation tests it
+        if ins.code in (I.Code.ADD_R16_RM16, I.Code.SUB_R16_RM16) and ins.segment_prefix == I.Register.NONE:
+            c2 = Ctx(mod, it, patched); LAST[0] = c2
+            a = c2.rd(0); b = c2.rd(1, 16); fl = it.live
+            def one(op):
+                if fl & ALLF: return c2.wr(0, f'{op}16({a}, {b}, 0)')
+                return c2.wr(0, f'(uint16_t)({a} {"+" if op == "add" else "-"} {b})')
+            return [f'if ({mod["cs"]}[0x{it.addr:04X}] == 0x2B) {{ {one("sub")} }} else {{ {one("add")} }}']
         die(f"{mod['path']}:{it.line}: an instruction whose opcode another writes, with no override")
     fl = it.live
     L = []
@@ -598,6 +657,15 @@ def emit(mod, it, patched, entries):
         L.append(c.wr(0, f'({CT[size]})({ST[s1]}){v}' if m == 'movsx' else f'({CT[size]}){v}'))
     elif m == 'lea':
         L.append(c.wr(0, f'({CT[size]})({c.ea()})'))
+    elif m in ('lds', 'les', 'lfs', 'lgs', 'lss'):
+        # a far pointer loaded from memory: the register gets the word at the operand, the
+        # segment register the word after it (both read before either is written, since the
+        # register may be part of the address)
+        if size != 16: die(f"{mod['path']}:{it.line}: {m} with a 32-bit offset")
+        p = c.segptr(ins.memory_segment); e = c.ea()
+        L.append(f'{{ uint16_t o_ = rw({p}, (uint16_t)({e})), s_ = rw({p}, (uint16_t)({e} + 2));')
+        L.append(c.wr(0, 'o_'))
+        L.append(f'SET_{m[1:].upper()}(s_); }}')
     elif m == 'xchg':
         if ins.op_kind(0) == OK_.REGISTER and ins.op_kind(1) == OK_.REGISTER and ins.op_register(0) == ins.op_register(1):
             pass
@@ -655,20 +723,22 @@ def emit(mod, it, patched, entries):
     elif m == 'cwde': L.append('EAX = (uint32_t)(int16_t)AX;')
     elif m == 'cwd': L.append('DX = (int16_t)AX < 0 ? 0xFFFF : 0;')
     elif m == 'cdq': L.append('EDX = (int32_t)EAX < 0 ? 0xFFFFFFFFu : 0;')
-    elif m in ('lodsb', 'lodsw', 'lodsd', 'stosb', 'stosw', 'stosd', 'movsb', 'movsw', 'movsd', 'scasb', 'scasw'):
+    elif m in ('lodsb', 'lodsw', 'lodsd', 'stosb', 'stosw', 'stosd', 'movsb', 'movsw', 'movsd', 'scasb', 'scasw',
+               'cmpsb', 'cmpsw'):
         n = {'b': 1, 'w': 2, 'd': 4}[m[-1]]; bits = n * 8
         acc = {1: 'AL', 2: 'AX', 4: 'EAX'}[n]
         src = None
-        if m.startswith(('lods', 'movs')):
+        if m.startswith(('lods', 'movs', 'cmps')):
             src = c.segptr(ins.memory_segment)
         if m.startswith('lods'): body = f'{acc} = {RD[bits]}({src}, SI); SI = (uint16_t)(SI + STEP({n}));'
         elif m.startswith('stos'): body = f'{WR[bits]}(pES, DI, {acc}); DI = (uint16_t)(DI + STEP({n}));'
         elif m.startswith('movs'): body = f'{WR[bits]}(pES, DI, {RD[bits]}({src}, SI)); SI = (uint16_t)(SI + STEP({n})); DI = (uint16_t)(DI + STEP({n}));'
+        elif m.startswith('cmps'): body = f'sub{bits}({RD[bits]}({src}, SI), {RD[bits]}(pES, DI), 0); SI = (uint16_t)(SI + STEP({n})); DI = (uint16_t)(DI + STEP({n}));'
         else: body = f'sub{bits}({acc}, {RD[bits]}(pES, DI), 0); DI = (uint16_t)(DI + STEP({n}));'
         if ins.has_repne_prefix:
             L.append(f'while (CX) {{ {body} CX--; if (ZF) break; }}')
         elif ins.has_rep_prefix or ins.has_repe_prefix:
-            if m.startswith('scas'): L.append(f'while (CX) {{ {body} CX--; if (!ZF) break; }}')
+            if m.startswith(('scas', 'cmps')): L.append(f'while (CX) {{ {body} CX--; if (!ZF) break; }}')
             else: L.append(f'while (CX) {{ {body} CX--; }}')
         else:
             L.append(body)
@@ -707,6 +777,12 @@ def emit(mod, it, patched, entries):
         elif k == OK_.FAR_BRANCH16:
             note_hand(ins.far_branch_selector, ins.far_branch16)
             L.append(f'if ((c = asm_callf(ASM_JMP(0x{ins.far_branch_selector:04X}, 0x{ins.far_branch16:04X}), 0x{seg:04X} + PORT_LOAD_SEG, 0x{nxt:04X})) != 0) return c;')
+        elif ins.is_call_far_indirect and k == OK_.MEMORY:
+            # a far pointer in memory, whose segment is a loaded one (the EXE's paragraph plus
+            # the load segment, as DOS relocated it)
+            p = c.segptr(ins.memory_segment); e = c.ea()
+            L.append(f'{{ uint16_t o_ = rw({p}, (uint16_t)({e})), s_ = rw({p}, (uint16_t)({e} + 2));')
+            L.append(f'  if ((c = asm_callf(ASM_JMP((uint16_t)(s_ - PORT_LOAD_SEG), o_), 0x{seg:04X} + PORT_LOAD_SEG, 0x{nxt:04X})) != 0) return c; }}')
         elif ins.is_call_far_indirect:
             die(f"{mod['path']}:{it.line}: an indirect far call")
         else:
@@ -904,6 +980,7 @@ def build(check=False, only=None):
     t.append('')
     t.append('const struct asm_module asm_modules[] = {')
     for mod in mods:
+        if not mod['items']: die(f"{mod['path']}: no instructions (a module of data only, which needs no translation)")
         lo = min(x.addr for x in mod['items']); hi = max(x.addr + x.len for x in mod['items'])
         t.append(f'    {{ 0x{mod["seg"]:04X}, 0x{lo:04X}, 0x{hi:04X}, asm_mod_{mod["name"]}, "{os.path.basename(mod["path"])}" }},')
     t.append('};')

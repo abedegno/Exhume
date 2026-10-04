@@ -93,28 +93,49 @@ uint8_t *asm_segbase(uint16_t seg);
 /* The flags the modules use. The parity and auxiliary flags are never tested by them. */
 extern uint8_t CF, ZF, SF, OF, DF;
 
-/* Memory: a byte, word or dword at a 16-bit offset of a segment. */
-static inline uint8_t rb(const uint8_t *p, uint32_t a) { return p[(uint16_t)a]; }
+/* Memory: a byte, word or dword at a 16-bit offset of a segment. An access that lands in the
+   VGA's window (A000:0000 to FFFF, gfx/vga.c, which sets asm_vga_base) goes to the emulated
+   card a byte at a time, as the CPU's accesses reached the card over its 8-bit bus: a read loads
+   the latches, a write goes through the map mask and the write mode. So translated code that
+   draws to video memory itself (mode X: latched copies, plane writes) does what it did. */
+extern uint8_t *asm_vga_base;
+#define ASM_VGA(q) ((uintptr_t)(q) - (uintptr_t)asm_vga_base < 0x10000u)
+#define ASM_VGA_OFF(q) ((uint16_t)((uintptr_t)(q) - (uintptr_t)asm_vga_base))
+static inline uint8_t rb(const uint8_t *p, uint32_t a)
+{
+    const uint8_t *q = p + (uint16_t)a;
+    if (ASM_VGA(q)) return vga_read(ASM_VGA_OFF(q));
+    return *q;
+}
 static inline uint16_t rw(const uint8_t *p, uint32_t a)
 {
     const uint8_t *q = p + (uint16_t)a;
+    if (ASM_VGA(q)) return (uint16_t)(vga_read(ASM_VGA_OFF(q)) | vga_read((uint16_t)(ASM_VGA_OFF(q) + 1)) << 8);
     return (uint16_t)(q[0] | q[1] << 8);
 }
 static inline uint32_t rd(const uint8_t *p, uint32_t a)
 {
     const uint8_t *q = p + (uint16_t)a;
+    if (ASM_VGA(q)) return (uint32_t)rw(p, a) | (uint32_t)rw(p, a + 2) << 16;
     return (uint32_t)q[0] | (uint32_t)q[1] << 8 | (uint32_t)q[2] << 16 | (uint32_t)q[3] << 24;
 }
-static inline void wb(uint8_t *p, uint32_t a, uint8_t v) { p[(uint16_t)a] = v; }
+static inline void wb(uint8_t *p, uint32_t a, uint8_t v)
+{
+    uint8_t *q = p + (uint16_t)a;
+    if (ASM_VGA(q)) { vga_write(ASM_VGA_OFF(q), v); return; }
+    *q = v;
+}
 static inline void ww(uint8_t *p, uint32_t a, uint16_t v)
 {
     uint8_t *q = p + (uint16_t)a;
+    if (ASM_VGA(q)) { vga_write(ASM_VGA_OFF(q), (uint8_t)v); vga_write((uint16_t)(ASM_VGA_OFF(q) + 1), (uint8_t)(v >> 8)); return; }
     q[0] = (uint8_t)v;
     q[1] = (uint8_t)(v >> 8);
 }
 static inline void wd(uint8_t *p, uint32_t a, uint32_t v)
 {
     uint8_t *q = p + (uint16_t)a;
+    if (ASM_VGA(q)) { ww(p, a, (uint16_t)v); ww(p, a + 2, (uint16_t)(v >> 16)); return; }
     q[0] = (uint8_t)v;
     q[1] = (uint8_t)(v >> 8);
     q[2] = (uint8_t)(v >> 16);

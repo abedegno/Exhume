@@ -517,6 +517,29 @@ def port_exe(variant=''):
     return os.path.join(portcfg.variant_out(CFG, variant), RC.port_exe_name)
 
 
+def port_data(out):
+    """The game's directory as the port sees it in a replay: [replay] data, less [replay]
+    data_skip, as the DOS runs stage it (UW1: the player's own saved games, which every session
+    starts without). With nothing to skip it is the directory itself; else a directory under
+    out of links to its entries, leaving out the skipped ones."""
+    if not RC.data_skip: return DATA
+    skip = {x.replace('\\', '/').strip('/').upper() for x in RC.data_skip}
+    root = os.path.join(out, 'data')
+    shutil.rmtree(root, ignore_errors=True)
+    def link(rel):
+        src = os.path.join(DATA, rel) if rel else DATA
+        os.makedirs(os.path.join(root, rel), exist_ok=True)
+        for name in sorted(os.listdir(src)):
+            r = f'{rel}/{name}' if rel else name
+            if r.upper() in skip: continue
+            if os.path.isdir(os.path.join(src, name)) and any(k.startswith(r.upper() + '/') for k in skip):
+                link(r)
+            else:
+                os.symlink(os.path.abspath(os.path.join(src, name)), os.path.join(root, r))
+    link('')
+    return root
+
+
 def run_port(rec, out, extra=(), stage=None, quiet=False):
     extra = list(extra)
     debug = '--debug' in extra
@@ -533,7 +556,7 @@ def run_port(rec, out, extra=(), stage=None, quiet=False):
         dst = os.path.join(home, *RC.cfg_path.replace('\\', '/').split('/'))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy(cfg, dst)
-    cmd = [exe, RC.port_data_flag, DATA, RC.port_home_flag, home] + RC.port_args + \
+    cmd = [exe, RC.port_data_flag, port_data(out), RC.port_home_flag, home] + RC.port_args + \
           [RC.port_replay_flag, os.path.abspath(rec)] + list(extra)
     r = subprocess.run(cmd, capture_output=True, text=True)
     open(os.path.join(out, 'port.log'), 'w').write(r.stdout + r.stderr)
