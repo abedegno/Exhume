@@ -240,9 +240,30 @@ static uint32 snd_left;                 /* replaying: its runs still to come */
 static uint32 snd_reads, snd_diffs, snd_diff_ticks, snd_diff_clock;
 static void snd_check_out(void);
 
+/* Replay.c's own stack. The game calls the hooks on whatever stack it is running on, and some
+   of its stacks are small: UW1 polls the mouse buttons on SYSENTRY.ASM's 0D4h-byte stack in
+   DGROUP, below which lie the C library's near heap variables (__first, __last, __rover), so a
+   full dump made there overran it and corrupted the heap, and DS:4 was written later through
+   the heap's free list. In the DOS build the work that goes deep (opening the files, writing
+   and reading chunks, the dumps, the trace, the end) runs on this stack instead, when the
+   caller's stack is in DGROUP (SS = DS, as Turbo C's near pointers to locals need); in the
+   port it runs where it is. */
+#ifdef __TURBOC__
+static unsigned char own_stack[0x800];
+static unsigned own_sp;
+static int16 own_on;
+#define OWN_STACK(stmt) do { \
+    if (own_on || _SS != _DS) { stmt; } \
+    else { own_on = 1; own_sp = _SP; _SP = (unsigned)(own_stack + sizeof own_stack); \
+           stmt; _SP = own_sp; own_on = 0; } \
+} while (0)
+#else
+#define OWN_STACK(stmt) do { stmt; } while (0)
+#endif
+
 /* ---- the recording ------------------------------------------------------------------- */
 
-static void chunk_out(int s)
+static void chunk_write(int s)
 {
     unsigned char h[3];
     struct Stream *p = &st[s];
@@ -253,6 +274,11 @@ static void chunk_out(int s)
     write(log_fd, h, 3);
     write(log_fd, p->buf, p->len);
     p->len = 0;
+}
+
+static void chunk_out(int s)
+{
+    OWN_STACK(chunk_write(s));
 }
 
 static void put_byte(int s, int b)
@@ -413,20 +439,32 @@ static void misc_out(int tag, uint32 v, int dword)
 
 /* the next byte of stream s: its next chunk is found by reading the chunk headers from where
    the last one ended, or -1 at the end of the file */
-static int get_byte(int s)
+static int16 refill_end;
+
+static void refill(int s)
 {
     struct Stream *p = &st[s];
     unsigned char h[3];
     unsigned n;
     while (p->pos >= p->len) {
         lseek(log_fd, p->scan, SEEK_SET);
-        if (read(log_fd, h, 3) != 3) return -1;
+        if (read(log_fd, h, 3) != 3) { refill_end = 1; return; }
         n = h[1] | h[2] << 8;
         p->scan += 3 + n;
         if (h[0] == s && n <= sizeof p->buf) {
             p->len = read(log_fd, p->buf, n);
             p->pos = 0;
         }
+    }
+}
+
+static int get_byte(int s)
+{
+    struct Stream *p = &st[s];
+    if (p->pos >= p->len) {
+        refill_end = 0;
+        OWN_STACK(refill(s));
+        if (refill_end) return -1;
     }
     return p->buf[p->pos++];
 }
@@ -519,11 +557,10 @@ static struct Stream *replayed(int s)
 
 /* ---- starting and stopping -------------------------------------------------------- */
 
-static void rp_start(void)
+static void rp_start_on(void)
 {
     static char hdr[] = RP_MAGIC "\4\0\0\0\0\0\0\0";
     int s;
-    if (rp_mode >= 0) return;
     rp_mode = RP_OFF;
     if (rp_request == RP_OFF) return;
     if (rp_request != RP_RECORD) {
@@ -567,6 +604,12 @@ static void rp_start(void)
         trace_hi = *e ? strtoul(e + 1, 0, 16) : 0xFFFFFFFFUL;
         trace_fd = open("TRACE.OUT", O_WRONLY | O_CREAT | O_TRUNC | O_TEXT, 0x180);
     }
+}
+
+static void rp_start(void)
+{
+    if (rp_mode >= 0) return;
+    OWN_STACK(rp_start_on());
 }
 
 /* recording: every run and chunk written, and the call count it stopped at in the header; a
@@ -736,7 +779,7 @@ static void dump_counts(void)
     for (i = 1; i < NSTREAMS; i++) dump_dword(calls[i]);
 }
 
-static void rp_dump(int kind, int n, int full)
+static void rp_dump_on(int kind, int n, int full)
 {
     int level;
     if (dump_fd < 0) return;
@@ -750,6 +793,11 @@ static void rp_dump(int kind, int n, int full)
     RP_DUMP(full, level, dump_fb);
 }
 
+static void rp_dump(int kind, int n, int full)
+{
+    OWN_STACK(rp_dump_on(kind, n, full));
+}
+
 /* The replay has gone astray: stream want did not give what the game asked for. */
 static void desync(int want, int got)
 {
@@ -759,9 +807,8 @@ static void desync(int want, int got)
 
 /* The end: a last full dump, the files closed, and the game shut down as main does. A
    negative kind means the dump is written already (desync). */
-static void rp_finish(int kind)
+static void rp_finish_on(int kind)
 {
-    if (finishing) return;
     finishing = 1;
     if (rp_mode == RP_RECORD) record_close();
     if (rp_mode == RP_REPLAY) snd_check_out();
@@ -774,6 +821,12 @@ static void rp_finish(int kind)
     if (dump_fd >= 0) close(dump_fd);
     RP_SHUTDOWN();
     exit(0);
+}
+
+static void rp_finish(int kind)
+{
+    if (finishing) return;
+    OWN_STACK(rp_finish_on(kind));
 }
 
 #ifndef __TURBOC__
@@ -839,7 +892,7 @@ static void trace(int s, uint32 v, unsigned cs, unsigned ip)
     hex(line + 35, ip2, 4);
     line[39] = '\n';
     if (trace_len + 40 > sizeof trace_buf) {
-        write(trace_fd, trace_buf, trace_len);
+        OWN_STACK(write(trace_fd, trace_buf, trace_len));
         trace_len = 0;
     }
     memcpy(trace_buf + trace_len, line, 40);

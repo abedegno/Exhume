@@ -491,6 +491,8 @@ def run_dos(out, rec=None, steps=(), timeout=900, cfg=None, stage=None, log=None
     by default DOSBox-X for a replay when it is installed)."""
     exe = exe or build()
     stage = stage or STAGE
+    if not backend and rec:            # [replay] dos_backend: a session that needs a particular DOS
+        backend = RC.dos_backend.get(os.path.splitext(os.path.basename(rec))[0])
     cmd = ['node', os.path.join(here, 'replaydos.mjs'), exe, out, '--timeout', str(timeout),
            '--data', DATA, '--exe-name', RC.exe_name]
     for s in RC.data_skip: cmd += ['--skip', s]

@@ -387,6 +387,19 @@ void *port_file_records_end(const void *q);
 #define STACK_JUNK(v) = (v)
 #endif
 
+/* STACK_JUNK_SET(lv, v): the same for a part of a local that cannot take an initialiser, a
+   field or bitfield of a local struct the original sets field by field and reads one of
+   before it sets it (UW1: CUTS.C's show_anm never sets its CutsState's flag b7 before the
+   pause loop reads it, so a cutscene's pause waits for speech or not by what the stack held).
+   Written as a statement, `STACK_JUNK_SET(st.flags.bit.b7, 0);`, after the declarations: an
+   empty statement under Turbo C, so the DOS bytes are the same; the assignment in the replay
+   build and the port. */
+#if defined(__TURBOC__) && !defined(REPLAY)
+#define STACK_JUNK_SET(lv, v)
+#else
+#define STACK_JUNK_SET(lv, v) ((lv) = (v))
+#endif
+
 /* RENDER_TAG(o): the game is about to hand object o to its renderer (UW2: DRAWOBJ.C is about
    to write the sprite opcode that draws o, at dbptr). The port records which object it is,
    so that a per-object hook can name the object the renderer draws; nothing in DOS, so the

@@ -189,7 +189,7 @@ def replay(cfg):
         cfg_path=r.get('cfg_path'),                 # where a session's .cfg goes in the game's tree
         saves=list(r.get('saves', [])),
         hooks=list(r.get('hooks', ['GAME_TIME', 'KEY', 'MOUSE', 'MBUTTONS', 'JOY_READ', 'JOY_BUTTONS',
-                                    'WALL_TIME', 'SRAND', 'CHECKPOINT', 'STACK_JUNK', 'SND_READ', 'SLAVE_TIMER'])),
+                                    'WALL_TIME', 'SRAND', 'CHECKPOINT', 'STACK_JUNK', 'STACK_JUNK_SET', 'SND_READ', 'SLAVE_TIMER'])),
         shared_opts=r.get('shared_opts', cfg.c_opts),
         env=list(r.get('env', ['UWRPCK', 'UWRPTRACE', 'UWRPFB', 'UWRPFULL', 'UWRPHOOK'])),
         out_files=list(r.get('out_files', ['RECORD.OUT', 'STATE.OUT', 'NULLTRAP.LOG', 'TRACE.OUT', 'SNDCHECK.OUT'])),
@@ -211,6 +211,8 @@ def replay(cfg):
         sound_check=r.get('sound_check', True),
         driver_check=r.get('driver_check'),          # a command run on the port's driver logs
         dos_jobs=dict(r.get('dos_jobs', {'dosbox-x': 8, 'jsdos': 4})),
+        # sessions whose DOS replays need a particular DOS (UW1's sound session hangs in DOSBox-X)
+        dos_backend=dict(r.get('dos_backend', {})),
         dosbox_conf=_path(cfg, r['dosbox_conf']) if r.get('dosbox_conf') else None,
         c0_signature=r.get('c0_signature', cfg.profile.get('fingerprint', {}).get('dgroup_anchor', '')),
         c0_signature_at=int(r.get('c0_signature_at', cfg.profile.get('fingerprint', {}).get('dgroup_anchor_offset', 4))),

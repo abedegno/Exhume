@@ -301,9 +301,10 @@ def cmd_golden(names, jobs, backend, check):
         d = os.path.join(WORK, name, f'dos{k}')
         shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
         t = time.time()
-        rc = R.run_dos(d, rec_of(name), stage=st, log=os.path.join(WORK, name, f'dos{k}.log'), backend=backend, exe=exe)
+        be = RC.dos_backend.get(name, backend)
+        rc = R.run_dos(d, rec_of(name), stage=st, log=os.path.join(WORK, name, f'dos{k}.log'), backend=be, exe=exe)
         if rc == 0 and not os.path.exists(os.path.join(d, 'STATE.OUT')): rc = 8
-        say(f'  {name}: DOS run {k} ({backend}) {"done" if rc == 0 else f"failed ({rc})"} in {time.time() - t:.1f} s')
+        say(f'  {name}: DOS run {k} ({be}) {"done" if rc == 0 else f"failed ({rc})"} in {time.time() - t:.1f} s')
         return (rc, d, time.time() - t)
 
     with pool(jobs) as ex:
@@ -312,7 +313,7 @@ def cmd_golden(names, jobs, backend, check):
                 runs[(n, k)] = ex.submit(dos_run, n, k)
         for n in names:
             r1, r2 = runs[(n, 1)].result(), runs[(n, 2)].result()
-            results[n] = finish_golden(n, r1, r2, backend, check)
+            results[n] = finish_golden(n, r1, r2, RC.dos_backend.get(n, backend), check)
     print(f'\n== golden ({backend}, {"check against the committed goldens" if check else "written"}), '
           f'{time.time() - t0:.1f} s in all')
     worst = 0
