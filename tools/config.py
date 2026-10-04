@@ -78,6 +78,8 @@ class Config:
         self.listing = os.path.join(self.root, b['listing']) if b.get('listing') else None
         self.listing_para_bias = b.get('listing_para_bias', 0)
         self.listing_stub_prefix = b.get('listing_stub_prefix', 'stub')
+        # load paragraphs of listing segments whose names carry none (UW1's seg051, seg004)
+        self.listing_segments = {k: int(v) for k, v in b.get('listing_segments', {}).items()}
         t = raw.get('toolchain', {})
         self.profile_name = t.get('profile', 'borland-tc101')
         self.profile_dir = os.path.join(EXHUME, 'profiles', self.profile_name)

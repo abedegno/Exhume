@@ -20,6 +20,7 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 - `dgroup_para`: DGROUP's load paragraph (DS:0 is at header + paragraph * 16). `tools/fingerprint.py` suggests it; confirm it with a string the code references.
 - `overlay_segment`: a regular expression matching overlay target names, whose first group is the overlay's index in the overlay segment table (UW2: `ovr(\d{3})`).
 - `listing`, `listing_para_bias`, `listing_stub_prefix`: the IDA listing, what IDA adds to load paragraphs in segment names, and the prefix of its overlay stub segments.
+- `listing_segments`: load paragraphs for listing segments whose names carry none (UW1's listing names segments `seg004`, `seg051`). Code segments come from `<map>/segments.tsv` without it; list the data segments the modding build must read `dw offset` tables in (UW1: `{ seg051 = 0x4723 }`).
 
 ## [toolchain]
 

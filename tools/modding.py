@@ -100,6 +100,17 @@ def listing_code_offsets(cfg, exe):
     the previous word, so a typed table is read whole as far as IDA typed it."""
     if not cfg.listing or not os.path.exists(cfg.listing): return {}
     hdr = struct.unpack_from('<H', exe, 8)[0] * 16; bias = cfg.listing_para_bias
+    # a segment named without its paragraph (UW1's listing: seg004, seg051): the code segments'
+    # load paragraphs from the map (<map>/segments.tsv, by file offset), then [binary]
+    # listing_segments for the rest (data segments, which the map does not locate)
+    paras = {}
+    sp = os.path.join(cfg.map, 'segments.tsv')
+    if os.path.exists(sp):
+        for l in open(sp):
+            f = l.rstrip('\n').split('\t')
+            if l.startswith('#') or len(f) < 2 or f[1] in ('', 'None'): continue
+            paras[f[0]] = (int(f[1], 16) - hdr) // 16
+    paras.update(getattr(cfg, 'listing_segments', {}))
     found = {}; seg = None; at = None
     for raw in open(cfg.listing, 'rb'):
         l = raw.decode('latin1').split(';')[0].rstrip()
@@ -107,12 +118,13 @@ def listing_code_offsets(cfg, exe):
         if m:
             q = re.search(r'_([0-9A-Fa-f]{4})$', m.group(1)); seg = None; at = None
             if q: seg = (m.group(1), int(q.group(1), 16) - bias)
+            elif m.group(1) in paras: seg = (m.group(1), paras[m.group(1)])
             continue
         if seg is None: continue
         m = re.match(r'^(%s_([0-9A-Fa-f]+))?\s*dw offset (\w+?)(?:_([0-9A-Fa-f]{4}))?_([0-9A-Fa-f]+)\s*$' % re.escape(seg[0]), l)
         if m and (m.group(1) or at is not None):
             at = int(m.group(2), 16) if m.group(1) else at + 2
-            tpara = int(m.group(4), 16) - bias if m.group(4) else None
+            tpara = int(m.group(4), 16) - bias if m.group(4) else paras.get(m.group(3))
             found[hdr + seg[1] * 16 + at] = (tpara, int(m.group(5), 16))
         else: at = None
     return found
