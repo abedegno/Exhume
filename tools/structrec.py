@@ -40,6 +40,11 @@ A spec is a Python file:
     REQUIRES = ['other.h'], ALSO_TAGS = ['Alias'], EMIT = False    for tools/headergen.py
 The other specs in --specs (default: the spec's own directory) supply the layouts of nested
 canonical types, and their member names make an access ambiguous when they collide.
+
+The project's typedefs come from its headers (--dir's include directory when it has one,
+else [project] include; tools/cparse.py setup()): a `uint16` field is laid out as unsigned
+and a `uint16` bitfield counts as unsigned, as Turbo C sees them. [cparse] typedefs in
+exhume.toml adds or overrides one.
 """
 import os, re, sys, json, glob, importlib.util
 from collections import defaultdict
@@ -87,7 +92,7 @@ def file_defs(path, tag, kind, header_tags):
             if m and '(' not in e['norm'].split()[0]: cparse.MACROS[m.group(1)] = re.sub(r'/\*.*?\*/', '', m.group(2)).strip()
     for e in ents:
         if e['kind'] in ('struct_def', 'union_def'):
-            t = cparse.strip_comments(e['text']); body = t[t.find('{') + 1:t.rfind('}')]; k = e['kind'][:-4]
+            t = cparse.strip_comments(e['text']); body = cparse.struct_body(t); k = e['kind'][:-4]
             try: fl = cparse.layout(body, ctx, k)
             except Exception as ex: print('layout error', os.path.basename(path), e['name'], ex); continue
             if e['name']: ctx.tags['%s %s' % (k, e['name'])] = (cparse.struct_size(fl), fl)
@@ -113,7 +118,7 @@ def used(code, path, is_container):
 
 
 def tnorm(t):
-    t = re.sub(r'\s+', ' ', t).strip()
+    t = re.sub(r'\s+', ' ', cparse.resolve(t)).strip()
     t = re.sub(r'\bunsigned (int|short( int)?)\b', 'unsigned', t)
     t = re.sub(r'\b(signed )?short( int)?\b', 'int', t)
     return re.sub(r'\s*\*\s*', '*', t)
@@ -121,7 +126,7 @@ def tnorm(t):
 
 def sig(leaf):
     path, ab, nb, unit, typ, size, cont = leaf
-    if unit.startswith('bf'): return (ab, nb, unit, not re.search(r'unsigned', typ))
+    if unit.startswith('bf'): return (ab, nb, unit, not re.search(r'unsigned', cparse.resolve(typ)))
     return (ab, nb, unit, tnorm(typ))
 
 
@@ -137,7 +142,7 @@ def other_member_names(path, exclude_tag):
     names = set()
     for e in cparse.analyse(path):
         if e['kind'] in ('struct_def', 'union_def') and e['name'] != exclude_tag:
-            t = cparse.strip_comments(e['text']); body = t[t.find('{') + 1:t.rfind('}')]
+            t = cparse.strip_comments(e['text']); body = cparse.struct_body(t)
             names |= set(re.findall(r'([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*(?::\s*\w+\s*)?(?=[;,])', body))
     return names
 
@@ -301,7 +306,11 @@ def main(argv):
     cfg = config.load(path)
     def take(flag):
         if flag in a: i = a.index(flag); v = a[i + 1]; del a[i:i + 2]; return v
-    d = take('--dir'); specdir = take('--specs'); only = take('--files'); header = take('--header'); outdir = take('--out')
+    d = take('--dir')
+    # the project's typedefs (portable.h's int16, uint16 ...) and macros, from the headers of
+    # the tree being read: --dir's include directory when it has one, else [project] include
+    dinc = os.path.join(d, os.path.relpath(cfg.include, cfg.src)) if d else None
+    cparse.setup(cfg, sorted(glob.glob(os.path.join(dinc, '*.[Hh]'))) if dinc and os.path.isdir(dinc) else None); specdir = take('--specs'); only = take('--files'); header = take('--header'); outdir = take('--out')
     write = '--write' in a
     rest = [x for x in a if not x.startswith('--')]
     if len(rest) < 2: sys.exit(__doc__)

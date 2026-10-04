@@ -18,14 +18,38 @@ analyse() entries: {kind, start, end, line, endline, text, ...} where kind is
   typedef                                   (name, norm)
   struct_def / union_def / enum_def         (name, norm, declarators, static)
   func_def                                  (name, norm: the prototype, params unnamed; static)
-  proto                                     (name, norm, extern, static, oldstyle)
+  proto                                     (name, norm, extern, static, oldstyle, wrapper)
   extern / var_def / static_var             (names: [{name, decl, init}])
+
+setup(cfg) teaches the parser a project's own types and macros, from the headers in
+[project] include and the optional [cparse] section of exhume.toml:
+  typedefs       a typedef's size and signedness for layout (int16 is int, uint16 unsigned),
+                 from the first definition whose type is known (the #ifdef __TURBOC__ branch
+                 of portable.h; the host's int16_t is not known). A typedef the headers define
+                 one way only (InputFn) also expands when declarations are compared (expand());
+                 one defined per compiler does not, since it names another type on the host.
+                 [cparse] typedefs = {name = "type"} adds or overrides.
+  empty macros   an object-like macro some branch defines empty (HOST_LAYOUT_BEGIN): the
+                 compiler sees nothing, so it is not part of the next declaration.
+                 [cparse] empty_macros = [...] adds names.
+  param macros   a one-parameter macro whose body is () or the parameter (OLDSTYLE): in
+                 `int far f M((char c));` it wraps the parameter list. The entry is a proto
+                 of f, oldstyle when the macro gives (), with wrapper = M and the parameters
+                 kept in norm. [cparse] param_macros = [...] adds names.
+Without setup() none of these are known, as before.
 """
 import re
 
 KW = set('''auto break case char const continue default do double else enum extern float for goto if int
 long register return short signed sizeof static struct switch typedef union unsigned void volatile while
 far near huge cdecl pascal interrupt _seg _cs _ds _es _ss asm'''.split())
+
+
+TYPEDEFS = {}        # typedef name -> the type it names, as the compiler sees it
+SAME_TYPEDEFS = {}   # typedef name -> its type, for typedefs the headers define one way only
+EMPTY_MACROS = set()
+PARAM_MACROS = {}    # name -> True when the compiler sees () (an old-style declaration)
+_setup_for = None
 
 
 def strip_comments(t):
@@ -113,6 +137,18 @@ def chunks(t):
     return res
 
 
+def struct_body(t):
+    """The text between a definition's first `{` and the brace that closes it (t without
+    comments): an initializer after the body is not part of it."""
+    i = t.find('{'); d = 0
+    for k in range(i, len(t)):
+        if t[k] == '{': d += 1
+        elif t[k] == '}':
+            d -= 1
+            if d == 0: return t[i + 1:k]
+    return t[i + 1:t.rfind('}')]
+
+
 def lineof(t, pos): return t.count('\n', 0, pos) + 1
 
 
@@ -137,9 +173,11 @@ def param_type(p, typedefs):
     p = norm(p)
     if p in ('void', '...', ''): return p
     toks = TOK.findall(p)
-    m = re.match(r'(.*?\(\s*(?:far|near)?\s*\*\s*)([A-Za-z_]\w*)(\s*\).*)$', p)     # function pointer
-    if m and m.group(3).count('('):
-        return norm(m.group(1) + m.group(3))
+    m = re.match(r'(.*?\(\s*(?:far|near)?\s*\*\s*(?:far|near)?\s*)([A-Za-z_]\w*)?(\s*\)\s*)(\(.*\))(.*)$', p)     # function pointer
+    if m and (m.group(2) is None or m.group(2) not in KW):
+        inner = m.group(4)[1:-1]
+        ps = ', '.join(param_type(q, typedefs) for q in split_top(inner)) if inner.strip() else ''
+        return norm(m.group(1) + m.group(3) + '(' + ps + ')' + m.group(5))
     m = re.match(r'(.*?)([A-Za-z_]\w*)(\s*(?:\[[^\]]*\]\s*)+)$', p)                 # array
     if m and m.group(2) not in KW and m.group(2) not in typedefs and m.group(1).strip():
         return norm(m.group(1) + m.group(3))
@@ -172,9 +210,39 @@ def _dname(dcl):
     return ids[-1] if ids else '?'
 
 
+def blank_empty_macros(t):
+    """t (comments stripped) with every empty macro name outside preprocessor lines replaced
+    by spaces: offsets are kept, and the chunk after it starts at its real first token."""
+    if not EMPTY_MACROS: return t
+    pat = re.compile(r'\b(' + '|'.join(sorted(map(re.escape, EMPTY_MACROS))) + r')\b')
+    out = []; directive = False
+    for line in t.split('\n'):
+        if directive or line.lstrip().startswith('#'):
+            directive = line.rstrip().endswith('\\'); out.append(line); continue
+        out.append(pat.sub(lambda m: ' ' * len(m.group(0)), line))
+    return '\n'.join(out)
+
+
+def unwrap_params(body):
+    """(body, macro, oldstyle) with `NAME M((params))` read as `NAME(params)`, M a param macro;
+    (body, None, False) when there is none."""
+    if not PARAM_MACROS: return body, None, False
+    m = re.search(r'\b([A-Za-z_]\w*)\s+(' + '|'.join(map(re.escape, PARAM_MACROS)) + r')\s*\(\s*\(', body)
+    if not m: return body, None, False
+    i = body.find('(', m.start(2)); d = 0
+    for k in range(i, len(body)):
+        if body[k] == '(': d += 1
+        elif body[k] == ')':
+            d -= 1
+            if d == 0: break
+    else: return body, None, False
+    inner = body[i + 1:k].strip()
+    return body[:m.end(1)] + inner + body[k + 1:], m.group(2), PARAM_MACROS[m.group(2)]
+
+
 def analyse_text(raw):
-    t = strip_comments(raw)
-    out = []; typedefs = set()
+    t = blank_empty_macros(strip_comments(raw))
+    out = []; typedefs = set(TYPEDEFS) | set(SAME_TYPEDEFS)
     for s, e, c in chunks(t):
         ent = dict(start=s, end=e, line=lineof(t, s), endline=lineof(t, e - 1), text=raw[s:e])
         cn = norm(c)
@@ -194,7 +262,12 @@ def analyse_text(raw):
             out.append(ent); continue
         m = re.match(r'(static\s+)?(struct|union|enum)\s+([A-Za-z_]\w*)?\s*\{', cn)
         if m:
-            body_end = cn.rfind('}')
+            body_end = d = 0          # the brace closing the body (an initializer may follow)
+            for k in range(cn.find('{'), len(cn)):
+                if cn[k] == '{': d += 1
+                elif cn[k] == '}':
+                    d -= 1
+                    if d == 0: body_end = k; break
             ent['kind'] = m.group(2) + '_def'; ent['name'] = m.group(3) or ''
             ent['norm'] = cn[:body_end + 1]
             ent['declarators'] = cn[body_end + 1:].strip().rstrip(';').strip()
@@ -210,6 +283,7 @@ def analyse_text(raw):
             out.append(ent); continue
         ext = bool(re.match(r'extern\b', cn)); st = bool(re.match(r'static\b', cn))
         body = re.sub(r'^(extern|static)\s+', '', cn).rstrip(';').strip()
+        body, wrapper, wrapped_old = unwrap_params(body)
         d = 0; proto_name = None
         toks = list(re.finditer(r'[A-Za-z_]\w*|[()=\[\]{},]', body))
         for idx, tk in enumerate(toks):
@@ -223,6 +297,14 @@ def analyse_text(raw):
             ent['kind'] = 'proto'; ent['name'] = proto_name; ent['extern'] = ext; ent['static'] = st
             ent['norm'] = proto_norm(body, proto_name, typedefs)
             ent['oldstyle'] = bool(re.search(re.escape(proto_name) + r'\s*\(\s*\)', body))
+            ent['wrapper'] = wrapper
+            if wrapper:
+                # the declaration as written: NAME M((params)), the compiler's view old-style
+                # when M gives ()
+                ent['oldstyle'] = ent['oldstyle'] or wrapped_old
+                k = ent['norm'].find(proto_name + '(') + len(proto_name)
+                ent['norm'] = ent['norm'][:k] + ' %s((' % wrapper + ent['norm'][k + 1:]
+                q = ent['norm'].rfind(')'); ent['norm'] = ent['norm'][:q + 1] + ')' + ent['norm'][q + 1:]
             out.append(ent); continue
         parts = split_top(body)
         first = parts[0]
@@ -243,6 +325,115 @@ def analyse_text(raw):
 
 def analyse(path):
     return analyse_text(open(path, encoding='latin1').read())
+
+
+# ---- a project's typedefs and macros (setup) -------------------------------------------------
+BASE_SIZES = None
+
+
+def typedef_parts(cn):
+    """(name, type) of a typedef's text (comments stripped, one line): the type with the name
+    taken out, parameter names dropped (`void (far*)(NEARPTR)`); None if not understood."""
+    body = norm(cn)
+    if not body.startswith('typedef'): return None
+    body = body[len('typedef'):].rstrip(';').strip()
+    m = re.search(r'\(\s*(?:far|near|huge)?\s*\*\s*(?:far|near|huge)?\s*([A-Za-z_]\w*)\s*\)', body)
+    if m:
+        name = m.group(1)
+        typ = param_type(body, {name})
+        typ = body[:m.start(1)] + body[m.end(1):] if typ == body else typ
+        return name, norm(typ)
+    m = re.match(r'(.*?)([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$', body)
+    if not m or not m.group(1).strip(): return None
+    return m.group(2), norm(m.group(1) + m.group(3))
+
+
+def type_size(typ):
+    """The size of a typedef's type, or None: a basic type, an earlier typedef, a pointer whose
+    distance is written (far or huge 4, near 2)."""
+    t = norm(typ)
+    if '*' in t:
+        p = t[t.find('('):] if '(' in t else t
+        if re.search(r'\b(far|huge)\s*\*', p): return 4
+        if re.search(r'\bnear\s*\*', p): return 2
+        return None
+    if '[' in t: return None
+    return SIZES.get(re.sub(r'\b(const|volatile)\s+', '', t))
+
+
+def resolve(typ):
+    """typ with each simple typedef name replaced by its basic type (int16 -> int), for
+    layout's char test and signedness."""
+    for _ in range(3):
+        n = re.sub(r'\b([A-Za-z_]\w*)\b', lambda m: TYPEDEFS.get(m.group(1), m.group(1))
+                   if m.group(1) in TYPEDEFS and '(' not in TYPEDEFS[m.group(1)] else m.group(1), typ)
+        if n == typ: break
+        typ = n
+    return typ
+
+
+def expand(s):
+    """A normalised declaration with each typedef the headers define one way only written out
+    (InputFn -> void (far*)(NEARPTR)): two forms that differ only so name the same type on
+    every build. Typedefs defined per compiler (int16) stay."""
+    if not SAME_TYPEDEFS: return s
+    pat = re.compile(r'\b(' + '|'.join(sorted(map(re.escape, SAME_TYPEDEFS), key=len, reverse=True)) + r')\b')
+    for _ in range(3):
+        n = pat.sub(lambda m: SAME_TYPEDEFS[m.group(1)], s)
+        if n == s: break
+        s = n
+    return s
+
+
+def setup(cfg, headers=None):
+    """Learn the project's typedefs, empty macros and param macros (see the top of this file)
+    from the headers in [project] include (or the paths in headers) and exhume.toml's
+    [cparse]. Safe to call more than once."""
+    global BASE_SIZES, _setup_for
+    import glob, os
+    key = (getattr(cfg, 'file', None), tuple(headers) if headers else None)
+    if _setup_for == key: return
+    _setup_for = key
+    if BASE_SIZES is None: BASE_SIZES = dict(SIZES)
+    SIZES.clear(); SIZES.update(BASE_SIZES)
+    TYPEDEFS.clear(); SAME_TYPEDEFS.clear(); EMPTY_MACROS.clear(); PARAM_MACROS.clear()
+    if headers is None:
+        inc = getattr(cfg, 'include', None)
+        headers = sorted(glob.glob(os.path.join(inc, '*.[Hh]'))) if inc and os.path.isdir(inc) else []
+    forms = {}; order = []; defs = {}
+    for h in headers:
+        t = strip_comments(open(h, encoding='latin1').read())
+        for s, e, c in chunks(t):
+            cn = norm(c)
+            if cn.startswith('#'):
+                m = re.match(r'#\s*define\s+([A-Za-z_]\w*)(\(\s*([A-Za-z_]\w*)?\s*\))?\s*(.*)$', cn)
+                if m: defs.setdefault(m.group(1), []).append((m.group(2) is not None, m.group(3), m.group(4).strip()))
+                continue
+            if not cn.startswith('typedef'): continue
+            tp = typedef_parts(cn)
+            if not tp: continue
+            if tp[0] not in forms: order.append(tp[0])
+            forms.setdefault(tp[0], [])
+            if tp[1] not in forms[tp[0]]: forms[tp[0]].append(tp[1])
+    for name, ds in defs.items():
+        if name in KW: continue
+        if any(not fl and not body for fl, _, body in ds): EMPTY_MACROS.add(name)
+        if all(fl and p for fl, p, _ in ds) and all(body in ('()', p) for fl, p, body in ds):
+            PARAM_MACROS[name] = any(body == '()' for _, _, body in ds)
+    for name in order:
+        fs = forms[name]
+        for typ in fs:
+            if type_size(typ) is not None or re.match(r'(struct|union|enum)\b', typ):
+                TYPEDEFS[name] = typ
+                if type_size(typ) is not None: SIZES[name] = type_size(typ)
+                break
+        if len(fs) == 1: SAME_TYPEDEFS[name] = fs[0]
+    c = (getattr(cfg, 'raw', None) or {}).get('cparse', {})
+    for name, typ in c.get('typedefs', {}).items():
+        TYPEDEFS[name] = norm(typ)
+        if type_size(typ) is not None: SIZES[name] = type_size(typ)
+    EMPTY_MACROS.update(c.get('empty_macros', []))
+    for name in c.get('param_macros', []): PARAM_MACROS.setdefault(name, True)
 
 
 # ---- struct layout -------------------------------------------------------------------------
@@ -345,7 +536,7 @@ def layout(body, ctx=None, kind='struct'):
         for name, typ, size, bits, nested in member_layout(decl, ctx):
             if kind == 'union': bit = 0
             if bits is not None:
-                w = 8 if re.search(r'\bchar\b', typ) else 16
+                w = 8 if re.search(r'\bchar\b', resolve(typ)) else 16
                 if bits == 0: bit = (bit + 7) // 8 * 8; continue
                 byte = bit // 8
                 if (bit - byte * 8) + bits > w: byte += 1; bit = byte * 8

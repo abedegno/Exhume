@@ -63,6 +63,14 @@ For tools/gate.py, the build driver and gate (docs/readability.md, "The gate"). 
 - `sessions`, `batch`: DOS sessions at once for the gate alone (default: `[toolchain] sessions`, else what suits the DOS in use; `EXHUME_DOS_SESSIONS` wins) and sources per session (default 8).
 - `boot`: rungame.mjs steps for `gate.py boot`, which also uses [run].
 
+## [cparse]
+
+Optional, for the parser behind declinv.py, structrec.py and headergen.py (tools/cparse.py, `setup()`). It learns all three from the headers in `[project] include` without this section, which adds or overrides:
+
+- `typedefs`: `{name = "type"}`, a typedef's type as the DOS compiler sees it, for struct layout, signedness and parameter names. From the headers, a typedef takes its first definition whose type is known (portable.h's `#ifdef __TURBOC__` branch: `int16` is `int`), and one the headers define one way only (`InputFn`) is also written out when declarations are compared.
+- `empty_macros`: names of object-like macros the DOS build defines empty (`HOST_LAYOUT_BEGIN`), which the parser reads as nothing rather than as part of the next declaration. From the headers: any macro some branch defines empty.
+- `param_macros`: names of one-parameter macros that wrap a parameter list (`int far f OLDSTYLE((char c));`). From the headers: a macro whose body is `()` or its parameter; with `()` the declaration is old-style to the compiler.
+
 ## [repocheck]
 
 Optional, for tools/repocheck.py when the config sits at the repository root: `ban`, more file extensions that must never be committed (a game's data formats), and `allow`, regular expressions for paths exempt from the binary checks.

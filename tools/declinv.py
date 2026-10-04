@@ -27,10 +27,12 @@ Reported:
 - Struct tags defined in more than one place, with each definition's size (laid out by
   Turbo C's rules, tools/cparse.py): the input to struct reconciliation (tools/structrec.py).
 - Order ties (with the profile's bssorder.py): Turbo C lists a file's publics, and lays out
-  its uninitialised globals, by a hash of the name, equal hashes in order of first sight, and
-  a header declaration is the first sight. A tie group in one file where some names are
-  declared in a header and some are not can come out in another order than the original.
-  Each such group is listed; keep tie partners together, all in headers or all out.
+  its uninitialised globals, by a hash of the name, equal hashes in order of first sight. A
+  header the file includes is the first sight of every name in it, and so is a #define of
+  the name. A tie group in one file where some names are first seen early (in a header, or
+  by a #define) and some only in the file's own code can come out in another order when a
+  declaration moves. Each such group is listed in order of first sight, with where each
+  early name was seen; keep tie partners together, all in headers or all out.
 
 --exclude FILE: names to leave out of the conflict report, one per line (# comments) or a
 JSON list, or a TOML plan with an `exclude` list (tools/headergen.py's plan).
@@ -63,6 +65,42 @@ def order_key(cfg):
     return getattr(m, 'key', None)
 
 
+def sights(path, incdir, cache=None):
+    """{identifier: (rank, where)} in the order Turbo C first meets each identifier in a
+    source: through its `#include "..."` lines into the headers found in incdir (each once,
+    as include guards make it), counting every identifier outside strings and the name of
+    each #define (a #define is a sighting: UW1's CUTS.C needed cutsop_wait before cutsop_skip
+    because a #define named it first), but not a macro's body or other directives' words.
+    where is the header's file name, '#define' (a #define in the source) or '' (the source's
+    own code). Conditional compilation is not followed."""
+    cache = {} if cache is None else cache
+    first = {}; seen = set(); k = [0]
+    def text(p):
+        if p not in cache: cache[p] = cparse.strip_comments(open(p, encoding='latin1').read())
+        return cache[p]
+    def walk(p, where):
+        cont = False
+        for line in text(p).split('\n'):
+            if cont: cont = line.rstrip().endswith('\\'); continue
+            st = line.lstrip()
+            if st.startswith('#'):
+                cont = line.rstrip().endswith('\\')
+                m = re.match(r'#\s*include\s*"([^"]+)"', st)
+                if m:
+                    h = m.group(1); hp = os.path.join(incdir, h) if incdir else None
+                    if h not in seen and hp and (hp in cache or os.path.exists(hp)): seen.add(h); walk(hp, os.path.basename(hp))
+                    continue
+                m = re.match(r'#\s*define\s+([A-Za-z_]\w*)', st)
+                if m and m.group(1) not in first: first[m.group(1)] = (k[0], where or '#define'); k[0] += 1
+                continue
+            line = re.sub(r'"(\\.|[^"\\])*"|\'(\\.|[^\'\\])*\'', '""', line)
+            for tok in re.findall(r'[A-Za-z_]\w*', line):
+                if tok not in first: first[tok] = (k[0], where)
+                k[0] += 1
+    walk(path, '')
+    return first
+
+
 def read_names(path):
     if not path: return set()
     t = open(path).read()
@@ -79,6 +117,7 @@ class Inventory:
         self.files = files or [p for p in sources.all_sources(cfg) if p.upper().endswith('.C')]
         self.headers = sorted(glob.glob(os.path.join(cfg.include, '*.h')) + glob.glob(os.path.join(cfg.include, '*.H')))
         self.rel = lambda p: os.path.relpath(p, cfg.src)
+        cparse.setup(cfg, self.headers)
         self.inv = {p: cparse.analyse(p) for p in self.files + self.headers}
         self.sym = defaultdict(lambda: dict(kind=None, defs=[], decls=[], statics=[], other=[]))
         for f, ents in self.inv.items():
@@ -159,22 +198,20 @@ class Inventory:
                 if e['kind'] not in ('struct_def', 'union_def') or not e['name']: continue
                 k = e['kind'][:-4]; t = cparse.strip_comments(e['text'])
                 try:
-                    fl = cparse.layout(t[t.find('{') + 1:t.rfind('}')], ctx, k)
+                    fl = cparse.layout(cparse.struct_body(t), ctx, k)
                     ctx.tags[f'{k} {e["name"]}'] = (cparse.struct_size(fl), fl); size = cparse.struct_size(fl)
                 except Exception as ex: size = f'? ({ex})'
                 defs[(k, e['name'])].append((f, size))
         return {t: v for t, v in defs.items() if len(v) > 1}
 
     def ties(self, key):
-        """[(file, kind, [(name, in a header?)])] for tie groups that mix header and local names."""
+        """[(file, kind, [(name, where first seen)])] for tie groups that mix names first seen
+        early (in an included header, or by a #define) with names first seen in the source's
+        own code, in order of first sight (sights())."""
         if key is None: return []
-        in_header = set()
-        for h in self.headers:
-            for e in self.inv[h]:
-                if e.get('name'): in_header.add(e['name'])
-                for x in e.get('names', []): in_header.add(x['name'])
-        out = []
+        out = []; cache = {}
         for f in self.files:
+            fs = None
             pubs, bss = [], []
             for e in self.inv[f]:
                 if e['kind'] == 'func_def' and not e['static']: pubs.append(e['name'])
@@ -186,8 +223,12 @@ class Inventory:
                 by = defaultdict(list)
                 for n in dict.fromkeys(group): by[key(n)].append(n)
                 for k, ns in by.items():
-                    if len(ns) > 1 and len({n in in_header for n in ns}) > 1:
-                        out.append((f, kind, [(n, n in in_header) for n in ns]))
+                    if len(ns) < 2: continue
+                    if fs is None: fs = sights(f, self.cfg.include, cache)
+                    w = {n: fs.get(n, (1e12, ''))[1] for n in ns}
+                    if len({bool(x) for x in w.values()}) > 1:
+                        ns = sorted(ns, key=lambda n: fs.get(n, (1e12,))[0])
+                        out.append((f, kind, [(n, w[n]) for n in ns]))
         return out
 
 
@@ -239,7 +280,7 @@ def main(argv):
     ties = inv.ties(order_key(cfg))
     print(f'\norder ties mixing header and local names: {len(ties)}')
     for f, kind, ns in ties:
-        print(f'  {rel(f)} {kind}: ' + ', '.join(f'{n}{" (header)" if h else ""}' for n, h in ns))
+        print(f'  {rel(f)} {kind}: ' + ', '.join(f'{n}{f" ({h})" if h else ""}' for n, h in ns))
     if jout:
         json.dump(dict(counts=c, conflicts={n: dict(why=ws, forms={k: sorted(rel(f) for f in v) for k, v in fm.items()})
                                             for n, (ws, fm) in conf.items()},
