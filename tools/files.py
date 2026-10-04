@@ -36,6 +36,23 @@ for r in rows: segs[r[0]].append(r)
 # segments whose source matches whole and verifies, listed by hand in matched.txt
 done = cfg.matched_set()
 
+# A segment cut into one table per module (targets/<segment>_<offset>.tsv, as a library's
+# assembly modules are) has no table of its own: it is matched when all its tables are, and
+# until then the matched tables' sizes count towards it.
+split = defaultdict(dict)
+for t in glob.glob(os.path.join(cfg.targets, '*.tsv')):
+    n = os.path.basename(t)[:-4]
+    h = re.match(r'#\s*segment\s+\S+\s+base\s+\S+\s+size\s+(0x[0-9A-Fa-f]+)', open(t).readline())
+    if h: split[n] = int(h.group(1), 16)
+def parts(s):
+    if s in split: return {}
+    return {n: z for n, z in split.items() if n.startswith(s + '_') and n not in segs}
+def matched_bytes(s, b):
+    if s in done: return b
+    p = parts(s)
+    if p and all(n in done for n in p): return b
+    return min(b, sum(z for n, z in p.items() if n in done))
+
 out = open(os.path.join(cfg.map, 'files.tsv'), 'w')
 out.write('# segment\tkind\tfunctions\tbytes\tnamed\tsize only\tcalls disagree\tunpaired\tfirst named\tlast named\tmatched\n')
 tot = defaultdict(int)
@@ -46,8 +63,8 @@ for s, rs in segs.items():
     good = k['anchor'] + k['confirmed']
     kind = 'library' if 'library' in k else ('C' if cpro[s] * 4 >= len(rs) * 3 else 'assembly' if cpro[s] * 2 < len(rs) else 'mixed')
     out.write(f"{s}\t{kind}\t{len(rs)}\t{b}\t{good}\t{k['size only']}\t{k['size, calls disagree']}\t{k['unpaired']}"
-              f"\t{named[0] if named else ''}\t{named[-1] if named else ''}\t{'yes' if s in done else ''}\n")
+              f"\t{named[0] if named else ''}\t{named[-1] if named else ''}\t{'yes' if matched_bytes(s, b) == b and b else ('part' if matched_bytes(s, b) else '')}\n")
     tot[kind + ' segments'] += 1; tot[kind + ' bytes'] += b; tot[kind + ' functions'] += len(rs)
     if kind != 'library': tot['named functions'] += good
-    if s in done: tot['matched bytes'] += b
+    tot['matched bytes'] += matched_bytes(s, b)
 for k in sorted(tot): print(f'{k}: {tot[k]}')
