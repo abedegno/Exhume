@@ -28,7 +28,7 @@ Hosted CI cannot run the gate, because the compiler and the program must never b
 The order matters. Headers come before constants because the constants live in the headers beside the declarations they belong to. Struct fields come after headers because a field is only worth naming once there is one shared struct to name it in. Renaming files comes after the content changes so that the many edits of the earlier steps do not collide with moves. Comments come last, because they describe the final names.
 
 1. **Gate.** Above.
-2. **Shared headers.** One declaration per name and one definition per struct, in a header per subsystem. `tools/declinv.py` measures the starting point and lists what cannot be shared. `tools/structrec.py` reconciles each struct's copies into one definition, field by field, from the bits each copy's code uses. `tools/headergen.py` writes the headers from a plan, deletes the sources' own declarations and adds the includes, and with `--loop` leaves out the names that make a file compile differently until the fast gate passes. Some names must stay declared in their files: where the original files disagreed with each other (a `char` parameter one caller pushes as an `int`), the bytes depend on the disagreement.
+2. **Shared headers.** One declaration per name and one definition per struct, in a header per subsystem. `tools/declinv.py` measures the starting point and lists what cannot be shared. `tools/structrec.py` reconciles each struct's copies into one definition, field by field, from the bits each copy's code uses. `tools/headergen.py` writes the headers from a plan, deletes the sources' own declarations and adds the includes, and with `--loop` leaves out the names that make a file compile differently until the fast gate passes. Where the tree already has headers worth keeping (UW1's began as copies of UW2's, with their structs, constants and comments), `headergen.py --update` rewrites them in place instead: it drops what the project never uses, retypes the rest to the definitions, moves the sources' own declarations in and keeps everything else. Some names must stay declared in their files: where the original files disagreed with each other (a `char` parameter one caller pushes as an `int`), the bytes depend on the disagreement.
 3. **Named constants.** `#define`s and enums, only where evidence says what a number means: format documents, the program's own data (UW2 named its 448 item ids from the game's item names), the sibling build's enums. The type of a constant follows its spelling, so the spelling is kept.
 4. **Struct fields and accessors.** Fields in place of cast-pointer offsets (`tools/rawoffsets.py` counts them), one set of accessor macros for packed fields (`tools/accessors.py`), and callers retyped to the shared types. A few casts stay, where the original computed the address in a way a field cannot.
 5. **File names and directories.** An original name where a related code base shows one (a file defining the same functions for the same job), an inferred name where the sibling's names or a related file's job suggest one, a descriptive name otherwise, each recorded with its kind and evidence; and a directory per subsystem. Before moving anything, every tool must find sources by segment rather than by file name (`tools/sources.py`), so the link order needs no change.
@@ -39,7 +39,8 @@ The order matters. Headers come before constants because the constants live in t
 Each step was an experiment on the compiler, and the gate recorded the result. The facts are in the profile (profiles/borland-tc101/compiler.md, "Readability changes: what keeps the bytes"); the ones that shaped the method:
 
 - An unused declaration leaves no trace in the object, so headers can declare far more than a file uses.
-- A header is the first sight of every name in it, and Turbo C breaks ties in public order and `_BSS` layout by first sight, so a name tied with one the headers leave out must stay out too.
+- A header is the first sight of every name in it, and so is a `#define` of the name; Turbo C breaks ties in public order and `_BSS` layout by first sight, so a name tied with one the headers leave out must stay out too.
+- A struct tag first named in a prototype's parameter list belongs to that prototype alone, so a header declares `struct X;` before such prototypes.
 - A shared prototype can change how a caller pushes its arguments, so a name the original files declared differently stays declared in each.
 - A `#define` keeps the bytes only with the literal's spelling (hex from 0x8000 is `unsigned`, decimal is `long`); an enum is an `int` literal.
 - A field compiles like the cast it replaces only when the address is reached the same way.
@@ -58,11 +59,11 @@ Steps 1 and 2 are each one job over the whole tree. Steps 3, 4 and 6 split by su
 | `tools/repocheck.py`, `tools/install-hooks.sh`, `tools/templates/` | 1 | toolchain-free CI, the pre-push hook, a Makefile and a workflow |
 | `tools/declinv.py` | 2 | declaration inventory, conflicts, multiply defined structs, order ties |
 | `tools/structrec.py` | 2 | struct reconciliation: report, spec, convert |
-| `tools/headergen.py` | 2 | headers from a plan, sources stripped, includes added, the exclude loop |
+| `tools/headergen.py` | 2 | headers from a plan, sources stripped, includes added, the exclude loop; `--update` for headers that exist |
 | `tools/buildwarn.py` | 2, 4 | compiler warnings saved and compared |
 | `tools/rawoffsets.py` | 4 | cast-pointer offset sites, against a git revision |
 | `tools/accessors.py` | 4 | macro inventory, unify per-file macros, inline open-coded reads |
 | `tools/comments.py` | 6 | apply comment edits that keep the tokens; check, reflow, audit, join |
-| `tools/cparse.py` | all | the C parser, token streams, Turbo C struct layout |
+| `tools/cparse.py` | all | the C parser (with the project's typedefs and macros, `[cparse]`), token streams, Turbo C struct layout |
 
 UW2's plan, struct specs and the run's own scripts are in examples/uw2/readability/, examples/uw2/consts/ and examples/uw2/rename/.
