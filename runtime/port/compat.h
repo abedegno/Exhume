@@ -162,6 +162,15 @@ char *bc_fgets(char *s, int n, FILE *fp);
 #define ftell(f) bc_ftell(f)
 #define fgetc(f) bc_fgetc(f)
 #define fgets(s, n, f) bc_fgets(s, n, f)
+/* sscanf and scanf store an integer conversion as Borland's do: %d, %i, %u, %o, %x, %X and %n
+   in 16 bits (Borland's int) and with l in 32 (its long), where the host's store 32 and 64
+   bits. A game may scan into 16-bit or byte variables and rely on the 16-bit store (UW1:
+   SOUND.C reads UW.CFG's numbers with %d into int16 globals and into a byte, whose
+   neighbour takes the high byte). A target the port leaves a host int keeps its upper half. */
+int bc_sscanf(const char *s, const char *fmt, ...);
+int bc_scanf(const char *fmt, ...);
+#define sscanf(...) bc_sscanf(__VA_ARGS__)
+#define scanf(...) bc_scanf(__VA_ARGS__)
 /* exit runs the termination chain the program hooked (PORT_EXIT_CHAIN, sys/borland.c), then
    ends the program through the platform layer, which owns the main thread. */
 void bc_exit(int status);

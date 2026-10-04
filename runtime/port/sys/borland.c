@@ -345,6 +345,61 @@ char *bc_fgets(char *s, int n, FILE *fp)
     return s;
 }
 
+/* sscanf and scanf with Borland's integer widths (compat.h): the format is rewritten so that
+   an integer conversion with no length stores a short and one with l an int (32 bits on
+   every host the port builds for); h, hh, assignment suppression, %%, scansets and the
+   other conversions are left as they are. */
+static void borland_scan_format(const char *fmt, char *out, size_t n)
+{
+    size_t o = 0;
+    while (*fmt && o + 3 < n) {
+        if (*fmt != '%') { out[o++] = *fmt++; continue; }
+        out[o++] = *fmt++;
+        if (*fmt == '%') { out[o++] = *fmt++; continue; }
+        if (*fmt == '*') out[o++] = *fmt++;
+        while (*fmt >= '0' && *fmt <= '9' && o + 3 < n) out[o++] = *fmt++;
+        if (*fmt == 'N' || *fmt == 'F') fmt++;  /* Borland's near and far: nothing on the host */
+        if (*fmt == 'h' && fmt[1] == 'h') { out[o++] = *fmt++; out[o++] = *fmt++; }
+        else if (*fmt == 'h' || *fmt == 'L') out[o++] = *fmt++;
+        else if (*fmt == 'l') {
+            fmt++;                              /* Borland's long is the host's int */
+            if (!strchr("diouxXn", *fmt)) out[o++] = 'l';
+        } else if (*fmt && strchr("diouxXn", *fmt)) out[o++] = 'h';
+        if (*fmt == '[') {
+            out[o++] = *fmt++;
+            if (*fmt == '^' && o + 3 < n) out[o++] = *fmt++;
+            if (*fmt == ']' && o + 3 < n) out[o++] = *fmt++;
+            while (*fmt && *fmt != ']' && o + 3 < n) out[o++] = *fmt++;
+        }
+        if (*fmt && o + 3 < n) out[o++] = *fmt++;
+    }
+    out[o] = 0;
+}
+
+int bc_sscanf(const char *s, const char *fmt, ...)
+{
+    char f[512];
+    va_list ap;
+    int r;
+    borland_scan_format(fmt, f, sizeof f);
+    va_start(ap, fmt);
+    r = vsscanf(s, f, ap);
+    va_end(ap);
+    return r;
+}
+
+int bc_scanf(const char *fmt, ...)
+{
+    char f[512];
+    va_list ap;
+    int r;
+    borland_scan_format(fmt, f, sizeof f);
+    va_start(ap, fmt);
+    r = vscanf(f, ap);
+    va_end(ap);
+    return r;
+}
+
 /* Borland's rand: a 32-bit LCG, multiplier 015A4E35h, seed 1, the high word's low 15 bits. */
 static uint32_t rand_seed = 1;
 int bc_rand(void)
