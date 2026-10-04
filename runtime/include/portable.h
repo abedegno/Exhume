@@ -3,14 +3,18 @@
    tokens, so the DOS build compiles to the same bytes and the gate proves it; on a modern host
    (the port, with runtime/port/compat.h force-included) they take the host's meaning.
 
-   A project copies this file into its shared headers (UW2Decomp: src/include/portable.h,
-   included by uw2.h, so every source that includes a shared header sees it) and defines, before
-   including it, the original tokens of the hooks it uses (the ORIG_ macros under "The record
-   and replay hooks", SLAVE_TIMER_HZ, RENDER_TAG_CONTEXT); examples/uw2/port/portable-uw2.h has
-   UW2's. Nothing here names a game's own variables. Each macro was needed by UW2; the
+   A project includes it from its shared headers (UW2Decomp: uw2.h, so every source that
+   includes a shared header sees it) and compiles it where it is, in Exhume's runtime: the DOS
+   build stages it beside the project's own headers, and the port finds it on its include path
+   (docs/port.md, "The runtime"). The project's hookgame.h, which this file includes first (an
+   8.3 name, since the DOS build stages it too), gives the original tokens of the hooks it uses
+   (the ORIG_ macros under "The record and replay hooks", SLAVE_TIMER_HZ, RENDER_TAG_CONTEXT);
+   it may be empty. Nothing here names a game's own variables. Each macro was needed by UW2; the
    UW2 case is given beside each as the example. */
 #ifndef PORTABLE_H
 #define PORTABLE_H
+
+#include "hookgame.h"
 
 /* OLDSTYLE((params)): the parameter list of a function whose callers push an int where the
    definition takes a char (the original files disagreed, and the bytes keep the disagreement). Turbo C sees an
@@ -149,8 +153,8 @@ void port_far_copy(void *dst, const void *src, unsigned n);
    callers all pass a null p), SRAND(s) a seed given to srand, and CHECKPOINT(n) a named point
    where both builds dump the game state.
 
-   The project defines the original tokens of each, before including this file. UW2's
-   (examples/uw2/port/portable-uw2.h):
+   The project's hookgame.h defines the original tokens of each. UW2's (UW2Decomp's
+   src/include/hookgame.h):
        #define ORIG_GAME_TIME()   (*Time)                 the 1/256 s clock seg021 keeps
        #define ORIG_KEY()         key()
        #define ORIG_MOUSE()       mouse()

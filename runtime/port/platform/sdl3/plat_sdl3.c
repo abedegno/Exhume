@@ -1,7 +1,8 @@
 /* plat_sdl3.c: replaces nothing in the DOS build. The SDL3 backend of the platform API
    (plat.h): the window and its scaling, the event loop, key and pointer events, lifecycle
-   events, the high-resolution counter, threads and the audio stream. The only file of the port
-   that includes SDL.
+   events, the high-resolution counter, threads, the audio stream, the window's icon, and the
+   message box and folder picker a program shows before its window opens. The only file of the
+   port that includes SDL.
 
    The game runs on its own thread (plat_run); this file's loop runs on the main thread, as SDL
    needs on macOS and iOS. Each pass it reads the emulated VGA's picture through the scanout
@@ -12,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "plat.h"
+#if defined(PLAT_ICON) && !defined(__APPLE__)
+#include PLAT_ICON
+#endif
 
 static const PlatHooks *hooks;
 static SDL_AtomicInt game_done;
@@ -161,6 +165,22 @@ static SDL_FRect place(SDL_Renderer *r, const PlatConfig *cfg, int w, int h)
     return d;
 }
 
+/* The window's icon, the project's PLAT_ICON (plat.h). Not on macOS, where the .app's own
+   icon is the Dock's and SDL would put this small one in its place. */
+static void set_icon(SDL_Window *w)
+{
+#if defined(PLAT_ICON) && !defined(__APPLE__)
+    SDL_Surface *s = SDL_CreateSurfaceFrom(PLAT_ICON_W, PLAT_ICON_H, SDL_PIXELFORMAT_RGBA32,
+                                           (void *)plat_icon_rgba, PLAT_ICON_W * 4);
+    if (s) {
+        SDL_SetWindowIcon(w, s);
+        SDL_DestroySurface(s);
+    }
+#else
+    (void)w;
+#endif
+}
+
 /* With the pointer lock option, the window's title says how to capture or release it. */
 static void mouse_title(SDL_Window *w, const PlatConfig *cfg, int locked)
 {
@@ -205,6 +225,7 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
             return 1;
         }
         SDL_SetRenderVSync(ren, 1);
+        set_icon(win);
         if (cfg->mouse_lock) mouse_title(win, cfg, 0);
     }
     targ[0] = (void *)game;
@@ -384,4 +405,60 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     if (win) SDL_DestroyWindow(win);
     SDL_Quit();
     return game_status;
+}
+
+/* Dialogs (plat.h): SDL's message box and folder picker, before plat_run. */
+void plat_message(int error, const char *title, const char *text)
+{
+    fprintf(stderr, PLAT_NAME ": %s\n%s\n", title, text);
+    SDL_ShowSimpleMessageBox(error ? SDL_MESSAGEBOX_ERROR : SDL_MESSAGEBOX_INFORMATION, title, text, NULL);
+}
+
+static struct { SDL_AtomicInt done; char path[1024]; int ok; } picked;
+
+static void SDLCALL folder_cb(void *ud, const char * const *list, int filter)
+{
+    (void)ud; (void)filter;
+    picked.ok = 0;
+    if (list && list[0] && strlen(list[0]) < sizeof picked.path) {
+        strcpy(picked.path, list[0]);
+        picked.ok = 1;
+    } else if (!list) {
+        fprintf(stderr, PLAT_NAME ": no folder dialog: %s\n", SDL_GetError());
+    }
+    SDL_SetAtomicInt(&picked.done, 1);
+}
+
+int plat_choose_folder(const char *title, const char *text, char *out, size_t outsz)
+{
+    const SDL_MessageBoxButtonData buttons[] = {
+        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit" },
+        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Choose folder..." },
+    };
+    SDL_MessageBoxData box;
+    int id = 0;
+    fprintf(stderr, PLAT_NAME ": %s\n%s\n", title, text);
+    memset(&box, 0, sizeof box);
+    box.flags = SDL_MESSAGEBOX_INFORMATION;
+    box.title = title;
+    box.message = text;
+    box.numbuttons = 2;
+    box.buttons = buttons;
+    if (!SDL_ShowMessageBox(&box, &id) || id != 1) return -1;
+    if (!SDL_Init(SDL_INIT_VIDEO)) return -1;
+    SDL_SetAtomicInt(&picked.done, 0);
+    SDL_ShowOpenFolderDialog(folder_cb, NULL, NULL, NULL, false);
+    while (!SDL_GetAtomicInt(&picked.done)) {
+        SDL_Event e;
+        SDL_WaitEventTimeout(&e, 50);
+    }
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    if (!picked.ok || strlen(picked.path) >= outsz) return -1;
+    strcpy(out, picked.path);
+    return 0;
+}
+
+const char *plat_base_dir(void)
+{
+    return SDL_GetBasePath();
 }

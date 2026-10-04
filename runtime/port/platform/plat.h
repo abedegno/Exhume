@@ -1,9 +1,12 @@
-/* plat.h: the platform API of a native port (Exhume's docs/port.md, "The platform layer"; from
-   UW2Decomp's src/port/platform/plat.h). Replaces nothing in the DOS build: it is the edge
+/* plat.h: the platform API of a native port (Exhume's docs/port.md, "The platform layer"; first
+   written for UW2Decomp's port). Replaces nothing in the DOS build: it is the edge
    between the port's portable C (the game, the C written for its assembly modules, the VGA,
-   PIT and keyboard emulation) and the host. PLAT_NAME (the prefix of the backend's messages
-   and its default screenshot name) and PLAT_TITLE (the window's title when the program gives
-   none) may be defined in the project's copy before the guard (UW2: examples/uw2/port/plat-uw2.h).
+   PIT and keyboard emulation) and the host. The project's portgame.h (port.h) comes first and
+   may define PLAT_NAME (the prefix of the backend's messages and its default screenshot name;
+   default PORT_NAME), PLAT_TITLE (the window's title when the program gives none) and
+   PLAT_ICON (a header of its own with the window's icon as PLAT_ICON_W by PLAT_ICON_H RGBA
+   pixels, plat_icon_rgba, rows from the top; not used on macOS, where the app bundle's icon is
+   the Dock's).
 
    Nothing here names SDL, so a new host is one backend file: platform/sdl3/ is the
    SDL3 backend (macOS, Windows, Linux, iOS and iPadOS, Android and Emscripten through SDL), and
@@ -23,8 +26,13 @@
 #ifndef EXHUME_PLAT_H
 #define EXHUME_PLAT_H
 
+#include "portgame.h"
 #ifndef PLAT_NAME
+#ifdef PORT_NAME
+#define PLAT_NAME PORT_NAME
+#else
 #define PLAT_NAME "port"
+#endif
 #endif
 #ifndef PLAT_TITLE
 #define PLAT_TITLE "Port"
@@ -134,5 +142,17 @@ int plat_listdir(const char *dosdir, void (*fn)(const char *name, int isdir, lon
 int plat_write_png(const char *path, const uint8_t *pixels, int width, int height,
                    const uint8_t rgb6[768]);
 int plat_write_png_rgb(const char *path, const uint8_t *rgb, int width, int height);
+
+/* Dialogs, for the user with no terminal (a program started from the Finder or Explorer).
+   plat_message shows a message box (and always writes the text to the standard error);
+   error 1 marks it as an error. plat_choose_folder shows text with the buttons "Choose
+   folder..." and "Quit" and then the host's folder picker: 0 with the folder chosen in out,
+   or -1 if the user quit or the host has no dialogs. Both are for before plat_run, on the
+   main thread. */
+void plat_message(int error, const char *title, const char *text);
+int plat_choose_folder(const char *title, const char *text, char *out, size_t outsz);
+
+/* The directory the program's executable is in, with a trailing separator, or NULL. */
+const char *plat_base_dir(void);
 
 #endif

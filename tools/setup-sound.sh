@@ -2,8 +2,8 @@
 # Fetch Nuked OPL3 (github.com/nukeykt/Nuked-OPL3, LGPL-2.1), the OPL emulator of
 # runtime/port/sound/audio.c, into DIR (default ./tools/nuked-opl3, the project's; ignored by
 # git) at a pinned commit, and check the two files by SHA-256. A project names DIR in
-# exhume.toml as a [[port.vendor]] (UW2: tools/nuked-opl3, define UW2_HAVE_OPL; with the
-# runtime's audio.c, AUDIO_HAVE_OPL), and tools/portbuild.py compiles opl3.c from there when it
+# exhume.toml as a [[port.vendor]] (UW2: tools/nuked-opl3, define AUDIO_HAVE_OPL, the
+# runtime's audio.c's), and tools/portbuild.py compiles opl3.c from there when it
 # is present; without it the port builds with no OPL chip and plays no FM music. Nothing of it
 # is ever committed (docs/third-party.md): the LGPL is met by source distribution and a
 # relinkable build, and fetching at setup keeps the repository free of it. From UW2Decomp's

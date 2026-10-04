@@ -3,9 +3,8 @@
    compiled for a modern host; never seen by the DOS build, which compiles the same sources with
    Turbo C++ 1.01 and its own headers (Exhume's build stages only the project's include
    directory, and tools/sources.py skips [project] exclude). Exhume's docs/port.md has the
-   design; this is UW2Decomp's src/port/compat.h with the game's main named by PORT_GAME_MAIN,
-   which the project defines in its copy before the guard (UW2: uw2_main,
-   examples/uw2/port/compat-uw2.h).
+   design. The project's portgame.h (port.h) is included here too, after the host's headers:
+   it names the game's main (PORT_GAME_MAIN; UW2: uw2_main).
 
    The Turbo C keywords are defined away, the far pointer macros and pseudo-registers become
    calls into the paragraph map and variables of the port's register file (mem/parmap.c,
@@ -28,6 +27,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include "portgame.h"
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -148,8 +148,22 @@ long bc_clock(void);
 #define stat(p, b) bc_stat(p, b)
 #define fstat(f, b) bc_fstat(f, b)
 #define fopen(p, m) bc_fopen(p, m)
-/* exit runs the termination chain seg021's init hooked (sys/borland.c), then ends the
-   program through the platform layer, which owns the main thread. */
+/* A stream's I/O goes straight to its handle, as a game may also read the handle itself (UW2:
+   LOADGR.C; sys/borland.c says why the host's buffered stdio cannot be used). */
+size_t bc_fread(void *buf, size_t size, size_t n, FILE *fp);
+size_t bc_fwrite(const void *buf, size_t size, size_t n, FILE *fp);
+int bc_fseek(FILE *fp, long off, int whence);
+long bc_ftell(FILE *fp);
+int bc_fgetc(FILE *fp);
+char *bc_fgets(char *s, int n, FILE *fp);
+#define fread(b, s, n, f) bc_fread(b, s, n, f)
+#define fwrite(b, s, n, f) bc_fwrite(b, s, n, f)
+#define fseek(f, o, w) bc_fseek(f, o, w)
+#define ftell(f) bc_ftell(f)
+#define fgetc(f) bc_fgetc(f)
+#define fgets(s, n, f) bc_fgets(s, n, f)
+/* exit runs the termination chain the program hooked (PORT_EXIT_CHAIN, sys/borland.c), then
+   ends the program through the platform layer, which owns the main thread. */
 void bc_exit(int status);
 #define exit(s) bc_exit(s)
 #define rand() bc_rand()

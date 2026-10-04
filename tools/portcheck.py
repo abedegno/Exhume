@@ -8,9 +8,11 @@
     python3 tools/portcheck.py [--config PATH] --cc CC      another compiler (default $CC, else clang, else cc)
 
 Each .C of the DOS build (tools/sources.py: not the include directory, not [project] exclude),
-and the [port] shared C, is compiled with the host C compiler as C89 with GNU extensions
-([port] game_std), with [port] compat force-included and the port's stand-ins for the
-compiler's own headers ([port] stand_ins) ahead of the host's. No game source is edited.
+and the shared C (the runtime's replay/replay.c, and [port] shared), is compiled with the host
+C compiler as C89 with GNU extensions ([port] game_std), with [port] compat force-included (the
+runtime's compat.h, which includes the project's portgame.h) and the runtime's stand-ins for
+the compiler's own headers ([port] stand_ins) ahead of the host's; portable.h is the runtime's
+too. No game source is edited.
 Objects and the full log go to <build>/<[port] out>/; nothing else is written.
 
 Diagnostics are counted once each (a header's are reported where they occur, not once per
@@ -21,9 +23,9 @@ data (to be replaced by port C), the far data taken from the EXE, Borland's libr
 provided by the port), and the port's own platform names (port_, bc_). That list is the
 platform layer's and the assembly replacement's workload; docs/PORT.md has the baseline.
 
-The DOS build is untouched: tools/build.py stages the include directory only,
-tools/srcdeps.py hashes it only, and tools/sources.py skips [project] exclude (the port's
-directory and the shared C's).
+The DOS build is untouched: tools/build.py stages the include directory and the runtime's
+include/ only, tools/srcdeps.py hashes them only, and tools/sources.py skips [project]
+exclude (the port's directory and the shared C's).
 """
 import os, re, sys, json, shutil, ctypes, argparse, subprocess, collections
 from concurrent.futures import ThreadPoolExecutor
@@ -39,8 +41,9 @@ OUT = P.out
 PORT = P.dir
 FLAGS = ['-x', 'c', f'-std={P.game_std}', '-fsigned-char'] + P.defines + ['-ferror-limit=0', '-fno-color-diagnostics',
          '-fdiagnostics-show-option', '-fno-caret-diagnostics',
-         '-include', P.compat, '-I', P.stand_ins,
-         '-iquote', CFG.include,
+         # the runtime's compat.h, which includes the project's portgame.h (from [port] dir), the
+         # stand-in headers, then the game's headers and the runtime's portable.h
+         '-include', P.compat, '-I', PORT, '-I', P.stand_ins] + [f for d in P.quote_dirs for f in ('-iquote', d)] + [
          # widths: what a 16-bit int and 32-bit long become on a 64-bit host
          '-Wpointer-to-int-cast', '-Wint-to-pointer-cast', '-Wshorten-64-to-32',
          '-Wno-unused-value', '-Wno-parentheses', '-Wno-dangling-else',
@@ -136,8 +139,8 @@ def source_line(path, n):
 
 
 def rel(p):
-    p = os.path.normpath(os.path.join(root, p))
-    return os.path.relpath(p, root)
+    """A path from [project] root; runtime/... for the runtime's."""
+    return portcfg.display(CFG, p)
 
 
 NM = shutil.which('nm') or shutil.which('llvm-nm')

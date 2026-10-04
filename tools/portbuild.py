@@ -1,5 +1,6 @@
 """Build the native port (docs/port.md): compile every game C source for the host as
-tools/portcheck.py does, compile the port's own C ([port] dir), and link them into
+tools/portcheck.py does, compile the port's own C (the project's, [port] dir, and Exhume's
+runtime/port, where it is: nothing is copied), and link them into
 <build>/<[port] out>/<[port] exe>.
 
     python3 tools/portbuild.py [--config PATH]           build and link; exit 1 if any step fails
@@ -18,9 +19,11 @@ tools/portcheck.py does, compile the port's own C ([port] dir), and link them in
                                                          each run writes a .profraw (LLVM_PROFILE_FILE),
                                                          for tools/coverage.py
 
-The port's own C is compiled with its headers and the game's; the platform backend
-([port] backend, default sdl3: the files under <dir>/platform/<backend>/) with the backend's
-flags from pkg-config, and the link takes its libraries. Platform backends other than the one
+The port's own C is compiled with its headers and the game's: the project's directory first,
+whose bindings (portgame.h, asmgame.h, ailgame.h) the runtime's headers include, then the
+runtime's (docs/port.md, "The runtime"); the platform backend ([port] backend, default sdl3:
+the files under the runtime's platform/<backend>/) with the backend's flags from pkg-config,
+and the link takes its libraries. Platform backends other than the one
 chosen are not compiled. What the port does not replace yet is still the generated stubs
 ([port] stubs, written by tools/portstubs.py), and the port stops at the first one it reaches.
 The DOS build is untouched.
@@ -53,10 +56,11 @@ PORT = P.dir
 SOUND_EXT = portcfg.sound(CFG).extensions
 EXE = os.path.join(OUT, P.exe)
 # The port's own C: C11, with the port's headers and the game's (port C that includes a game
-# header includes compat.h first, and gets the stand-in headers through [port] stand_ins).
+# header includes compat.h first, and gets the stand-in headers through [port] stand_ins):
+# portcfg's include_dirs, the project's first, then the game's headers and portable.h.
 PORT_FLAGS = ['-x', 'c', f'-std={P.port_std}', '-fsigned-char'] + P.defines + ['-Wall', '-Wno-comment', '-Wno-unused-function',
-              '-Wno-pragma-pack', '-I', PORT, '-I', os.path.join(PORT, 'platform'),
-              '-I', P.stand_ins, '-iquote', CFG.include]
+              '-Wno-pragma-pack'] + [f for d in P.include_dirs for f in ('-I', d)] + \
+             [f for d in P.quote_dirs for f in ('-iquote', d)]
 # The port's own C that only computes ([port] optimise): compiled with -O2 in the normal build.
 OPTIMISED = P.optimise
 OPT = ['-O2']
@@ -73,27 +77,24 @@ def pkg_config(*args):
 
 
 def port_sources():
-    """Every .c under the port's directory but the stand-in headers, and the platform backends
-    other than BACKEND."""
-    out = []
-    plat = os.path.join(PORT, 'platform')
-    for d, _, fs in os.walk(PORT):
-        if P.stand_ins in d: continue
-        if d.startswith(plat + os.sep) and os.path.relpath(d, plat).split(os.sep)[0] != BACKEND: continue
-        out += [os.path.join(d, f) for f in sorted(fs) if f.endswith('.c')]
-    return sorted(out) + [x for x in SOUND_EXT if not x.startswith(PORT + os.sep) and os.path.exists(x)]
+    """The port's own C (portcfg.port_sources: the project's and the runtime's), and the
+    [sound] extensions outside the project's port directory."""
+    return portcfg.port_sources(CFG) + [x for x in SOUND_EXT if not x.startswith(PORT + os.sep) and os.path.exists(x)]
 
 
 def port_object(out, path):
-    """The object of port source PATH in build directory OUT (a [sound] extension outside the
-    port's directory is named by its path from [project] root)."""
+    """The object of port source PATH in build directory OUT: the project's under port/, the
+    runtime's under port/rt_ (a project file may share a runtime file's name), a [sound]
+    extension outside the port's directory by its path from [project] root."""
+    if path.startswith(P.runtime_port + os.sep):
+        return os.path.join(out, 'port', 'rt_' + os.path.relpath(path, P.runtime_port).replace(os.sep, '_')[:-2] + '.o')
     if path.startswith(PORT + os.sep):
         return os.path.join(out, 'port', os.path.relpath(path, PORT).replace(os.sep, '_')[:-2] + '.o')
     return os.path.join(out, 'port', 'ext_' + os.path.relpath(path, root).replace(os.sep, '_')[:-2] + '.o')
 
 
 def is_backend(path):
-    return os.path.join(PORT, 'platform', BACKEND) + os.sep in path
+    return any(os.path.join(t, 'platform', BACKEND) + os.sep in path for t in (PORT, P.runtime_port))
 
 
 VENDOR_DIRS = [v['dir'] for v in P.vendor]
@@ -172,6 +173,7 @@ def main(argv):
         portcheck.FLAGS = portcheck.FLAGS + cov
         PORT_FLAGS.extend(cov)
         link_extra = ['-fprofile-instr-generate']
+    if not os.path.isfile(P.compat): sys.exit(f'portbuild.py: no runtime at {P.runtime} ([port] runtime)')
     os.makedirs(OUT, exist_ok=True)
     game = portcfg.game_sources(CFG)     # with the shared C (the record and replay hooks' code)
     snd_cflags, snd_libs, snd_extra, said = deps()
@@ -183,6 +185,7 @@ def main(argv):
         print(f'{os.path.relpath(p, root)}: does not compile\n' + '\n'.join(l for l in e.split('\n') if 'error' in l)[:2000])
     if bad: return 1
     objs = [o for p, rc, e, o in gres + pres]
+    print(f'runtime: {os.path.dirname(P.runtime)}')
     print(f'compiled {len(gres)} game sources and {len(pres)} port sources')
     warn = [(p, e) for p, rc, e, o in pres if o and 'warning' in e]
     for p, e in warn:

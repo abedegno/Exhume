@@ -1,6 +1,6 @@
 /* blackbox.c: replaces nothing. Every player's session is recorded, so that a crash, or
    anything else the port does differently from DOS, can be replayed exactly (Exhume's
-   docs/port.md, "The black box"; from UW2Decomp's src/port/sys/blackbox.c). Each session gets a
+   docs/port.md, "The black box"; first written for UW2Decomp's port). Each session gets a
    folder, recordings/YYYYMMDD-HHMMSS in the home directory, holding RECORD.OUT, the inputs as
    runtime/replay/replay.c records them, and stage/, a copy of the home directory's files (the
    saved games, the game's configuration) as they were when the session began, which is what a
@@ -166,8 +166,10 @@ int port_blackbox_start(const char *home)
     return 0;
 }
 
-/* The fault handler's and exit's part: the recording's buffered streams written. */
+/* The fault handler's, exit's and the closed window's part: the recording's buffered streams
+   written (a --record session's too: the port's main calls this when plat_run returns, so
+   that a recording whose game was still running when the window closed is whole). */
 void port_blackbox_close(int crashed)
 {
-    if (rp_blackbox) rp_blackbox_close(crashed);
+    rp_blackbox_close(crashed);
 }

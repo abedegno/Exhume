@@ -1,7 +1,8 @@
 # UW2Decomp's values for tools/citemplates.py ([ci] vars in examples/uw2/exhume.toml): with
 # them the templates give UW2Decomp's own workflows and actions, byte for byte
 # (examples/uw2/prove-port.sh ci). UW2Decomp keeps its own copies of the setup scripts in
-# tools/, so nothing checks out Exhume.
+# tools/; the jobs that build check out Exhume into .exhume, at the commit UW2Decomp's
+# tools/exhume-ref names, for the runtime its port and its gate compile where it is.
 
 test = "make test"
 test_full = "make test-full"
@@ -11,12 +12,27 @@ setup = "make setup"
 setup_libs = "make setup-libs"
 setup_sound = "make setup-sound"
 port = "make port"
+verify = "make verify"
+verify_windows = "make PY=python verify"
+setup_libs_windows = "UW2_LIBS=mt32emu make setup-libs"
 port_check = "make port-check"
 port_windows = "make PY=python port"
 port_check_windows = "make PY=python port-check"
 repocheck = "python3 tools/repocheck.py"
 nightly_cron = "17 3 * * *"
-exhume_checkout = ""
+exhume_checkout = '''
+      # Exhume, whose runtime the port, the gate and the replay build compile where it is, at
+      # the commit tools/exhume-ref names (docs/BUILDING.md, "Exhume")
+      - name: Exhume's commit
+        id: exhume
+        shell: bash
+        run: echo "ref=$(cut -d' ' -f1 tools/exhume-ref)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: abedegno/Exhume
+          ref: ${{ steps.exhume.outputs.ref }}
+          path: .exhume
+          persist-credentials: false'''
 repocheck_env = ""
 repocheck_exhume_checkout = ""
 requirements = "tools/requirements.txt"
@@ -37,6 +53,7 @@ golden_dir = "tests/replay/golden"
 coverage_doc = "docs/COVERAGE.md"
 coverage_data = "build/coverage/all.profdata"
 cleanup = "TC TASM build"
+verify_cleanup = "build"
 assets_action = "uw2-assets"
 assets_title = "UW2 assets"
 deploy_secret = "UW2_ASSETS_DEPLOY_KEY"
@@ -53,10 +70,13 @@ ci_assets = "sh tools/ci-assets.sh"
 accuracy_comment = '''
 # make test, the accuracy suite (docs/BUILDING.md, "Testing" and "Continuous integration"):
 # the byte-exact DOS build gate, the port build, the quick routine fuzzing and the eight replay
-# sessions against their goldens. It needs the game and the Borland toolchain, which come from
-# the private bundle (the uw2-assets action), so it runs only where the repository's secrets
-# are given: pushes to main, a manual run, and pull requests from branches of this repository.
-# A pull request from a fork gets port.yml and repocheck.yml, which need no secrets.'''
+# sessions against their goldens, on Linux. Then the same eight sessions replayed by the port
+# built on Windows (MSYS2 CLANG64) and on macOS against the same goldens (make verify): the
+# goldens are DOS's, so these show the port on each OS runs the game as DOS does. They need
+# the game, and the gate the Borland toolchain, which come from the private bundle (the
+# uw2-assets action), so the jobs run only where the repository's secrets are given: pushes
+# to main, a manual run, and pull requests from branches of this repository. A pull request
+# from a fork gets port.yml and repocheck.yml, which need no secrets.'''
 nightly_comment = '''
 # make test-full, nightly (docs/BUILDING.md, "Testing" and "Continuous integration"): the gate,
 # both port builds, every golden made again from DOS in DOSBox-X (each session twice, checked
@@ -85,4 +105,6 @@ assets_comment = '''
 # with its read-only deploy key, decrypted with the age key into $RUNNER_TEMP/uw2-assets. Sets
 # UW2_EXE, UW2_DIR, TC_DISKS and TASM_DISKS for the later steps. Nothing is listed or printed.
 # The calling workflow must remove $RUNNER_TEMP/uw2-assets, TC, TASM and build in a final
-# `if: always()` step, and must never cache or upload anything from them.'''
+# `if: always()` step, and must never cache or upload anything from them. Needs git, ssh, tar
+# and age on the PATH: Linux and macOS runners (age from apt or Homebrew), and Windows, where
+# bash is Git Bash and the job puts the official age build on the PATH first (accuracy.yml).'''

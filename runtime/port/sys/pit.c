@@ -1,13 +1,12 @@
-/* pit.c: replaces the PC's programmable interval timer as an AIL 2 game uses it (from UW2Decomp's
-   src/port/sys/pit.c). AIL.ASM reprogrammed channel 0 and ran the timers registered with
+/* pit.c: replaces the PC's programmable interval timer as an AIL 2 game uses it (first written
+   for UW2Decomp's port). AIL.ASM reprogrammed channel 0 and ran the timers registered with
    AIL_register_timer from it (UW2: the game clock at 256 Hz, SOUND.C's cllbck_tst, among them),
    and the BIOS kept its 18.2 Hz tick. Here a thread of the port's own measures the host's
    high-resolution counter and gives AIL (sound/ail.c, which keeps API_timer's DDA) the time
-   that has passed, so that AIL runs as many PIT
-   ticks as the PIT would have, its timers at their own rates, a late wake-up running the
-   missed ticks at once, as queued interrupts did. Under replay AIL takes its ticks from the
-   replayed clock instead. The BIOS tick (for clock()) and the keyboard's typematic repeat are
-   driven from here too. */
+   that has passed, so that AIL runs as many PIT ticks as the PIT would have, its timers at
+   their own rates, a late wake-up running the missed ticks at once, as queued interrupts did.
+   Under replay AIL takes its ticks from the replayed clock instead. The BIOS tick (for clock())
+   and the keyboard's typematic repeat are driven from here too. */
 #include <stdatomic.h>
 #include "port.h"
 #include "plat.h"

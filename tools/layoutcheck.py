@@ -177,8 +177,9 @@ def run_dos(probe, hs):
     if os.path.isdir(dosout): shutil.rmtree(dosout)
     args = ['node', os.path.join(here, 'dosrun.mjs'), dosout, '-f', probe + '=LPROBE.C']
     for st in CFG.stage: args += ['--stage', st]
-    for h in sorted(os.listdir(INC)):
-        if h.endswith('.h'): args += ['-f', os.path.join(INC, h) + '=' + h.upper()]
+    import build      # the shared headers as the DOS build stages them: the runtime's portable.h too
+    for h, dosname in build.shared_headers(CFG):
+        if h.lower().endswith('.h'): args += ['-f', h + '=' + dosname]
     args += ['-c', PROBE,
              '-c', 'LPROBE > OUT.TXT', '-o', 'OUT.TXT', '-o', 'BUILD.TXT', '-t', '400']
     r = subprocess.run(args, capture_output=True, text=True, cwd=root)

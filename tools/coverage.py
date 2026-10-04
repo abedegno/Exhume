@@ -57,14 +57,27 @@ def export(profdata, objects):
     return json.loads(r.stdout)['data'][0]
 
 
-def area(path):
-    """The directory a source is counted under: src/<subsystem> for the game's C, src/port/<dir>
-    for the port's; None for what is not ours (Nuked OPL3, the SDK)."""
+def src_name(path):
+    """A source as the page names it: from [project] root, or runtime/... for the runtime's
+    (compiled where it is); None for what is neither (Nuked OPL3, the SDK, the tools)."""
+    path = os.path.abspath(path)
+    if os.path.commonpath([path, P.runtime]) == P.runtime:
+        return 'runtime/' + os.path.relpath(path, P.runtime).replace(os.sep, '/')
     rel = os.path.relpath(path, root)
     if rel.startswith('..') or rel.startswith('tools'): return None
-    parts = rel.split(os.sep)
-    n = len(PORT_REL)
-    if parts[:n] == PORT_REL: return '/'.join(parts[:n + 1]) if len(parts) > n + 1 else '/'.join(PORT_REL)
+    return rel.replace(os.sep, '/')
+
+
+def area(path):
+    """The directory a source is counted under: src/<subsystem> for the game's C, src/port/<dir>
+    for the project's port C, runtime/port/<dir> and runtime/replay for the runtime's; None
+    for what is not ours."""
+    nm = src_name(path)
+    if not nm: return None
+    parts = nm.split('/')
+    for top in (PORT_REL, ['runtime', 'port']):
+        n = len(top)
+        if parts[:n] == top: return '/'.join(parts[:n + 1]) if len(parts) > n + 1 else '/'.join(top)
     return '/'.join(parts[:2])
 
 
@@ -101,16 +114,16 @@ def main(argv):
         ar = area(f['filename'])
         if not ar: continue
         s = f['summary']
-        files[os.path.relpath(f['filename'], root)] = dict(area=ar, lines=(s['lines']['covered'], s['lines']['count']),
+        files[src_name(f['filename'])] = dict(area=ar, lines=(s['lines']['covered'], s['lines']['count']),
                                                            funcs=(s['functions']['covered'], s['functions']['count']),
                                                            regions=(s['regions']['covered'], s['regions']['count']))
-    rlines = {os.path.relpath(f['filename'], root): f['summary']['lines']['covered'] for f in rep['files']}
+    rlines = {src_name(f['filename']): f['summary']['lines']['covered'] for f in rep['files'] if src_name(f['filename'])}
     for p, d in files.items(): d['fuzz'] = d['lines'][0] - rlines.get(p, 0)
 
     def funcs(data):
         out = {}
         for fn in data['functions']:
-            fname = os.path.relpath(fn['filenames'][0], root)
+            fname = src_name(fn['filenames'][0])
             if fname not in files: continue
             name = fn['name'].split(':')[-1]
             out[(fname, name)] = max(out.get((fname, name), 0), fn['count'])
@@ -127,8 +140,11 @@ def main(argv):
                     t[k + 'c'] += d[k][0]; t[k + 'n'] += d[k][1]
         return t
     port_area = '/'.join(PORT_REL)
-    groups = [('The game\'s C (shared with DOS)', lambda p, d: not d['area'].startswith(port_area)),
+    groups = [('The game\'s C (shared with DOS)', lambda p, d: not d['area'].startswith(port_area)
+               and not d['area'].startswith('runtime/')),
               ('The port\'s C written by hand', lambda p, d: d['area'].startswith(port_area) and not translated(p)
+               and not d['area'].endswith('stubs')),
+              ('Exhume\'s runtime, compiled in place (runtime/)', lambda p, d: d['area'].startswith('runtime/')
                and not d['area'].endswith('stubs')),
               ('The port\'s C translated from the assembly (tools/asm2c.py)', lambda p, d: translated(p)),
               ('Everything', lambda p, d: True)]

@@ -1,8 +1,9 @@
 """What a source's object depends on besides its own text: the shared headers it includes.
 
     headers(path, cfg)       the project's headers the source includes, `#include "name.h"`
-                             resolved in [project] include, recursively, each once, in order
-                             of first inclusion. Names not found there (the compiler's own
+                             resolved in [project] include and then the runtime's include
+                             (portable.h; config.py's includes), recursively, each once, in
+                             order of first inclusion. Names not found there (the compiler's own
                              headers) are left out: the toolchain's hash covers those.
     source_hash(path, cfg)   SHA-1 of the source's bytes, followed by the name and bytes of
                              each of those headers. A source that includes none hashes to
@@ -22,10 +23,12 @@ _INC = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"]+)"', re.M)
 
 
 def _index(cfg):
-    """{lower-case name: path} of the include directory (DOS names are case-blind)."""
-    d = cfg.include; out = {}
-    if os.path.isdir(d):
-        for n in os.listdir(d): out[n.lower()] = os.path.join(d, n)
+    """{lower-case name: path} of the include directories, the project's first (DOS names are
+    case-blind)."""
+    out = {}
+    for d in cfg.includes:
+        if os.path.isdir(d):
+            for n in os.listdir(d): out.setdefault(n.lower(), os.path.join(d, n))
     return out
 
 

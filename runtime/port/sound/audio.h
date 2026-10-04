@@ -10,6 +10,7 @@
 
 /* the options (the port's main): a WAV file to write everything rendered to, the
    directory of the user's MT-32 or CM-32L ROMs, and whether to open the audio device */
+int audio_mt32_roms_present(const char *dir);
 void audio_config(const char *wav_path, const char *mt32_roms, int device);
 void audio_start(void);
 void audio_music_device(int kind);

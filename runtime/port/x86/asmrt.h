@@ -2,8 +2,8 @@
    docs/port.md, "The static recompiler"): the 386's registers and flags, the segment registers
    with the host pointer of each segment, the stack in the DOS memory it occupied, the divide
    fault, and calls, jumps and returns between the translated modules, the hand-written C and
-   back. From UW2Decomp's src/port/x86/asmrt.h, with what is UW2's moved to the project's
-   asmgame.h (examples/uw2/port/asmgame.h).
+   back. First written for UW2Decomp's port, with what is UW2's in the project's asmgame.h
+   (UW2Decomp's src/port/asmgame.h).
 
    tools/asm2c.py writes one C function per assembly module, instruction for instruction from
    the matched .ASM source and the bytes the gate proves it assembles to. The registers are
@@ -21,7 +21,8 @@
    handler) unwinds the C calls in between as the stack pointer says, so the stack is the
    authority, as it was in DOS.
 
-   The project's asmgame.h, beside this file, says what is the program's own:
+   The project's asmgame.h, from the project's port directory (on the include path ahead of the
+   runtime's), says what is the program's own:
      the code blocks: the C names tools/asm2c.py's spec gives in CODESEGS (UW2: CODE003,
        CODE004), each the host memory holding a code segment's bytes as DOS loaded them, so the
        data a module keeps in its code segment, and the immediates it patches, are where the

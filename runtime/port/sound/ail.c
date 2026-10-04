@@ -1,11 +1,12 @@
 /* ail.c: replaces a game's AIL.ASM, the Miles Audio Interface Library 2 API (UW2: seg022), and
-   the .ADV driver files it loads (Exhume's docs/port.md, "Sound"; from UW2Decomp's
-   src/port/sound/ail.c). The API is a C translation of UW2's matched AIL.ASM (which is John
-   Miles' public-domain AIL.ASM of AIL 2.14, as UW2 linked it, 2.11): the timers, the driver
-   table and the calls a game makes. The project's ailgame.h, included first, includes compat.h
-   and the game's own declarations of the AIL API and its structs (UW2: sound.h). The drivers are C too (xmidi.c, yamaha.c,
-   mt32.c, dmasound.c); AIL_register_driver recognises which one the game loaded by the
-   device names in the user's own .ADV file and reads its description table from it.
+   the .ADV driver files it loads (Exhume's docs/port.md, "Sound"; first written for UW2Decomp's
+   port). The API is a C translation of UW2's matched AIL.ASM (which is John Miles'
+   public-domain AIL.ASM of AIL 2.14, as UW2 linked it, 2.11): the timers, the driver table and
+   the calls a game makes. The project's ailgame.h, included first, includes compat.h and the
+   game's own declarations of the AIL API and its structs (UW2: sound.h). The drivers are C too
+   (xmidi.c, yamaha.c, mt32.c, dmasound.c); AIL_register_driver recognises which one the game
+   loaded by the device names in the user's own .ADV file and reads its description table from
+   it.
 
    The timers are AIL's API_timer: one PIT, programmed for the shortest period any timer
    needs, and per timer a period and an accumulator that each PIT tick adds the PIT's period

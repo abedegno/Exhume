@@ -13,6 +13,9 @@ setup = "sh .exhume/profiles/borland-tc101/setup-tc.sh \"$TC_DISKS\" toolchain/T
 setup_libs = "sh .exhume/tools/setup-libs.sh tools/libs"
 setup_sound = "sh .exhume/tools/setup-sound.sh tools/nuked-opl3"
 port = "make EXHUME=.exhume port"
+verify = "make EXHUME=.exhume verify"
+verify_windows = "make EXHUME=.exhume PY=python verify"
+setup_libs_windows = "SETUP_LIBS=mt32emu sh .exhume/tools/setup-libs.sh tools/libs"
 port_check = "make EXHUME=.exhume port-check"
 port_windows = "make EXHUME=.exhume PY=python port"
 port_check_windows = "make EXHUME=.exhume PY=python port-check"
@@ -24,7 +27,7 @@ exhume_checkout = '''
       - uses: actions/checkout@v4
         with:
           repository: abedegno/Exhume
-          ref: ${{ vars.EXHUME_REF || 'main' }}
+          ref: ${{ vars.EXHUME_REF || 'master' }}
           path: .exhume
           persist-credentials: false'''
 repocheck_env = ""
@@ -32,7 +35,7 @@ repocheck_exhume_checkout = '''
       - uses: actions/checkout@v4
         with:
           repository: abedegno/Exhume
-          ref: ${{ vars.EXHUME_REF || 'main' }}
+          ref: ${{ vars.EXHUME_REF || 'master' }}
           path: .exhume'''
 
 # where things are
@@ -54,6 +57,7 @@ golden_dir = "tests/replay/golden"
 coverage_doc = "docs/COVERAGE.md"
 coverage_data = "build/coverage/all.profdata"
 cleanup = "toolchain build"
+verify_cleanup = "build"
 
 # the private bundle (docs/ci-bundle.md)
 assets_action = "game-assets"
@@ -104,4 +108,6 @@ assets_comment = '''
 # with its read-only deploy key and decrypted with the age key into $RUNNER_TEMP. Sets the
 # variables tools/ci-assets.sh prints for the later steps. Nothing is listed or printed. The
 # calling workflow must remove the decrypted tree and everything built from it in a final
-# `if: always()` step, and must never cache or upload anything from them.'''
+# `if: always()` step, and must never cache or upload anything from them. Needs git, ssh, tar
+# and age on the PATH: Linux and macOS runners (age from apt or Homebrew), and Windows, where
+# bash is Git Bash and the job puts the official age build on the PATH first (accuracy.yml).'''

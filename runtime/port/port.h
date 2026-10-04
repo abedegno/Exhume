@@ -1,15 +1,18 @@
 /* port.h: what the port's own C shares (Exhume's docs/port.md). Not a game header and not the
    platform API (platform/plat.h): the paragraph map, what is loaded from the user's EXE, the
-   emulated hardware (the VGA, the PIT, the keyboard controller, the mouse driver), and the
-   port's diagnostics. Port C that also includes game headers includes compat.h first.
+   emulated hardware (the VGA, the EMS pages, the PIT, the keyboard controller, the mouse
+   driver), finding the game and the settings file, and the port's diagnostics. Port C that
+   also includes game headers includes compat.h first.
 
-   The project's portgame.h, beside this file, comes first: it names the program (PORT_NAME,
-   the prefix of its messages), may move the load segment and the far heap (PORT_LOAD_SEG,
-   PORT_HEAP_FIRST, PORT_HEAP_END), gives DGROUP's paragraph (PORT_DGROUP_PARA) and where the
-   C library's _ctype table sits in it (PORT_CTYPE_AT), the termination chain exit runs
-   (PORT_EXIT_CHAIN()), whether the port has the black box (PORT_BLACKBOX, with BLACKBOX_KEEP
-   and BLACKBOX_SKIP: sys/blackbox.c), and declares the program's own far blocks. UW2's is
-   examples/uw2/port/portgame.h. */
+   The project's portgame.h comes first, from the project's own port directory (the include
+   path puts it ahead of the runtime's): it names the program (PORT_NAME, the prefix of its
+   messages), may move the load segment and the far heap (PORT_LOAD_SEG, PORT_HEAP_FIRST,
+   PORT_HEAP_END), gives DGROUP's paragraph (PORT_DGROUP_PARA) and where the C library's _ctype
+   table sits in it (PORT_CTYPE_AT), the termination chain exit runs (PORT_EXIT_CHAIN()),
+   whether the port has the black box (PORT_BLACKBOX, with BLACKBOX_KEEP and BLACKBOX_SKIP:
+   sys/blackbox.c), what marks the game's directory (PORT_GAME_EXE and the rest:
+   sys/gamedir.c), and declares the program's own far blocks. compat.h includes it too, so the
+   game's C sees it: it declares only the port's names. UW2's is UW2Decomp's src/port/portgame.h. */
 #ifndef EXHUME_PORT_H
 #define EXHUME_PORT_H
 
@@ -76,6 +79,10 @@ void *pm_segbase(unsigned seg);
 /* What the port reads from the user's own EXE at start-up, never shipped: the far data no
    source defines yet, and DGROUP's initialised image (the project's: UW2's mem/fardata.c). */
 int port_load_exe(const char *path);      /* 0, or -1 with a message */
+/* Whether path is the build of the game the port was made from (the project's, beside
+   port_load_exe): 0 if it is; else -1 if it cannot be read, -2 for another size, -3 for
+   another build. No message. */
+int port_check_exe(const char *path);
 /* The EXE's DGROUP image (its initialised data, DS:0 on), for the C library's tables and the
    null-pointer copies. */
 extern unsigned char port_dgroup_image[0x10000];
@@ -83,6 +90,35 @@ extern unsigned char port_dgroup_image[0x10000];
    and in the interrupt vector table into the port's copies, which start as DGROUP's image and
    zeros (mem/parmap.c). */
 void port_game_nulls(unsigned char *ds0, unsigned char *ivt);
+
+/* The EMS 4.0 driver's memory (mem/emm.c): a store of 16 KB logical pages for one handle and
+   a 64 KB page frame of four slots at segment seg, a region of the paragraph map. Mapping a
+   page into a slot copies the page that was there back to the store and the new one in, so
+   the frame holds what DOS's would; a page mapped into two slots stays one page. emm_open
+   allocates the smaller of free_pages (what the emulated driver reports free) and max_pages,
+   failing below min_pages: the number allocated, or 0. emm_map: 1 if done, 0 if refused;
+   logical FFFFh unmaps the slot. The project's C keeps the game's own entry points (UW2:
+   UW2Decomp's mem/ems.c, for EMS.C's). */
+int emm_open(unsigned min_pages, unsigned max_pages, unsigned free_pages, unsigned seg);
+void emm_close(void);
+int emm_map(unsigned physical, unsigned logical);
+/* The frame's host memory: 64 KB mapped twice in a row and a guard page (mem/frame.c). */
+unsigned char *port_frame_alloc(void);
+
+/* Finding the game, and the settings file (sys/gamedir.c, sys/gogreg.c). port_find_game
+   looks for the game's directory by itself; port_game_in looks in a folder the user chose;
+   both return 0 with the directory in out. port_game_refused says what was found and refused
+   by port_check_exe, for the message when nothing was found ("" if nothing). The settings
+   file is PORT_CONFIG_FILE in the home directory, lines of key=value: port_config_get gives
+   0 and the value, port_config_set writes it. port_gog_registry (Windows) calls fn for each
+   game GOG's installers recorded in the registry, its product id, title and folder, until fn
+   returns non-zero, and returns that, or 0. */
+int port_find_game(const char *home, char *out, size_t outsz);
+int port_game_in(const char *dir, const char *home, char *out, size_t outsz);
+const char *port_game_refused(void);
+int port_config_get(const char *home, const char *key, char *out, size_t outsz);
+int port_config_set(const char *home, const char *key, const char *value);
+int port_gog_registry(int (*fn)(const char *id, const char *name, const char *path, void *ctx), void *ctx);
 
 /* The emulated VGA (gfx/vga.c). */
 void vga_outb(unsigned port, uint8_t v);

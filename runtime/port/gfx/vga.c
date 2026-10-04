@@ -1,9 +1,8 @@
-/* vga.c: replaces the VGA (Exhume's docs/port.md, "The platform layer"; from UW2Decomp's
-   src/port/gfx/vga.c). The parts UW2 uses, which are most of what a mode 13h or mode X game
-   uses: 256 KB of
-   video memory in four planes, the sequencer (map mask, memory mode), the graphics controller
-   (set/reset, logical function, read map, write mode, bit mask), the latches, the CRT
-   controller (display start, offset, maximum scan line, line compare), the attribute
+/* vga.c: replaces the VGA (Exhume's docs/port.md, "The platform layer"; first written for
+   UW2Decomp's port). The parts UW2 uses, which are most of what a mode 13h or mode X game uses:
+   256 KB of video memory in four planes, the sequencer (map mask, memory mode), the graphics
+   controller (set/reset, logical function, read map, write mode, bit mask), the latches, the
+   CRT controller (display start, offset, maximum scan line, line compare), the attribute
    controller's pixel panning, the DAC with 6-bit colour, and input status 1's retrace bit.
 
    The game draws through vga_write and vga_read (UW2: seg003's routines, the C written for

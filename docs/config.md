@@ -10,7 +10,7 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 - `root`: the decompilation repository.
 - `src`, `targets`, `symbols`, `matched`, `map`: sources, target tables, the symbol map, the list of matched segments, the map directory. Sources may sit in subdirectories of `src` (one per subsystem, say); every tool finds them through tools/sources.py, by stem (the file name without extension, upper case, unique across the tree) or by DOS segment.
 - `exclude`: directories under `src` (relative to it) that hold no sources for the DOS build, such as a host port's own code; never searched for sources (UW2: `port`).
-- `include`: the shared headers (default `src/include`), never searched for sources. tools/build.py stages them in C:\ beside each source, and tools/srcdeps.py hashes a source together with the headers it includes, so the gate and the modding build recompile every includer of a changed header.
+- `include`: the shared headers (default `src/include`), never searched for sources. tools/build.py stages them in C:\ beside each source, and tools/srcdeps.py hashes a source together with the headers it includes, so the gate and the modding build recompile every includer of a changed header. The runtime's `include/` (portable.h; `[port] runtime`) is staged and hashed the same way, after these, so a project header of the same name wins.
 - `build`: where objects (`build/STEM/STEM.OBJ`, with `BUILD.LOG`), the link and the queue go. It may be outside root; Exhume's own proof sets it to `~/Exhume/build/uw2` so the UW2Decomp checkout is never written.
 - `queue`: the build queue directory, relative to build.
 
@@ -83,11 +83,13 @@ Notes for rungame.mjs (`data`, `exe_name`, `skip`), which takes them as argument
 
 For a native port of the matched tree (docs/port.md): tools/portcheck.py, portbuild.py, portstubs.py, layoutcheck.py, intaudit.py and widths.py. tools/portcfg.py has every key with its default; the ones a project usually sets:
 
-- `dir`: the port's own C (default `src/port`): compat.h, the stand-in headers, the platform layer, the replacements, the link stubs. List it in `[project] exclude` so the DOS build never sees it.
-- `shared`: directories of C that both the port and the replay DOS build compile and the gate does not (default `src/replay`, the record and replay code); list them in `exclude` too.
+- `dir`: the project's own port C (default `src/port`): its bindings for the runtime (`portgame.h`, `asmgame.h`, `ailgame.h`), its replacements for the game's assembly modules and DOS-only C, the translated modules, the link stubs. List it in `[project] exclude` so the DOS build never sees it. It is on the port's include path ahead of the runtime's directories.
+- `runtime`: Exhume's runtime (default this checkout's `runtime/`), which the tools compile where it is (docs/port.md, "The runtime"): its `port/` C with the project's, its `replay/replay.c` as shared C, and its `include/portable.h` staged beside `[project] include` for every DOS build. `runtime_exclude`: paths under it the project does not build.
+- `compat`, `stand_ins`: the header force-included into every game source and the stand-ins for the compiler's headers (default the runtime's `port/compat.h` and `port/include`).
+- `shared`: directories of the project's own C that both the port and the replay DOS build compile and the gate does not (default none; the runtime's replay.c always is); list them in `exclude` too.
 - `out`, `exe`, `name`: the build directory under `[project] build` (debug and coverage builds go to `OUT-debug` and `OUT-cov`), the program's name, and the prefix of its messages (default the program's name).
-- `backend`: the platform backend under `DIR/platform/` (default `sdl3`).
-- `optimise`: directories under `dir` compiled with `-O2` in the normal build.
+- `backend`: the platform backend under the runtime's `port/platform/` (default `sdl3`).
+- `optimise`: directories under `dir`, and the runtime's `port/` directories of the same names, compiled with `-O2` in the normal build.
 - `dos_only`: the header comment that keeps a game source out of the port (default `port: dos-only`).
 - `[[port.vendor]]`: third-party C a setup script fetched and the port compiles when present (`name`, `dir`, `sources`, `define`, `for`: the port file that gets the define, `missing`); `[[port.pkg]]`: libraries linked when pkg-config finds them (`name`, `define`, `for`, `label`, `missing`). Neither is ever committed (docs/third-party.md).
 - `[port.stub_notes]`: what each generated stub file holds, for its header.

@@ -1,4 +1,4 @@
-/* frame.c: replaces nothing; the host memory under an emulated EMS page frame (UW2: mem/ems.c).
+/* frame.c: replaces nothing; the host memory under an emulated EMS page frame (mem/emm.c).
    A far pointer's offset wraps at 64 KB: in DOS a pointer that runs past E000:FFFF comes back
    to E000:0000 (UW2's CUTS.C walks a large page's records through the frame that way). A host
    pointer would run on past the end, so the frame's 64 KB are mapped twice in a row, and a

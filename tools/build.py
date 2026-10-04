@@ -13,8 +13,9 @@ to 12 in emu2 or DOSBox, 3 in js-dos, where more emulators at once slow each oth
 the emulator's damaged outputs more frequent; EXHUME_DOS_SESSIONS or [toolchain] sessions
 override it.
 
-The project's shared headers ([project] include, default src/include) are copied into C:\
-beside the sources for every session, where `#include "name.h"` finds them; a header with
+The project's shared headers ([project] include, default src/include), and the runtime's
+(runtime/include: portable.h, unless the project has a header of that name), are copied into
+C:\\ beside the sources for every session, where `#include "name.h"` finds them; a header with
 the name of a file the toolchain stages stops the build, since it would replace that file.
 Sources are found in every directory under src (tools/sources.py).
 
@@ -36,19 +37,20 @@ def log_problems(cfg, text):
 
 
 def shared_headers(cfg):
-    """[(path, DOS name)] of the include directory's headers, checked against the names the
-    toolchain stages."""
-    if not os.path.isdir(cfg.include): return []
+    """[(path, DOS name)] of the include directories' headers (the project's, then the
+    runtime's, a name staged once), checked against the names the toolchain stages."""
     staged = set()
     for s in cfg.stage:
         if os.path.isdir(s): staged.update(n.upper() for n in os.listdir(s))
         else: staged.add(os.path.basename(s).upper())
-    out = []
-    for n in sorted(os.listdir(cfg.include)):
-        if not n.lower().endswith(('.h', '.inc', '.ash')): continue
-        if n.upper() in staged:
-            sys.exit(f'{os.path.join(cfg.include, n)} has the name of a file the toolchain stages; rename it')
-        out.append((os.path.join(cfg.include, n), n.upper()))
+    out, have = [], set()
+    for d in cfg.includes:
+        if not os.path.isdir(d): continue
+        for n in sorted(os.listdir(d)):
+            if not n.lower().endswith(('.h', '.inc', '.ash')) or n.upper() in have: continue
+            if n.upper() in staged:
+                sys.exit(f'{os.path.join(d, n)} has the name of a file the toolchain stages; rename it')
+            out.append((os.path.join(d, n), n.upper())); have.add(n.upper())
     return out
 
 
