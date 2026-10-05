@@ -12,7 +12,7 @@
      is the paragraph after the block's start, as UW2's SOUND.C expects.
    - a window: any other host pointer the game takes apart with FP_SEG (a near buffer passed
      to intdosx or movedata). It gets a 64 KB window of paragraphs based at the pointer, so
-     MK_FP(FP_SEG(p), FP_OFF(p) + n) is p + n. Windows are reused in turn; each new one is
+     MK_FP(FP_SEG(p), FP_OFF(p) + n) is p + n. The least recently used is reused; each new one is
      logged when tracing, so the idiom can be found and given a named macro.
    MK_FP finds the region holding the linear address seg * 16 + off. */
 #include <stdio.h>
@@ -26,6 +26,7 @@ struct region {
     size_t size;
     unsigned seg;
     int kind;               /* 0 segment, 1 heap, 2 window */
+    unsigned long used;     /* a window: when a pointer was last split through it */
 };
 #define MAXREG 256
 static struct region reg[MAXREG];
@@ -34,7 +35,7 @@ static int nreg;
 /* The windows: paragraphs B000 to DFFF, three windows of 1000h paragraphs. */
 #define WIN_FIRST 0xB000u
 #define WIN_COUNT 3
-static int win_next;
+static unsigned long win_clock;
 
 void pm_add(const char *name, void *base, size_t size, unsigned seg)
 {
@@ -62,10 +63,25 @@ static struct region *by_ptr(const unsigned char *p)
     return NULL;
 }
 
+/* A new window takes the slot used least recently (an unused slot first), so that the
+   pointers of one call, split one after the other (a far copy's destination and source),
+   never take each other's window: in turn, the third of three new windows could reuse the
+   first's slot while a pointer split through it was still to be used (UW1 under ASan's
+   layout: CONVERSE.C's str_copy of the player's name into a local copied the name onto
+   itself, as both pointers had segment B000). */
 static struct region *window_for(const unsigned char *p)
 {
-    unsigned seg = WIN_FIRST + 0x1000u * (unsigned)win_next;
-    int i;
+    unsigned seg = WIN_FIRST, best = ~0u;
+    unsigned long oldest = ~0ul;
+    int i, k;
+    for (k = 0; k < WIN_COUNT && best == ~0u; k++) {
+        unsigned s_ = WIN_FIRST + 0x1000u * (unsigned)k;
+        for (i = 0; i < nreg; i++)
+            if (reg[i].kind == 2 && reg[i].seg == s_) break;
+        if (i == nreg) best = s_;                       /* unused */
+        else if (reg[i].used < oldest) { oldest = reg[i].used; seg = s_; }
+    }
+    if (best != ~0u) seg = best;
     for (i = 0; i < nreg; i++)
         if (reg[i].kind == 2 && reg[i].seg == seg) break;
     if (i == nreg) {
@@ -77,7 +93,7 @@ static struct region *window_for(const unsigned char *p)
     reg[i].size = 0x10000;
     reg[i].seg = seg;
     reg[i].kind = 2;
-    win_next = (win_next + 1) % WIN_COUNT;
+    reg[i].used = ++win_clock;
     port_log("parmap: window %04X:0000 at host %p\n", seg, (void *)p);
     return &reg[i];
 }
@@ -163,6 +179,7 @@ static struct region *region_of(const volatile void *vp)
     if (!p) return NULL;
     r = by_ptr(p);
     if (!r || (r->kind == 2 && p - r->base >= 0xF000)) r = window_for(p);
+    else if (r->kind == 2) r->used = ++win_clock;
     return r;
 }
 

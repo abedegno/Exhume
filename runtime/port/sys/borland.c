@@ -427,10 +427,8 @@ long bc_clock(void) { return (long)pit_bios_ticks(); }
 
 /* exit: the C library's exit, then the termination chain the program hooked (PORT_EXIT_CHAIN,
    portgame.h; UW2: the chain seg021's init hooked, whose shutdown prints the message at cPerror). */
-void port_backtrace(void);
 void bc_exit(int status)
 {
-    if (getenv("A3DBG")) port_backtrace();
     fflush(stdout);
 #ifdef PORT_BLACKBOX
     port_blackbox_close(0);
