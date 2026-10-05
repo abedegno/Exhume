@@ -391,7 +391,7 @@ def cmd_verify(names, jobs, debug=False, cov=False):
     if not os.path.exists(port): sys.exit(f'replay.py verify: build the port first ({rel(port)}: tools/portbuild.py, '
                                           f'with --debug or --coverage for those builds)')
     try: R.build(quiet=True)          # the replay DOS build's hash, to flag goldens it did not make
-    except SystemExit as e: say(f'replay.py verify: the replay DOS build failed ({e}); not checking the goldens against it')
+    except (SystemExit, Exception) as e: say(f'replay.py verify: the replay DOS build failed ({e}); not checking the goldens against it')
     t0 = time.time()
     need = list(names)
     for n in names:
