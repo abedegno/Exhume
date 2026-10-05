@@ -309,6 +309,9 @@ def package(cfg):
         title=k.get('title', name),
         comment=k.get('comment', f'Native port of {k.get("title", name)} (needs your own copy of the game)'),
         bundle_id=k.get('bundle_id', f'io.github.exhume.{P.exe}'),
+        # in a repository of several games, the prefix of this game's release tags (uw1-), so that a
+        # local package's version comes from its own tags
+        tag_prefix=k.get('tag_prefix', ''),
         launcher=launcher,
         readme=_path(cfg, k.get('readme', 'tools/dist/README-dist.txt')),
         texts=list(k.get('texts', ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES'])),

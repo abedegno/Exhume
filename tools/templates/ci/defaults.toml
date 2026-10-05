@@ -163,3 +163,9 @@ release_tags = '"v*"'
 tag_prefix = "v"
 dist_dir = "build/dist"
 release_name = ""
+# a step in the draft job before the release, for release_name (for example the version without
+# the game's tag prefix, as steps.ver.outputs.v)
+release_name_step = ""
+# extra filters on port.yml's push trigger (for example branches: ['**'], so that a tag push, a
+# release, does not build the port again)
+port_push_branches = ""

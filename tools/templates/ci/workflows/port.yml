@@ -1,7 +1,7 @@
 {{port_comment}}
 name: {{wf_prefix}}port
 on:
-  push:{{on_paths}}
+  push:{{on_paths}}{{port_push_branches}}
   pull_request:{{on_paths}}
 permissions:
   contents: read
