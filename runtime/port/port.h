@@ -102,6 +102,12 @@ void port_game_nulls(unsigned char *ds0, unsigned char *ivt);
 int emm_open(unsigned min_pages, unsigned max_pages, unsigned free_pages, unsigned seg);
 void emm_close(void);
 int emm_map(unsigned physical, unsigned logical);
+/* More handles beside the one emm_open makes: emm_alloc gives a handle of n pages (1 to 15;
+   0 when none is left), emm_map_handle maps its page logical into a slot as emm_map does,
+   emm_free frees it (unmapping any of its pages still in the frame). */
+int emm_alloc(unsigned n);
+int emm_map_handle(unsigned physical, int h, unsigned logical);
+void emm_free(int h);
 /* The frame's host memory: 64 KB mapped twice in a row and a guard page (mem/frame.c). */
 unsigned char *port_frame_alloc(void);
 

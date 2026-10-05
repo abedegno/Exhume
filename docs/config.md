@@ -115,7 +115,7 @@ The record and replay harness and its golden references (tools/replay.py, golden
 - `[replay.steps]`, `[replay.derive]`, `[replay.cfgs]`: each session's steps for tools/replaydos.mjs (`@NAME` takes another list's steps; a name starting with `_` is not a session), sessions made from others (`from`, `wait_scale`), and the configuration files recorded with sessions.
 - `[[replay.mask]]`: byte ranges of a dump section that are the program's machinery (`section`, `lo`, `hi`, `scope`: `always` differ between any two runs, `cross` between DOS and the port, and `why`).
 - `[[replay.string_junk]]`: a string the program copies with one byte past its 0 (`section`, `start`, `len`).
-- `[replay.segments]`: `first_block_para` and `exe_range` (the EXE paragraphs that move with the load segment) and `slots` (`{section = [offsets]}`, the words that hold a far block's segment).
+- `[replay.segments]`: `first_block_para` and `exe_range` (the EXE paragraphs that move with the load segment) and `slots` (`{section = [offsets]}`, the words that hold a far block's segment). `heap_block` (optional) is the index of a SEGS word that is a far heap block: a slot word that is the same distance above it in both builds is the same, since where DOS's far heap starts moves with the size of the build (UW1's replay build moved it by a paragraph when it grew).
 - `[replay.nulls]`: `ds_forms` (the forms DS:0..3 may take, hex with `??` for any byte) and `sum_from`, `sum_to`, `sum_expect` (C0's null-pointer checksum).
 
 ## [fuzz]

@@ -89,6 +89,10 @@ STRING_JUNK = [(_sec(j['section']), j['start'], j['len']) for j in RC.string_jun
 SEGCFG = RC.segments
 SEG_BASE = SEGCFG.get('first_block_para')        # the EXE paragraph of SEGS' first block
 SEG_RANGE = SEGCFG.get('exe_range', [0, 0])       # EXE paragraphs that move with the load segment
+# the index of a SEGS word that is a far heap block: where DOS's far heap starts depends on the
+# build's size (a replay build that grows can move it by a paragraph), so a word in the moving
+# range that is the same distance from that block in each build is one
+SEG_HEAP = SEGCFG.get('heap_block')
 
 
 def _steps(name, seen=()):
@@ -327,10 +331,13 @@ def segment_words(x, y, sa, sb):
     delta = (na[0] - nb[0]) & 0xFFFF
     base = SEG_BASE if SEG_BASE is not None else na[0]
     lo_a, lo_b = (na[0] - base) & 0xFFFF, (nb[0] - base) & 0xFFFF
+    def moving(u, v):
+        return SEG_RANGE[0] <= (u - lo_a) & 0xFFFF < SEG_RANGE[1] and SEG_RANGE[0] <= (v - lo_b) & 0xFFFF < SEG_RANGE[1]
     def same(u, v):
-        return (u, v) in pairs or (SEG_BASE is not None and (u - v) & 0xFFFF == delta
-                                   and SEG_RANGE[0] <= (u - lo_a) & 0xFFFF < SEG_RANGE[1]
-                                   and SEG_RANGE[0] <= (v - lo_b) & 0xFFFF < SEG_RANGE[1])
+        if (u, v) in pairs: return True
+        if SEG_BASE is None or not moving(u, v): return False
+        if (u - v) & 0xFFFF == delta: return True
+        return SEG_HEAP is not None and (u - na[SEG_HEAP]) & 0xFFFF == (v - nb[SEG_HEAP]) & 0xFFFF
     out = []; i = 0
     while i + 1 < len(x):
         if x[i:i + 2] != y[i:i + 2] and same(x[i] | x[i + 1] << 8, y[i] | y[i + 1] << 8):

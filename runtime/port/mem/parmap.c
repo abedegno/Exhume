@@ -86,13 +86,24 @@ static struct region *window_for(const unsigned char *p)
    pointer the C derives from one (a field of a picture made at a paragraph) splits into that
    segment and an offset as it did in DOS (port_fp_split_recent). */
 #define NRECENT 8
-static struct { const unsigned char *base; unsigned seg; } recent[NRECENT];
-static int recent_next;
+static struct { const unsigned char *base; unsigned seg; } recent[NRECENT], recent_heap[NRECENT];
+static int recent_next, recent_heap_next;
 
 void port_fp_split_recent(const void *vp, unsigned *seg, unsigned *off)
 {
     const unsigned char *p = vp;
     int i, k;
+    /* a pointer that is exactly one MK_FP of the far heap made (offset 0) was made so, though
+       the block's own split gives the block's segment and an offset (UW1: AUTOMAP.C's
+       MK_FP(conv_ws_seg, 0), a paragraph into conv_ws's block, for the map's picture) */
+    for (i = 0; i < NRECENT; i++) {
+        k = (recent_heap_next - 1 - i + NRECENT) % NRECENT;
+        if (recent_heap[k].base && p == recent_heap[k].base) {
+            *seg = recent_heap[k].seg;
+            *off = 0;
+            return;
+        }
+    }
     for (i = 0; i < NRECENT; i++) {
         k = (recent_next - 1 - i + NRECENT) % NRECENT;
         if (recent[k].base && p >= recent[k].base && p < recent[k].base + 0x10000) {
@@ -131,6 +142,12 @@ void *port_mk_fp(unsigned seg, unsigned off)
                 recent[recent_next].base = p - (off & 0xFFFFu);
                 recent[recent_next].seg = seg & 0xFFFFu;
                 recent_next = (recent_next + 1) % NRECENT;
+            } else if (reg[i].kind == 1 && (off & 0xFFFFu) == 0) {
+                /* the far heap's, for an exact match only: a pointer derived from a heap
+                   block keeps the block's segment (heap_block) */
+                recent_heap[recent_heap_next].base = p;
+                recent_heap[recent_heap_next].seg = seg & 0xFFFFu;
+                recent_heap_next = (recent_heap_next + 1) % NRECENT;
             }
             return p;
         }

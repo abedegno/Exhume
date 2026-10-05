@@ -1,4 +1,5 @@
-/* emm.c: replaces the EMS 4.0 driver's memory, as a game that keeps one handle uses it (from
+/* emm.c: replaces the EMS 4.0 driver's memory, as a game that keeps one main handle (and maybe
+   a few small ones, emm_alloc) uses it (from
    UW2Decomp's src/port/mem/ems.c, whose EMS.C entry points stay UW2's and call this; Exhume's
    docs/port.md, "Far pointers and the paragraph map"). A store of 16 KB logical pages for the
    one handle, and a 64 KB page frame of four 16 KB slots that is a region of the paragraph
@@ -11,7 +12,8 @@
 #include <string.h>
 #include "port.h"
 
-static unsigned pages;
+static unsigned pages;                  /* the main handle's, store pages 0 .. pages-1 */
+static unsigned total;                  /* store pages, the extra handles' after the main one's */
 static int opened;
 static unsigned char *store;
 static unsigned char *frame;
@@ -35,11 +37,10 @@ static void write_back(int s)
         if (q != s && slot[q] == slot[s]) memcpy(frame + q * 0x4000, mine, 0x4000);
 }
 
-int emm_map(unsigned physical, unsigned logical)
+/* Maps store page `page` (FFFFh: none) into a slot. */
+static int map_page(unsigned physical, unsigned logical)
 {
     int q;
-    if (!opened || physical > 3) return 0;
-    if (logical != 0xFFFF && logical >= pages) return 0;
     if (slot[physical] >= 0) write_back((int)physical);
     if (logical == 0xFFFF) { slot[physical] = -1; return 1; }
     for (q = 0; q < 4; q++)
@@ -49,11 +50,64 @@ int emm_map(unsigned physical, unsigned logical)
     return 1;
 }
 
+int emm_map(unsigned physical, unsigned logical)
+{
+    if (!opened || physical > 3) return 0;
+    if (logical != 0xFFFF && logical >= pages) return 0;
+    return map_page(physical, logical);
+}
+
+/* Handles of their own beside the main one (UW1's panel flips take three one-page handles):
+   each a run of pages appended to the store, never given back (a freed handle's pages stay
+   allocated and unused, which only a game that allocates without end would notice). */
+#define EMM_HANDLES 16
+static struct { unsigned base, n; int used; } xh[EMM_HANDLES];
+
+int emm_alloc(unsigned n)
+{
+    int h;
+    unsigned char *grown;
+    if (!opened) return 0;
+    for (h = 1; h < EMM_HANDLES && xh[h].used; h++)
+        ;
+    if (h == EMM_HANDLES) return 0;
+    grown = realloc(store, ((size_t)total + n) * 0x4000);
+    if (!grown) return 0;
+    store = grown;
+    memset(store + (size_t)total * 0x4000, 0, (size_t)n * 0x4000);
+    xh[h].base = total;
+    xh[h].n = n;
+    xh[h].used = 1;
+    total += n;
+    return h;
+}
+
+int emm_map_handle(unsigned physical, int h, unsigned logical)
+{
+    if (!opened || physical > 3 || h <= 0 || h >= EMM_HANDLES || !xh[h].used) return 0;
+    if (logical == 0xFFFF) return map_page(physical, 0xFFFF);
+    if (logical >= xh[h].n) return 0;
+    return map_page(physical, xh[h].base + logical);
+}
+
+void emm_free(int h)
+{
+    int q;
+    if (h <= 0 || h >= EMM_HANDLES || !xh[h].used) return;
+    for (q = 0; q < 4; q++)
+        if (slot[q] >= (int)xh[h].base && slot[q] < (int)(xh[h].base + xh[h].n)) {
+            write_back(q);
+            slot[q] = -1;
+        }
+    xh[h].used = 0;
+}
+
 int emm_open(unsigned min_pages, unsigned max_pages, unsigned free_pages, unsigned seg)
 {
     opened = 0;
     if (free_pages < min_pages) return 0;
     pages = free_pages < max_pages ? free_pages : max_pages;
+    total = pages;
     store = calloc(pages, 0x4000);
     if (!store) return 0;
     opened = 1;
@@ -70,6 +124,7 @@ void emm_close(void)
         free(store);
         store = NULL;
         opened = 0;
+        memset(xh, 0, sizeof xh);
         slot[0] = slot[1] = slot[2] = slot[3] = -1;
     }
 }
