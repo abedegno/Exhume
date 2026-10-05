@@ -264,7 +264,8 @@ def build_host(coverage=False, vectors=None):
     P = portcfg.port(CFG); F = portcfg.fuzz(CFG)
     if not F.host_glue: sys.exit('fuzzasm.py: [fuzz] host_glue is not set')
     out = portcfg.variant_out(CFG, 'cov' if coverage else '')
-    if not os.path.exists(os.path.join(out, P.exe)):
+    exe = os.path.join(out, P.exe)
+    if not os.path.exists(exe) and not os.path.exists(exe + '.exe'):      # .exe on Windows
         sys.exit(f'fuzzasm.py: build the port first (tools/portbuild.py{" --coverage" if coverage else ""})')
     game = portcfg.game_sources(CFG)
     objs = [os.path.join(out, sources.stem(p) + '.o') for p in game]

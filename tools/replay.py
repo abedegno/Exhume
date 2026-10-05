@@ -521,7 +521,9 @@ def run_dos(out, rec=None, steps=(), timeout=900, cfg=None, stage=None, log=None
 
 
 def port_exe(variant=''):
-    return os.path.join(portcfg.variant_out(CFG, variant), RC.port_exe_name)
+    """The port's program in the variant's build: the name, or the name with .exe on Windows."""
+    p = os.path.join(portcfg.variant_out(CFG, variant), RC.port_exe_name)
+    return p + '.exe' if not os.path.exists(p) and os.path.exists(p + '.exe') else p
 
 
 def port_data(out):
