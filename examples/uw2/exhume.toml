@@ -149,7 +149,7 @@ missing = "no OPL emulator (tools/setup-sound.sh)"
 # libmt32emu (munt, LGPL-2.1-or-later), linked dynamically when pkg-config finds it
 name = "mt32emu"
 define = "AUDIO_HAVE_MT32EMU"
-for = "sound/audio.c"
+for = ["sound/audio.c", "sound/mt32roms.c"]
 label = "libmt32emu"
 missing = "no libmt32emu (brew install mt32emu, or make setup-libs)"
 

@@ -187,6 +187,12 @@ def is_backend(path):
 VENDOR_DIRS = [v['dir'] for v in P.vendor]
 
 
+def _for(entry):
+    """the port files an entry's flags go to: 'for' as one path or a list of them"""
+    f = entry.get('for', '')
+    return [f] if isinstance(f, str) else list(f)
+
+
 def deps():
     """The third-party parts found ([[port.vendor]] fetched sources, [[port.pkg]] libraries):
     ({port file: compile flags}, link flags, extra sources, [what was found or is missing])."""
@@ -194,14 +200,14 @@ def deps():
     for v in P.vendor:
         srcs = [os.path.join(v['dir'], f) for f in v.get('sources', [])]
         if srcs and all(os.path.exists(f) for f in srcs):
-            cflags.setdefault(v.get('for', ''), []).extend([f"-D{v['define']}", '-I', v['dir']])
+            for f in _for(v): cflags.setdefault(f, []).extend([f"-D{v['define']}", '-I', v['dir']])
             extra += srcs; said.append(v['name'])
         else: said.append(v.get('missing', f"no {v['name']}"))
     for k in P.pkg:
         r = subprocess.run(['pkg-config', '--cflags', '--libs', k['name']], capture_output=True, text=True, env=pkg_env())
         if r.returncode == 0:
             flags = r.stdout.split()
-            cflags.setdefault(k.get('for', ''), []).extend([f"-D{k['define']}"] + [f for f in flags if f.startswith('-I')])
+            for f in _for(k): cflags.setdefault(f, []).extend([f"-D{k['define']}"] + [x for x in flags if x.startswith('-I')])
             libs += [f for f in flags if not f.startswith('-I')]
             said.append(k.get('label', k['name']))
         else: said.append(k.get('missing', f"no {k.get('label', k['name'])}"))

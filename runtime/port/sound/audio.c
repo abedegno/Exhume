@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "audio.h"
+#include "mt32roms.h"
 #include "portgame.h"
 #ifndef PORT_NAME
 #define PORT_NAME "port"
@@ -173,45 +174,27 @@ void audio_start(void)
     if (use_device && plat_audio_open(AUDIO_RATE, fill)) port_log("audio: no audio device; running silent\n");
 }
 
-/* 1 if this build has the MT-32 emulator and dir holds a CM-32L or an MT-32 pair of ROM
-   files under the names mt_open loads, for the first run's choice of music card (UW2: its main). */
+/* 1 if this build has the MT-32 emulator and dir (a folder, or a file in it) holds a CM-32L or an
+   MT-32 pair of ROM images under any names (mt32roms.c), for the first run's choice of music card. */
 int audio_mt32_roms_present(const char *dir)
 {
-#ifdef AUDIO_HAVE_MT32EMU
-    static const char *pairs[2][2] = { { "CM32L_CONTROL.ROM", "CM32L_PCM.ROM" }, { "MT32_CONTROL.ROM", "MT32_PCM.ROM" } };
-    char path[1200];
-    int i, j, n;
-    FILE *f;
-    if (!dir || !*dir) return 0;
-    for (i = 0; i < 2; i++) {
-        for (j = n = 0; j < 2; j++) {
-            snprintf(path, sizeof path, "%s/%s", dir, pairs[i][j]);
-            if ((f = fopen(path, "rb")) != NULL) { fclose(f); n++; }
-        }
-        if (n == 2) return 1;
-    }
-#else
-    (void)dir;
-#endif
-    return 0;
+    return mt32roms_pick(dir, NULL, NULL, NULL, NULL, 0, NULL);
 }
 
 #ifdef AUDIO_HAVE_MT32EMU
 static void mt_open(void)
 {
-    static const char *names[] = { "CM32L_CONTROL.ROM", "CM32L_PCM.ROM", "MT32_CONTROL.ROM", "MT32_PCM.ROM" };
     mt32emu_report_handler_i rh;
-    char path[1200];
-    int i, roms = 0;
+    char ctrl[1300], pcm[1300];
+    int roms = 0;
     if (mt) return;
     rh.v0 = NULL;
     mt = mt32emu_create_context(rh, NULL);
     if (!rom_dir) rom_dir = getenv(AUDIO_ROMS_ENV);
-    for (i = 0; rom_dir && i < 4; i++) {
-        snprintf(path, sizeof path, "%s/%s", rom_dir, names[i]);
-        /* a CM-32L pair first; MT-32 files only fill what is missing */
-        if (mt32emu_add_rom_file(mt, path) > 0) roms++;
-        if (i == 1 && roms == 2) break;
+    /* the pair the ROM finder picks in that folder, whatever the files are called */
+    if (rom_dir && mt32roms_pick(rom_dir, ctrl, pcm, NULL, NULL, sizeof ctrl, NULL)) {
+        if (mt32emu_add_rom_file(mt, ctrl) > 0) roms++;
+        if (mt32emu_add_rom_file(mt, pcm) > 0) roms++;
     }
     mt32emu_set_stereo_output_samplerate(mt, AUDIO_RATE);
     mt_ok = roms >= 2 && mt32emu_open_synth(mt) == MT32EMU_RC_OK;

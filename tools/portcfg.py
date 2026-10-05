@@ -43,7 +43,8 @@ matched decompilation (docs/port.md). Every path is relative to [project] root u
                  build (portbuild.py --release) each is a shared library beside the program
                  (lib<shared>.dylib, .so or <shared>.dll; shared defaults to the name's letters
                  and digits in lower case), so a user can replace it, as an LGPL library asks
-    [[port.pkg]]     pkg-config packages linked when found: name, define, for, label, hint
+    [[port.pkg]]     pkg-config packages linked when found: name, define, for (a port file, or a list),
+                     label, hint
     [port.layout]    tools/layoutcheck.py: file_records {tag = why}, probe (the DOS compile line)
     [port.audit]     tools/intaudit.py: width_types {name = [dos type, host type]}
 
