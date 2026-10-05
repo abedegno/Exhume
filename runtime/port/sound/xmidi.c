@@ -9,6 +9,12 @@
    routine, with its names; the synthesiser below it (yamaha.c, mt32.c) is reached through
    struct Synth, as XMIDI.ASM included YAMAHA.INC or MT32.INC.
 
+   AIL's 1991 release (Synth.rev1991; UW1's drivers, disassembled and compared with UW2's) is
+   older still, in the places marked "1991": the beat fraction starts at 0 and a CLEAR_BEAT_BAR
+   sets it to 0; a time signature sets only the time fraction, by a shift with no case for a
+   denominator below 4; branch_index leaves the FOR loops alone; shutdown_driver has no init_OK
+   test and does not call shutdown_synth.
+
    The sequence state lives here, not in the state table the game passes (the game only
    allocates it, AIL_state_table_size bytes, and never reads it); the pointers into the
    XMIDI image are host pointers into the game's buffer. Sequence handles are the byte offsets
@@ -151,7 +157,8 @@ static void rewind_seq(Xmidi *x, Seq *q)
     q->tempo_error = 0;
     q->beat_count = 0;
     q->measure_count = 0;
-    q->beat_fraction = QUANT_TIME_16;   /* 1.07: "beat fraction initialized nonzero" */
+    q->beat_fraction = x->s->rev1991 ? 0 : QUANT_TIME_16;   /* 1.07: "beat fraction initialized
+                                                               nonzero"; 1991: 0 */
     q->time_numerator = 4;              /* 4/4 */
     q->time_fraction = QUANT_TIME_16;
     q->time_per_beat = 0x7A1200;        /* 500000 us a beat * 16, 120 beats a minute */
@@ -316,7 +323,8 @@ static int XMIDI_control(Xmidi *x, Seq *q, int chan, int con, int val)
     case CLEAR_BEAT_BAR:
         q->beat_count = 0;
         q->measure_count = 0;
-        q->beat_fraction = q->time_fraction;    /* the old way: one interval's worth */
+        q->beat_fraction = x->s->rev1991 ? 0 : q->time_fraction; /* the old way: one interval's
+                                                                    worth; 1991: 0 */
         return 3;
     case CALLBACK_TRIG:
         q->cur_callback = (int16_t)dx;          /* UW2 installs no callback function */
@@ -403,6 +411,15 @@ static int XMIDI_meta(Xmidi *x, Seq *q)
     case 0x58:                              /* time signature */
         q->time_numerator = p[0];
         cl = p[1] - 2;
+        if (x->s->rev1991) {
+            /* 1991: 1 << (denominator's power - 2) intervals of QUANT_TIME_16 (shl ax,cl, which
+               a 386 takes modulo 32, and a loop of CX, 65536 times for 0), and the beat
+               fraction is left as it is */
+            unsigned n = (1u << ((unsigned)cl & 31)) & 0xFFFF;
+            f = (int32_t)((uint32_t)QUANT_TIME_16 * (n ? n : 0x10000u));
+            q->time_fraction = f;
+            break;
+        }
         if (cl < 0) {
             f = QUANT_TIME_16;
             for (i = 0; i < -cl; i++) f = (int32_t)((uint32_t)f >> 1);
@@ -612,14 +629,14 @@ static void stop_seq_h(Xmidi *x, int h);
 void xmidi_shutdown_driver(Xmidi *x)
 {
     int i;
-    if (!x->init_OK) return;
+    if (!x->init_OK && !x->s->rev1991) return;     /* 1991: no init_OK test, and no shutdown_synth */
     for (i = 0; i < NSEQS; i++)
         if (x->seq[i].used) {
             stop_seq_h(x, i * 4);
             release_seq_h(x, i * 4);
         }
     x->s->reset(x->s);
-    if (x->s->shutdown) x->s->shutdown(x->s);
+    if (x->s->shutdown && !x->s->rev1991) x->s->shutdown(x->s);
     x->init_OK = 0;
 }
 
@@ -751,7 +768,8 @@ void xmidi_branch_index(Xmidi *x, int h, int marker)
             q->EVNT_ptr = q->EVNT + off + 8;
             q->interval_cnt = 0;
             flush_note_queue(x, q);
-            for (i = 0; i < FOR_NEST; i++) q->FOR_loop_cnt[i] = -1;
+            if (!x->s->rev1991)             /* 1991: the FOR loops are left as they are */
+                for (i = 0; i < FOR_NEST; i++) q->FOR_loop_cnt[i] = -1;
             return;
         }
 }

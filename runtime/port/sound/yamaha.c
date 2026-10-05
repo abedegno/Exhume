@@ -13,7 +13,15 @@
    The variants: YM3812 (Ad Lib and Sound Blaster, 9 voices, 16 virtual slots); two YM3812s
    in stereo (Sound Blaster Pro 1, Pro Audio Spectrum: levels are panned per chip); YMF262
    (Sound Blaster Pro 2, 18 voices or 6 four-operator ones, 20 slots, panning by the output
-   bits). Register writes go to hw_opl_write (ail.c). */
+   bits). Register writes go to hw_opl_write (ail.c).
+
+   AIL's 1991 release (Synth.rev1991, read from the driver file; UW1's SBFM.ADV, disassembled
+   and compared with UW2's DM03.ADV) differs in four places, each marked "1991": timbre_status
+   returns the timbre's index + 1, not its offset + 1; delete_LRU leaves MIDI_timbre and
+   RBS_timbres alone; assign_voice takes the first free voice from 0 (no rover);
+   update_priority returns at once when no more slots are active than there are voices, and
+   has no test for a highest priority of 0. Its release_voice leaves the slot's status to its
+   callers, which free a .BNK slot themselves, as 2.14's release_voice does. */
 #include <stdlib.h>
 #include <string.h>
 #include "yamaha.h"
@@ -221,6 +229,7 @@ static unsigned timbre_status(Synth *s, unsigned bank, unsigned num)
     Yam *y = (Yam *)s;
     int i = index_timbre(s, (bank & 0xFF) << 8 | (num & 0xFF));
     if (i == -1) return 0;
+    if (s->rev1991) return (unsigned)(i + 1);   /* 1991: the index + 1 */
     return (uint16_t)(y->timb_offsets[i] + 1);  /* the offset + 1 in the local cache */
 }
 
@@ -259,10 +268,12 @@ static void delete_LRU(Yam *y)
     memmove(t, t + tsize, (size_t)(y->cache_end - toff - tsize));  /* REP_MOVSB, forward */
     y->timb_attribs[index] = 0;
     y->cache_end -= tsize;
-    for (di = 0; di < NUM_CHANS; di++)
-        if (y->MIDI_timbre[di] != 0xFF && y->MIDI_timbre[di] == index) y->MIDI_timbre[di] = 0xFF;
-    for (di = 0; di < 128; di++)
-        if (y->RBS_timbres[di] == index) y->RBS_timbres[di] = 0xFF;
+    if (!y->s.rev1991) {                /* 1991: the channels' and keys' indexes are kept */
+        for (di = 0; di < NUM_CHANS; di++)
+            if (y->MIDI_timbre[di] != 0xFF && y->MIDI_timbre[di] == index) y->MIDI_timbre[di] = 0xFF;
+        for (di = 0; di < 128; di++)
+            if (y->RBS_timbres[di] == index) y->RBS_timbres[di] = 0xFF;
+    }
     for (di = 0; di < MAX_TIMBS; di++)
         if ((y->timb_attribs[di] & 0x80) && y->timb_offsets[di] > toff)
             y->timb_offsets[di] = (uint16_t)(y->timb_offsets[di] - tsize);
@@ -358,10 +369,10 @@ static void assign_voice(Yam *y, int si)
         update_priority(y);
         return;
     }
-    bx = y->rover_2op;
+    bx = y->s.rev1991 ? -1 : y->rover_2op;
     for (dx = 0; dx < y->nvoices; dx++) {
         if (++bx == y->nvoices) bx = 0;
-        y->rover_2op = bx;
+        if (!y->s.rev1991) y->rover_2op = bx;   /* 1991: the first free voice, from 0 */
         if (y->V_channel[bx] != 0xFF) continue;
         y->S_voice[si] = (uint8_t)bx;
         y->MIDI_voices[y->S_channel[si]]++;
@@ -601,6 +612,7 @@ static void update_priority(Yam *y)
         ax = ax >= y->MIDI_voices[ch] ? ax - y->MIDI_voices[ch] : 0;
         y->S_V_priority[si] = (uint16_t)ax;
     }
+    if (y->s.rev1991 && slot_cnt <= y->nvoices) return; /* 1991: nothing to steal for */
     for (;;) {
         ax = 0;                         /* the highest unvoiced priority */
         dx = 0xFFFF;                    /* the lowest voiced */
@@ -623,7 +635,7 @@ static void update_priority(Yam *y)
             dx = di;
             low_p = si;
         }
-        if (ax < dx || ax == 0) return;
+        if (ax < dx || (ax == 0 && !y->s.rev1991)) return; /* 1991: no test for 0 */
         si = low_p;                     /* steal a voice */
         if (y->ymf262 && y->S_type[high_p] == OPL3_INST) {
             si = low_4_p;

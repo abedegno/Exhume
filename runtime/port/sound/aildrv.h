@@ -102,6 +102,10 @@ typedef struct Synth {
     void (*protect)(struct Synth *, unsigned bank, unsigned num, int on);
     unsigned (*timbre_status)(struct Synth *, unsigned bank, unsigned num);
     void *priv;
+    /* the driver file is AIL's 1991 release ("Copyright (C) 1991 John Miles"; UW1's), not the
+       1992 sources 2.14 has (UW2's): set by ail.c from the user's .ADV file. Its XMIDI shell and
+       YAMAHA.INC predate 2.14's in the ways xmidi.c and yamaha.c mark "1991" */
+    int rev1991;
 } Synth;
 
 /* ---- the XMIDI shell (xmidi.c) ------------------------------------------------------ */

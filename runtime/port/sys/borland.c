@@ -427,8 +427,10 @@ long bc_clock(void) { return (long)pit_bios_ticks(); }
 
 /* exit: the C library's exit, then the termination chain the program hooked (PORT_EXIT_CHAIN,
    portgame.h; UW2: the chain seg021's init hooked, whose shutdown prints the message at cPerror). */
+void port_backtrace(void);
 void bc_exit(int status)
 {
+    if (getenv("A3DBG")) port_backtrace();
     fflush(stdout);
 #ifdef PORT_BLACKBOX
     port_blackbox_close(0);
@@ -549,6 +551,42 @@ int intdos(union REGS *in, union REGS *out)
 {
     struct SREGS s = { 0, 0, 0, (unsigned short)port_ds };
     return intdosx(in, out, &s);
+}
+
+/* int86: int 21h through intdos; int 1, 2 (the NMI), 3 and 4 return at once, as DOS's default
+   handler for them, an iret, does (UW1: MISCUTIL.C's dbg_break raises int 2); anything else is
+   logged and returns with the registers as they were */
+int int86(int n, union REGS *in, union REGS *out)
+{
+    if (n == 0x21) return intdos(in, out);
+    *out = *in;
+    if (n < 1 || n > 4) port_log("int86(%02Xh) not emulated (AX %04X)\n", n, in->x.ax);
+    return out->x.ax;
+}
+
+/* delay: Borland's calibrated busy wait, here the host's sleep */
+void delay(unsigned ms)
+{
+    plat_sleep_ns((uint64_t)(ms & 0xFFFF) * 1000000u);
+}
+
+/* sound and nosound: the PC speaker, as Borland's library drives it (PIT channel 2 at
+   1193181 / hz, by the divisor 1234DDh / hz it computes, and port 61h's speaker bits), a
+   square wave in the mixer (sound/audio.c) */
+void audio_speaker(unsigned hz, uint64_t t_us);
+uint64_t ail_now_us(void);
+void sound(unsigned hz)
+{
+    unsigned div;
+    hz &= 0xFFFF;
+    if (hz <= 18) return;               /* Borland's: no divisor fits 16 bits */
+    div = 0x1234DDu / hz;
+    audio_speaker(1193181u / div, ail_now_us());
+}
+
+void nosound(void)
+{
+    audio_speaker(0, ail_now_us());
 }
 
 void bc_geninterrupt(int n)

@@ -55,6 +55,9 @@ FORMAT = 1
 # which far block they name (SEGS), as tools/replay.py's segment_words finds them between two
 # dumps.
 SEG_SLOTS = {R._sec(k): tuple(v) for k, v in R.SEGCFG.get('slots', {}).items()}
+# [replay.segments] heap_from: the EXE paragraph (from the load segment) below which no far heap
+# block lies in any build; with heap_block, slot words from it up are taken as heap blocks
+HEAP_FROM = R.SEGCFG.get('heap_from')
 
 _print_lock = threading.Lock()
 
@@ -80,7 +83,12 @@ def seg_identity(w, segs):
     if w in s: return f'S{s.index(w)}'
     if R.SEG_BASE is None: return None
     r = (w - ((s[0] - R.SEG_BASE) & 0xFFFF)) & 0xFFFF
-    return f'R{r:04X}' if R.SEG_RANGE[0] <= r < R.SEG_RANGE[1] else None
+    if not R.SEG_RANGE[0] <= r < R.SEG_RANGE[1]: return None
+    # a far heap block's segment, by its distance from the SEGS block [replay.segments]
+    # heap_block names: where the heap starts moves with the build's size (tools/replay.py)
+    if R.SEG_HEAP is not None and HEAP_FROM is not None and r >= HEAP_FROM:
+        return f'H{(w - s[R.SEG_HEAP]) & 0xFFFF:04X}'
+    return f'R{r:04X}'
 
 
 def canon(ck):

@@ -319,8 +319,14 @@ void port_sound_read(unsigned own, unsigned recorded, uint32_t clock)
    ahead of the emulated time by what the host's audio has buffered, finds no more than
    sb.dma.min, 3 ms of samples, left (sblaster.cpp, GenerateDMASound): so up to 3 ms and the
    mixer's lead before the samples have played, and up to a mixer tick, 1 ms, after */
-#define SB_WIN_EARLY 5000u
-#define SB_WIN_LATE 1000u
+#ifndef AIL_SB_WIN_EARLY
+#define AIL_SB_WIN_EARLY 5000u          /* a project's ailgame.h may widen it (UW1: 8000) */
+#endif
+#ifndef AIL_SB_WIN_LATE
+#define AIL_SB_WIN_LATE 1000u
+#endif
+#define SB_WIN_EARLY AIL_SB_WIN_EARLY
+#define SB_WIN_LATE AIL_SB_WIN_LATE
 
 void port_sound_moment(uint32_t clock, unsigned moment)
 {
@@ -456,7 +462,7 @@ static int identify(const uint8_t *img, unsigned *ddt)
     }
     if (has(img, 0x400, "Roland MT-32")) return DRV_MT32;
     if (has(img, 0x400, "internal speaker")) return DRV_SPKR;
-    if (has(img, 0x400, "Ad Lib(R) Music")) return DRV_ADLIB;
+    if (has(img, 0x400, "Ad Lib(R) Music") || has(img, 0x400, "Ad Lib(TM) Music")) return DRV_ADLIB;
     if (has(img, 0x400, "Pro Audio Spectrum")) return DRV_PASFM;
     if (has(img, 0x400, "Sound Blaster Pro")) return !memcmp(img + *ddt + 4, "OPL", 3) ? DRV_SBPRO2 : DRV_SBPRO1;
     if (has(img, 0x400, "Sound Blaster(TM) FM")) return DRV_SBFM;
@@ -575,6 +581,7 @@ int AIL_register_driver(void *image)
         drv[h].d = digi_new(kind);
     else {
         drv[h].s = kind == DRV_MT32 ? mt32_new() : kind == DRV_SPKR ? null_synth() : yamaha_new(kind, FM_EXT);
+        drv[h].s->rev1991 = has(img, 0x40, "Copyright (C) 1991 John Miles");
         drv[h].x = xmidi_new(drv[h].s);
     }
     ail_log("C %u register_driver %d kind %d\n", ticks, h, kind);

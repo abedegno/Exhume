@@ -308,6 +308,19 @@ RpTimerFn far rp_slave_timer(RpTimerFn f, unsigned hz);
 #define WRITABLE_STR(s) ((char[]){ s })
 #endif
 
+/* PERSISTENT_STR(s): a string literal the code writes into and reads again later, so that the
+   write must last, as it does in DOS, where a literal is one array in DGROUP for the whole run
+   (UW1: SCROLLIO.C's scroll_wrap passes "\n" to scroll_print3, which cuts a final newline
+   off its text, so the literal is "" from the first time on, and the next time
+   scroll_print3 reads the byte before it). On the host it is a static array of the same
+   characters with a 0 before them, as when the literal before it in the file's string pool
+   ends there; WRITABLE_STR's array is new each time. */
+#ifdef __TURBOC__
+#define PERSISTENT_STR(s) s
+#else
+#define PERSISTENT_STR(s) ({ static char ps_[] = "\0" s; ps_ + 1; })
+#endif
+
 /* PLANAR_STORE(p, v): store the byte v through p, a far pointer into the VGA's window at
    A000:0000, where the sequencer's map mask (set with outportb beforehand) chooses the planes
    the byte goes to. The original store under Turbo C; on the host a pointer cannot apply the

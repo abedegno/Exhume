@@ -297,6 +297,33 @@ void audio_dac_level(unsigned l, unsigned r, uint64_t t)
     dac_r = r;
 }
 
+/* ---- the PC speaker (Borland's sound and nosound, sys/borland.c) ------------------------ */
+
+#define SPK_AMP 6000
+static unsigned spk_hz;                 /* the tone from spk_start on; 0 silent (the frames are
+                                           rendered behind the calls, so the tone before it
+                                           is kept too, for the frames up to spk_start) */
+static uint64_t spk_start;
+static unsigned spk_prev_hz;            /* the tone before, until spk_start */
+static uint64_t spk_prev_start;
+
+void audio_speaker(unsigned hz, uint64_t t)
+{
+    if (hz == spk_hz) return;
+    spk_prev_hz = spk_hz;
+    spk_prev_start = spk_start;
+    spk_hz = hz;
+    spk_start = t;
+}
+
+static int32_t speaker_at(uint64_t tf)
+{
+    unsigned hz = tf >= spk_start ? spk_hz : spk_prev_hz;
+    uint64_t t0 = tf >= spk_start ? spk_start : spk_prev_start;
+    if (!hz || tf < t0) return 0;
+    return ((tf - t0) * hz * 2 / 1000000u) & 1 ? SPK_AMP : -SPK_AMP;
+}
+
 /* ---- rendering -------------------------------------------------------------------------- */
 
 static uint64_t rendered;               /* output frames rendered so far */
@@ -371,6 +398,12 @@ void audio_render_to(uint64_t t_us)
                 s->data = NULL;
             }
         }
+        if (spk_hz || spk_prev_hz)
+            for (i = 0; i < n; i++) {
+                int32_t v = speaker_at((rendered + (uint64_t)i) * 1000000u / AUDIO_RATE);
+                out[i * 2] = clamp16(out[i * 2] + v);
+                out[i * 2 + 1] = clamp16(out[i * 2 + 1] + v);
+            }
         if (use_device) ring_put(out, n);
         if (wav) {
             fwrite(out, 4, (size_t)n, wav);
