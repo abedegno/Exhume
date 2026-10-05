@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   make-test-full:
+{{nightly_if}}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:

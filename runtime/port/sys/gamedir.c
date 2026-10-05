@@ -12,15 +12,18 @@
 
    GOG's Mac and Windows releases of DOS games often keep the game inside a CD image, game.gog
    (an ISO 9660 image, which DOSBox mounts as D:). Where the search finds only such an image
-   with PORT_GAME_FOLDER and PORT_GAME_EXE in it, that folder is copied out of it once into
-   gog-cd/PORT_GAME_FOLDER in the port's home directory, and that is the game directory. The
-   image is read, never changed.
+   with PORT_GAME_IMAGE_FOLDER and PORT_GAME_EXE in it, that folder is copied out of it once
+   into gog-cd/PORT_GAME_FOLDER in the port's home directory, and that is the game directory.
+   The image is read, never changed.
 
    The settings file is PORT_CONFIG_FILE in the home directory: lines of key=value.
 
    The project's portgame.h (port.h) defines:
      PORT_GAME_EXE       the file that marks the game's directory (UW2: "UW2.EXE")
      PORT_GAME_FOLDER    the folder that holds it in an install and in a CD image (UW2: "UW2")
+     PORT_GAME_IMAGE_FOLDER  the folder that holds it in GOG's CD image, where that has another
+                         name (default PORT_GAME_FOLDER; UW1: "UW", on the Ultima Underworld
+                         1+2 CD that GOG's Mac app ships)
      PORT_GAME_HINTS     words a folder's name may have when it holds the game, matched
                          without case, as string literals separated by commas (default
                          PORT_GAME_FOLDER; UW2: "underworld", "uw2")
@@ -52,6 +55,9 @@
 
 #if !defined(PORT_GAME_EXE) || !defined(PORT_GAME_FOLDER)
 #error "portgame.h defines PORT_GAME_EXE and PORT_GAME_FOLDER for sys/gamedir.c"
+#endif
+#ifndef PORT_GAME_IMAGE_FOLDER
+#define PORT_GAME_IMAGE_FOLDER PORT_GAME_FOLDER
 #endif
 #ifndef PORT_GAME_HINTS
 #define PORT_GAME_HINTS PORT_GAME_FOLDER
@@ -181,14 +187,14 @@ static int find_fn(const char *name, uint32_t ext, uint32_t size, int isdir, voi
     return 1;
 }
 
-/* The PORT_GAME_FOLDER directory of a CD image: 0 with its extent and size if it has
+/* The PORT_GAME_IMAGE_FOLDER directory of a CD image: 0 with its extent and size if it has
    PORT_GAME_EXE. */
 static int iso_game(FILE *f, uint32_t *ext, uint32_t *size)
 {
     struct iso_find q;
     uint32_t re, rs;
     if (iso_root(f, &re, &rs)) return -1;
-    q.name = PORT_GAME_FOLDER;
+    q.name = PORT_GAME_IMAGE_FOLDER;
     if (iso_each(f, re, rs, find_fn, &q) != 1 || !q.isdir) return -1;
     *ext = q.ext; *size = q.size;
     q.name = PORT_GAME_EXE;
@@ -218,7 +224,7 @@ static int copy_fn(const char *name, uint32_t ext, uint32_t size, int isdir, voi
     return fclose(out) ? -1 : 0;
 }
 
-/* Copies the PORT_GAME_FOLDER directory of the CD image iso into home/gog-cd/PORT_GAME_FOLDER,
+/* Copies the PORT_GAME_IMAGE_FOLDER directory of the CD image iso into home/gog-cd/PORT_GAME_FOLDER,
    once: a marker file written last says the copy is whole. 0 and the directory in out. */
 static int extract_iso(const char *iso, const char *home, char *out, size_t outsz)
 {
@@ -244,7 +250,7 @@ static int extract_iso(const char *iso, const char *home, char *out, size_t outs
     return 0;
 }
 
-/* 1 if path is a CD image (.gog or .iso) with PORT_GAME_EXE in its PORT_GAME_FOLDER directory. */
+/* 1 if path is a CD image (.gog or .iso) with PORT_GAME_EXE in its PORT_GAME_IMAGE_FOLDER directory. */
 static int iso_has_game(const char *path)
 {
     const char *dot = strrchr(path, '.');

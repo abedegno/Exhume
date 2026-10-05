@@ -21,7 +21,11 @@ A decompilation's gate needs the original program and the original toolchain, an
 | `accuracy.yml` | pushes to `main`, pull requests from branches of this repository, and by hand | the toolchain unpacked, then the fast tier: the gate, the port, the quick fuzzing, every session against its golden | yes |
 | `nightly.yml` | a schedule, and by hand | the full tier, with DOSBox-X from Ubuntu making every golden again; fails if a regenerated golden differs from the committed one, and puts the step times and coverage totals in the job summary | yes |
 
+| `release.yml` | a tag `v*`, and by hand | the players' packages for macOS, Linux and Windows (docs/port.md, "Packages for players"); for a tag, a draft release with them and the LGPL libraries' source | no (Apple's secrets, when set, sign and notarise the macOS app) |
+
 A pull request from a fork gets `port.yml` and `repocheck.yml` only: GitHub gives a fork's pull request no secrets, and `accuracy.yml` skips itself for one rather than fail.
+
+A project whose bundle is not made yet can keep `accuracy.yml` and `nightly.yml` and have them skipped rather than fail: `job_if`, the condition of accuracy.yml's jobs, and `nightly_if`, a line giving nightly.yml's job one, can require a repository variable (UW1Decomp's: `vars.UW1_CI_ASSETS == 'true'`), which the owner sets once the bundle and its two secrets are in place.
 
 ## The safeguards
 

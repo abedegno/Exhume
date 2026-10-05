@@ -20,6 +20,18 @@ port_windows = "make PY=python port"
 port_check_windows = "make PY=python port-check"
 repocheck = "python3 tools/repocheck.py"
 nightly_cron = "17 3 * * *"
+pkg_name = "UW2"
+exe = "uw2port"
+icon = "uw2"
+launcher = "uw2"
+env = "UW2"
+tmp_prefix = "uw2"
+macos_archs_env = "UW2_MACOS_ARCHS"
+release_linux_python = ""
+port_release = "make port-release"
+package = "make package"
+port_release_windows = "make PY=python port-release"
+package_windows = "make PY=python package"
 exhume_checkout = '''
       # Exhume, whose runtime the port, the gate and the replay build compile where it is, at
       # the commit tools/exhume-ref names (docs/BUILDING.md, "Exhume")
@@ -67,6 +79,16 @@ tmp_key = "uw2-assets-deploy-key"
 tmp_hosts = "uw2-known-hosts"
 ci_assets = "sh tools/ci-assets.sh"
 
+release_comment = '''
+# Release packages of the native port (docs/BUILDING.md, "Releases"): on a tag v*, build the port
+# on macOS (one universal app for arm64 and x86_64), Linux (x86-64, on Ubuntu 22.04 for glibc
+# 2.35: a tarball and an AppImage) and Windows (x86-64, MSYS2 CLANG64), package each with
+# tools/package.py, and attach the packages and the source of the LGPL libraries to a DRAFT
+# release, which the owner reviews and publishes by hand. Run by hand (workflow_dispatch), it
+# builds the packages as workflow artifacts and makes no release.
+# Only the sources are needed: no game data and no Borland toolchain. The only secrets are
+# Apple's, for the macOS app: with CSC_LINK set it is signed with the Developer ID identity, and
+# on a tag (or by hand with notarise) notarised and stapled; without them it is signed ad hoc.'''
 accuracy_comment = '''
 # make test, the accuracy suite (docs/BUILDING.md, "Testing" and "Continuous integration"):
 # the byte-exact DOS build gate, the port build, the quick routine fuzzing and the eight replay

@@ -1,5 +1,5 @@
-"""The port's configuration: exhume.toml's [port], [replay], [fuzz], [asm2c], [sound] and [test]
-sections with their defaults, for the tools that build, test and verify a native port of a
+"""The port's configuration: exhume.toml's [port], [replay], [fuzz], [asm2c], [sound], [test] and
+[package] sections with their defaults, for the tools that build, test and verify a native port of a
 matched decompilation (docs/port.md). Every path is relative to [project] root unless absolute.
 
     import config, portcfg
@@ -33,11 +33,44 @@ matched decompilation (docs/port.md). Every path is relative to [project] root u
     defines      extra -D flags for every host compile (default ["-D_POSIX_C_SOURCE=200809L"])
     stubs        the link stubs' directory (default DIR/stubs)
     exe_data     the label portcheck gives names that are far data taken from the EXE
+    libs         where tools/setup-libs.sh builds SDL3 and libmt32emu when no package has them
+                 (default tools/libs): pkg-config searches its lib/pkgconfig first, and on Linux
+                 the normal build finds them there when run
+    icon         the program's icon for Windows, an .ico linked in as a resource (default
+                 [package] icon_dir/<icon>.ico when that exists; tools/icons.py writes it)
     [[port.vendor]]  third-party C fetched at setup and compiled in when present: name, dir,
-                 sources, define, for (the port file that gets the define), hint
+                 sources, define, for (the port file that gets the define), hint; in the release
+                 build (portbuild.py --release) each is a shared library beside the program
+                 (lib<shared>.dylib, .so or <shared>.dll; shared defaults to the name's letters
+                 and digits in lower case), so a user can replace it, as an LGPL library asks
     [[port.pkg]]     pkg-config packages linked when found: name, define, for, label, hint
     [port.layout]    tools/layoutcheck.py: file_records {tag = why}, probe (the DOS compile line)
     [port.audit]     tools/intaudit.py: width_types {name = [dos type, host type]}
+
+[package] (tools/package.py, tools/icons.py; docs/port.md, "Packages for players")
+    name         the packages' and the macOS app's name (default [project] name): NAME.app,
+                 NAME-VERSION-macos.zip, NAME-VERSION-linux-ARCH.tar.gz, ...
+    title        the game's full name, for the app's display name and the Linux menu entry
+    comment      the Linux menu entry's comment
+    bundle_id    the macOS app's identifier (default io.github.exhume.<exe>)
+    launcher     the Linux package's start script, .desktop and .png names (default name in
+                 lower case)
+    readme       the players' README, its @VERSION@ and @MACOS_OPEN@ filled in (default
+                 tools/dist/README-dist.txt)
+    texts        project files copied in as NAME.txt (default LICENSE, NOTICE,
+                 THIRD-PARTY-NOTICES)
+    copyright    the app's copyright line
+    category     the app's category (default public.app-category.games)
+    min_macos    the oldest macOS the app runs on (default 11.0)
+    icon_dir     the icon's sources (<icon>.svg, <icon>-small.svg) and the files tools/icons.py
+                 makes from them (default tools/dist/icon)
+    icon         their base name (default launcher)
+    icon_header  the window icon tools/icons.py writes as C, for PLAT_ICON (default
+                 [port] dir/platform/<backend>/icon.h)
+    env          the prefix of the variables package.py reads (default name in upper case):
+                 <env>_CODESIGN_IDENTITY, a Developer ID identity to sign the macOS app with
+                 (ad hoc without it), and <env>_NOTARISED=1, which drops the README's advice
+                 for opening an app Apple has not notarised
 """
 import os, sys
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
@@ -98,6 +131,8 @@ def port(cfg):
         defines=list(p.get('defines', ['-D_POSIX_C_SOURCE=200809L'])),
         stubs=_path(cfg, p['stubs']) if p.get('stubs') else os.path.join(d, 'stubs'),
         vendor=[dict(v, dir=_path(cfg, v['dir'])) for v in p.get('vendor', [])],
+        libs=_path(cfg, p.get('libs', 'tools/libs')),
+        icon=_path(cfg, p['icon']) if p.get('icon') else None,
         pkg=list(p.get('pkg', [])),
         layout=p.get('layout', {}),
         audit=p.get('audit', {}),
@@ -250,6 +285,42 @@ def sound(cfg):
 
 def test(cfg):
     return cfg.raw.get('test', {})
+
+
+def package(cfg):
+    """[package]: the players' packages (tools/package.py) and the icon (tools/icons.py)."""
+    k = cfg.raw.get('package', {})
+    P = port(cfg)
+    name = k.get('name', cfg.raw.get('project', {}).get('name', P.exe))
+    launcher = k.get('launcher', name.lower())
+    icon_dir = _path(cfg, k.get('icon_dir', 'tools/dist/icon'))
+    icon = k.get('icon', launcher)
+    return _NS(
+        name=name,
+        title=k.get('title', name),
+        comment=k.get('comment', f'Native port of {k.get("title", name)} (needs your own copy of the game)'),
+        bundle_id=k.get('bundle_id', f'io.github.exhume.{P.exe}'),
+        launcher=launcher,
+        readme=_path(cfg, k.get('readme', 'tools/dist/README-dist.txt')),
+        texts=list(k.get('texts', ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES'])),
+        copyright=k.get('copyright', ''),
+        category=k.get('category', 'public.app-category.games'),
+        min_macos=k.get('min_macos', '11.0'),
+        icon_dir=icon_dir,
+        icon=icon,
+        icon_header=_path(cfg, k['icon_header']) if k.get('icon_header') else
+            os.path.join(P.dir, 'platform', P.backend, 'icon.h'),
+        env=k.get('env', name.upper()),
+    )
+
+
+def icon_ico(cfg):
+    """The Windows program's .ico: [port] icon, else [package]'s when it exists, else None."""
+    P = port(cfg)
+    if P.icon: return P.icon
+    K = package(cfg)
+    p = os.path.join(K.icon_dir, K.icon + '.ico')
+    return p if os.path.exists(p) else None
 
 
 def load_module(path, name):

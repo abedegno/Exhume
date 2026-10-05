@@ -21,6 +21,32 @@ port_windows = "make EXHUME=.exhume PY=python port"
 port_check_windows = "make EXHUME=.exhume PY=python port-check"
 repocheck = "python3 .exhume/tools/repocheck.py --root . --allow '^\\.exhume/'"
 nightly_cron = "17 3 * * *"
+# the condition of accuracy.yml's jobs, and a line (with its indentation) that gives nightly.yml's
+# job one, or nothing: a project whose private bundle is not set up yet can make both depend on a
+# repository variable, so that they are skipped rather than failing
+job_if = "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+nightly_if = ""
+
+# release.yml: the players' packages on a tag (tools/package.py). With --config these four come
+# from [package] and [port] (name, env, icon, launcher, exe); the values here are for --vars.
+pkg_name = "GAME"
+exe = "port"
+icon = "game"
+launcher = "game"
+env = "GAME"
+tmp_prefix = "port"
+macos_archs_env = "SETUP_MACOS_ARCHS"
+# release.yml's Linux job runs on Ubuntu 22.04, whose Python (3.10) has no tomllib, which
+# Exhume's tools need: a step that sets up a newer one (empty for a project with tools of its own)
+release_linux_python = '''
+      # Exhume's tools need Python 3.11 or later (tomllib); Ubuntu 22.04 has 3.10
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"'''
+port_release = "make EXHUME=.exhume port-release"
+package = "make EXHUME=.exhume package"
+port_release_windows = "make EXHUME=.exhume PY=python port-release"
+package_windows = "make EXHUME=.exhume PY=python package"
 
 # Exhume itself: checked out beside the project in every job that builds
 exhume_checkout = '''
@@ -92,6 +118,16 @@ port_comment = '''
 # The native port builds on Linux, macOS and Windows: the port's build and its compile-only
 # measurement. Only the sources are needed: no game data, no toolchain and no secrets, so this
 # runs on every push and every pull request, forks included. Nothing is run.'''
+release_comment = '''
+# Release packages of the native port (Exhume's docs/port.md, "Packages for players"): on a tag
+# v*, build the port on macOS (one universal app for arm64 and x86_64), Linux (x86-64, on Ubuntu
+# 22.04 for glibc 2.35: a tarball and an AppImage) and Windows (x86-64, MSYS2 CLANG64), package
+# each with tools/package.py, and attach the packages and the source of the LGPL libraries to a
+# DRAFT release, which the owner reviews and publishes by hand. Run by hand (workflow_dispatch),
+# it builds the packages as workflow artifacts and makes no release.
+# Only the sources are needed: no game data and no DOS toolchain. The only secrets are Apple's,
+# for the macOS app: with CSC_LINK set it is signed with the Developer ID identity, and on a tag
+# (or by hand with notarise) notarised and stapled; without them it is signed ad hoc.'''
 repocheck_comment = '''
 # Exhume's tools/repocheck.py (script syntax, Markdown links, no executables, objects,
 # libraries, disk images or game data committed), which needs neither the toolchain nor the

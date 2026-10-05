@@ -217,6 +217,16 @@ Add a target for every routine of a translated module that the port has as hand-
 
 Unicorn 2.1.4's `emu_start` in 16-bit mode takes a linear address, and sets IP to it minus CS's base, modulo 64 KB. Pass `CS * 16 + IP`; passing the offset alone works only while CS's base is a multiple of 64 KB.
 
+## Packages for players
+
+A port is played from packages built from the sources alone: no game data, no DOS toolchain and nothing from the original's art goes in, and the program finds the player's own copy of the game (The platform layer, "Finding the game").
+
+- `tools/portbuild.py --release` (`make port-release`) builds `<build>/<[port] out>-release`: the normal build, but each `[[port.vendor]]` library is a shared library of its own beside the program, which an LGPL library asks for, and the program looks for its libraries beside itself and in `../lib` (Linux, `RUNPATH` `$ORIGIN` only, with the run paths a `.pc` file adds taken out) or `../Frameworks` (macOS) only. `--arch A`, repeated, makes a universal macOS program, which needs universal libraries (`SETUP_MACOS_ARCHS="arm64;x86_64" tools/setup-libs.sh`). For a Windows target every build gets the icon as a resource, and a release build stops without one.
+- `tools/package.py` (`make package`) packages it for the host, by `[package]` (docs/config.md): on macOS `NAME.app` in a zip, the libraries copied into `Contents/Frameworks` with `@rpath` install names, signed from the inside out with `$ENV_CODESIGN_IDENTITY` (hardened runtime and a timestamp, as notarisation needs) or ad hoc; on Linux a tarball with a start script, `bin/`, `lib/`, a `.desktop` entry and the icon, checked to load every bundled library from `lib/` with no `LD_LIBRARY_PATH`, and with `--appimage` an AppImage of the same; on Windows (MSYS2 CLANG64) a zip with every DLL the program loads that is not Windows's own, checked the same way. Each has the players' README, the project's licence files and the libraries' licence texts; `--strict` fails when one cannot be found.
+- `tools/icons.py` (`make icons`) writes the icon files from the project's own drawing: PNGs from 16 to 1024 pixels, the `.ico`, the `.icns` (macOS, `iconutil`) and the window icon as C for `PLAT_ICON`. It renders the SVG in headless Chrome (puppeteer, through dos-mcp: `npm install` here), so the files are committed and no build needs a renderer.
+- `tools/setup-port.sh` (`make setup-port`) installs what the port needs to build on each host and nothing else.
+- The CI template `release.yml` builds the three packages on a tag `v*` into a draft release, with the LGPL libraries' source; with Apple's secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) it signs the app with the Developer ID and notarises it, and without them it signs it ad hoc and passes.
+
 ## Writing for both builds
 
 Each of these is the original tokens under the original compiler, so the gate proves it costs nothing (runtime/include/portable.h has each with its UW2 case):

@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   make-test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: {{job_if}}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -53,7 +53,7 @@ jobs:
   # The port only: no DOS and no Borland toolchain (replay.py verify needs neither; without
   # Turbo C++ it does not check the goldens against the replay DOS build).
   verify-windows:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: {{job_if}}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -120,7 +120,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/{{tmp_assets}}" "$RUNNER_TEMP/{{tmp_clone}}" "$RUNNER_TEMP/{{tmp_key}}" {{verify_cleanup}}
 
   verify-macos:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: {{job_if}}
     runs-on: macos-15
     timeout-minutes: 45
     steps:

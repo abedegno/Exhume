@@ -4,7 +4,7 @@
     python3 tools/citemplates.py --vars FILE OUTDIR           with a values file alone
     python3 tools/citemplates.py --list                       the variables and their defaults
 
-It writes OUTDIR/.github/workflows/{accuracy,nightly,port,repocheck}.yml and
+It writes OUTDIR/.github/workflows/{accuracy,nightly,port,repocheck,release}.yml and
 OUTDIR/.github/actions/linux-tools/action.yml and OUTDIR/.github/actions/<assets_action>/action.yml
 from tools/templates/ci/. The values are tools/templates/ci/defaults.toml (a project that uses
 Exhume from a checkout in .exhume, with the Makefile template) overridden by the file exhume.toml's
@@ -23,6 +23,9 @@ and is left alone. A variable with no value stops the tool.
     port        the port's build on Linux, macOS and Windows, with no game data and no secrets,
                 on every push and pull request, forks included
     repocheck   tools/repocheck.py on every push and pull request
+    release     the players' packages on a tag v* (tools/package.py), on macOS, Linux and
+                Windows, into a draft release; signed and notarised with Apple's secrets when
+                they are set, ad hoc without them
     linux-tools the Ubuntu packages, Python and Node packages, and the tools built from source,
                 each cached by the script that pins it; nothing cached touches the game
     assets      the private bundle: cloned with a read-only deploy key, decrypted with an age key
@@ -36,6 +39,7 @@ FILES = [('workflows/accuracy.yml', '.github/workflows/accuracy.yml'),
          ('workflows/nightly.yml', '.github/workflows/nightly.yml'),
          ('workflows/port.yml', '.github/workflows/port.yml'),
          ('workflows/repocheck.yml', '.github/workflows/repocheck.yml'),
+         ('workflows/release.yml', '.github/workflows/release.yml'),
          ('actions/linux-tools/action.yml', '.github/actions/linux-tools/action.yml'),
          ('actions/assets/action.yml', '.github/actions/{assets_action}/action.yml')]
 VAR = re.compile(r'\{\{(\w+)\}\}')
@@ -44,6 +48,10 @@ VAR = re.compile(r'\{\{(\w+)\}\}')
 def values(vars_file=None, cfg=None):
     v = tomllib.load(open(os.path.join(TEMPLATES, 'defaults.toml'), 'rb'))
     if cfg is not None:
+        # release.yml's names, from the project's [package] and [port] (portcfg)
+        import portcfg
+        P, K = portcfg.port(cfg), portcfg.package(cfg)
+        v.update(pkg_name=K.name, exe=P.exe, icon=K.icon, launcher=K.launcher, env=K.env)
         c = cfg.raw.get('ci', {})
         if c.get('vars'): vars_file = c['vars'] if os.path.isabs(c['vars']) else os.path.join(cfg.root, c['vars'])
         v.update({k: x for k, x in c.items() if k != 'vars'})

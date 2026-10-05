@@ -91,9 +91,23 @@ For a native port of the matched tree (docs/port.md): tools/portcheck.py, portbu
 - `backend`: the platform backend under the runtime's `port/platform/` (default `sdl3`).
 - `optimise`: directories under `dir`, and the runtime's `port/` directories of the same names, compiled with `-O2` in the normal build.
 - `dos_only`: the header comment that keeps a game source out of the port (default `port: dos-only`).
-- `[[port.vendor]]`: third-party C a setup script fetched and the port compiles when present (`name`, `dir`, `sources`, `define`, `for`: the port file that gets the define, `missing`); `[[port.pkg]]`: libraries linked when pkg-config finds them (`name`, `define`, `for`, `label`, `missing`). Neither is ever committed (docs/third-party.md).
+- `[[port.vendor]]`: third-party C a setup script fetched and the port compiles when present (`name`, `dir`, `sources`, `define`, `for`: the port file that gets the define, `missing`; `shared`, the base of its shared library's name in the release build, default the name's letters and digits in lower case); `[[port.pkg]]`: libraries linked when pkg-config finds them (`name`, `define`, `for`, `label`, `missing`). Neither is ever committed (docs/third-party.md).
+- `libs`: where tools/setup-libs.sh builds SDL3 and libmt32emu where no package has them (default `tools/libs`); pkg-config searches it first, and on Linux the normal build finds its libraries there when run.
+- `icon`: the Windows program's `.ico`, linked in as a resource (default `[package]`'s, `icon_dir/ICON.ico`, when it exists).
 - `[port.stub_notes]`: what each generated stub file holds, for its header.
 - `[port.layout]`: `file_records` (`{tag = why}`, the structs read from or written to files, which must keep their DOS layout), `io_calls` (the calls that move a record as bytes), `probe` (the DOS compile line of the layout probe).
+
+## [package]
+
+The players' packages (tools/package.py, `make package`; docs/port.md, "Packages for players") and the icon (tools/icons.py). tools/portcfg.py has every key with its default:
+
+- `name`: the packages' and the macOS app's name (default `[project] name`): `NAME.app`, `NAME-VERSION-macos.zip`, `NAME-VERSION-linux-ARCH.tar.gz` and `.AppImage`, `NAME-VERSION-windows-x86_64.zip`.
+- `title`, `comment`: the game's full name (the app's display name, the Linux menu entry's name) and the menu entry's comment.
+- `bundle_id`, `category`, `min_macos`, `copyright`: the app's `Info.plist`.
+- `launcher`: the Linux package's start script, `.desktop` and `.png` (default `name` in lower case).
+- `readme`: the players' README (default `tools/dist/README-dist.txt`), its `@VERSION@` and `@MACOS_OPEN@` filled in; `texts`: the project files copied in as `.txt` (default `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES`).
+- `icon_dir`, `icon`: the icon's two SVG sources, `ICON.svg` and `ICON-small.svg`, and the files tools/icons.py writes beside them (default `tools/dist/icon`, `launcher`); `icon_header`: the window icon as C, for `PLAT_ICON` (default `[port] dir/platform/BACKEND/icon.h`).
+- `env`: the prefix of the variables tools/package.py reads (default `name` in upper case): `ENV_CODESIGN_IDENTITY`, a Developer ID identity to sign the macOS app with, and `ENV_NOTARISED=1`.
 
 ## [replay]
 
@@ -134,7 +148,7 @@ tools/asm2c.py's static recompiler: `spec`, a Python file with the modules, code
 
 ## [ci]
 
-For tools/citemplates.py (docs/ci-bundle.md): `vars`, a TOML file of the CI templates' values (examples/uw2/ci.toml), over tools/templates/ci/defaults.toml; any other key here overrides one value. `python3 tools/citemplates.py --list` prints the variables.
+For tools/citemplates.py (docs/ci-bundle.md): `vars`, a TOML file of the CI templates' values (examples/uw2/ci.toml), over tools/templates/ci/defaults.toml and the names release.yml takes from `[package]` and `[port]`; any other key here overrides one value. `python3 tools/citemplates.py --list` prints the variables.
 
 ## [test]
 

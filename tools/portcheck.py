@@ -119,12 +119,28 @@ def dos_only(path):
     return portcfg.dos_only(CFG, path)
 
 
+_layout = {}
+def layout_flags(cc):
+    """The flags that give the game's structs Turbo C's layout with this compiler, beyond the
+    #pragma pack(1) in compat.h. A compiler for Windows (MinGW, MSYS2's CLANG64) lays bitfields
+    out as Microsoft's compiler does, by default: a bitfield of a different type from the one
+    before it starts a new unit of its own type (UW2's PLAYER.DAT record came out 0x381 bytes
+    instead of 0x37E). -mno-ms-bitfields gives the layout clang and GCC use everywhere else,
+    which tools/layoutcheck.py shows is Turbo C's. Decided by the compiler's target, not by
+    the Python running this."""
+    if cc not in _layout:
+        try: m = subprocess.run([cc, '-dumpmachine'], capture_output=True, text=True).stdout
+        except OSError: m = ''
+        _layout[cc] = ['-mno-ms-bitfields'] if re.search(r'mingw|windows|cygwin|msys', m) else []
+    return _layout[cc]
+
+
 def compile_one(cc, path):
     stem = sources.stem(path)
     obj = os.path.join(OUT, stem + '.o')
     os.makedirs(OUT, exist_ok=True)
     if os.path.exists(obj): os.remove(obj)
-    r = subprocess.run([cc] + FLAGS + ['-c', '-o', obj, path], capture_output=True, text=True,
+    r = subprocess.run([cc] + FLAGS + layout_flags(cc) + ['-c', '-o', obj, path], capture_output=True, text=True,
                        cwd=root)
     return path, r.returncode, r.stderr, obj if r.returncode == 0 and os.path.exists(obj) else None
 
