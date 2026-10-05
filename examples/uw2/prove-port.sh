@@ -61,6 +61,8 @@ unset EXHUME_BUILD EXHUME_SRC EXHUME_SYMBOLS EXHUME_MATCHED EXHUME_MAP
 P="$OUT/proof"; mkdir -p "$P"
 # the UW2Decomp commit proved against (REF, default HEAD), named so the report says which
 REF=$(git -C "$UW" rev-parse "${REF:-HEAD}")
+PREFIX=$(git -C "$UW" rev-parse --show-prefix)
+TOP=$(git -C "$UW" rev-parse --show-toplevel)
 echo "UW2Decomp $(git -C "$UW" log -1 --format='%h %s' "$REF")"
 
 # a snapshot of UW2Decomp's HEAD at $1, with the toolchain copied (tcc.mjs and dosrun copy their
@@ -70,7 +72,8 @@ snapshot() {   # DIR [nopatch|REF]
   case "$2" in ""|nopatch) ;; *) at=$2;; esac
   if [ -d "$d" ] && [ "$KEEP" = 1 ]; then return; fi
   rm -rf "$d"; mkdir -p "$d"
-  git -C "$UW" archive "$at" | tar -x -C "$d"
+  # UW2 is a folder of a repository of several games: its subtree, not the repository
+  git -C "$TOP" archive "$at:$PREFIX" | tar -x -C "$d"
   # git apply, which creates and deletes files as the patch says, with no repository above the
   # snapshot (OUT may be inside Exhume's own tree)
   if [ -n "$PATCH" ] && [ -z "$2" ]; then
@@ -245,14 +248,20 @@ sound)
   ;;
 ci)
   echo "== ci"
-  snapshot "$S"     # REF's .github, with PATCH applied
+  snapshot "$S"
   C="$OUT/ci-uw2"; rm -rf "$C"
   "$PY" "$ex/tools/citemplates.py" --config "$here/exhume.toml" "$C" > /dev/null
-  n=0
-  for f in workflows/accuracy.yml workflows/nightly.yml workflows/port.yml workflows/repocheck.yml actions/linux-tools/action.yml actions/uw2-assets/action.yml; do
-    if cmp -s "$S/.github/$f" "$C/.github/$f"; then n=$((n+1)); else echo "   DIFFERS from UW2Decomp's: .github/$f"; fi
-  done
-  echo "   the templates with UW2's values: $n of 6 files byte-identical to UW2Decomp's .github"
+  # UW2 is a folder of Underworld Exhumed, whose .github is rendered from its ci.toml with both
+  # games' values: rendered again here, it must be the committed .github byte for byte
+  if [ -f "$TOP/ci.toml" ]; then
+    T="$OUT/ci-top"; rm -rf "$T"; mkdir -p "$T"
+    git -C "$TOP" archive "$REF" ci.toml .github | tar -x -C "$T"
+    R="$OUT/ci-top-render"; rm -rf "$R"
+    "$PY" "$ex/tools/citemplates.py" --vars "$T/ci.toml" "$R" > /dev/null
+    if diff -r -x dependabot.yml -x ISSUE_TEMPLATE "$T/.github" "$R/.github" > /dev/null; then
+      echo "   the templates with the repository's ci.toml: byte-identical to its .github ($(ls "$R/.github/workflows" | wc -l | tr -d ' ') workflows)"
+    else echo "   the templates with the repository's ci.toml DIFFER from its .github"; fi
+  fi
   ( cd "$C" && actionlint .github/workflows/*.yml ) && echo "   actionlint $(actionlint -version | head -1): no findings in UW2's" || echo "   actionlint FOUND PROBLEMS in UW2's"
   G="$OUT/ci-generic"; rm -rf "$G"
   "$PY" "$ex/tools/citemplates.py" --vars "$ex/tools/templates/ci/defaults.toml" "$G" > /dev/null
