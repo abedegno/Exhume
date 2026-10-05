@@ -1,8 +1,8 @@
 {{release_comment}}
-name: release
+name: {{wf_prefix}}release
 on:
   push:
-    tags: ["v*"]
+    tags: [{{release_tags}}]
   workflow_dispatch:
     inputs:
       notarise:
@@ -12,18 +12,19 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: {{wf_prefix}}release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   macos:
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      NOTARISE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.notarise == true }}
+      NOTARISE: ${{ startsWith(github.ref, 'refs/tags/{{tag_prefix}}') || inputs.notarise == true }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - name: Homebrew packages
         env:
@@ -102,7 +103,7 @@ jobs:
           set -euo pipefail
           key="$RUNNER_TEMP/{{tmp_prefix}}-notary.p8"
           ( umask 077; printf '%s\n' "$APPLE_API_KEY" > "$key" ); chmod 600 "$key"
-          zip=$(echo build/dist/{{pkg_name}}-*-macos.zip); stage=${zip%.zip}
+          zip=$(echo {{dist_dir}}/{{pkg_name}}-*-macos.zip); stage=${zip%.zip}
           auth=(--key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
           xcrun notarytool submit "$zip" "${auth[@]}" --wait --timeout 45m --output-format json > "$RUNNER_TEMP/notary.json"
           status=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status"))' "$RUNNER_TEMP/notary.json")
@@ -115,7 +116,7 @@ jobs:
           ditto -c -k --norsrc --noextattr --keepParent "$stage" "$zip"
       - name: Check the package
         run: |
-          mkdir check && cd check && unzip -q ../build/dist/{{pkg_name}}-*-macos.zip
+          mkdir check && cd check && unzip -q ../{{dist_dir}}/{{pkg_name}}-*-macos.zip
           app=$(echo {{pkg_name}}-*-macos/{{pkg_name}}.app)
           lipo -archs "$app/Contents/MacOS/{{exe}}" | grep -q x86_64
           lipo -archs "$app/Contents/MacOS/{{exe}}" | grep -q arm64
@@ -131,7 +132,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: build/dist/{{pkg_name}}-*-macos.zip
+          path: {{dist_dir}}/{{pkg_name}}-*-macos.zip
           if-no-files-found: error
       - name: Remove the signing keychain and keys
         if: always()
@@ -148,6 +149,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - name: System packages (the compiler, and the headers SDL3 needs for a window and sound)
         run: |
@@ -189,7 +191,7 @@ jobs:
       - name: Check the package
         run: |
           set -e
-          mkdir check && cd check && tar xzf ../build/dist/{{pkg_name}}-*-linux-*.tar.gz
+          mkdir check && cd check && tar xzf ../{{dist_dir}}/{{pkg_name}}-*-linux-*.tar.gz
           cd {{pkg_name}}-*-linux-*
           # the run paths are $ORIGIN ones only (package.py checks this too)
           for f in bin/{{exe}} lib/*.so*; do
@@ -210,7 +212,7 @@ jobs:
       - name: Check the AppImage
         run: |
           set -e
-          ai=$(echo "$PWD"/build/dist/{{pkg_name}}-*-linux-*.AppImage)
+          ai=$(echo "$PWD"/{{dist_dir}}/{{pkg_name}}-*-linux-*.AppImage)
           file "$ai"
           cd "$RUNNER_TEMP" && "$ai" --appimage-extract-and-run --help
       - name: The LGPL libraries' source
@@ -229,14 +231,14 @@ jobs:
             "munt-$tag.tar.gz: https://github.com/munt/munt at tag $tag (libmt32emu, in its mt32emu directory)" \
             "type2-runtime-$rt.tar.gz: https://github.com/AppImage/type2-runtime at tag $rt, the AppImage's runtime (static, with libfuse 3), and the scripts that build it" \
             "THIRD-PARTY-NOTICES in each package says how they are built and how to replace them." > README.txt
-          cd .. && tar czf ../build/dist/third-party-sources.tar.gz third-party-sources
+          cd .. && tar czf ../{{dist_dir}}/third-party-sources.tar.gz third-party-sources
       - uses: actions/upload-artifact@v4
         with:
           name: linux
           path: |
-            build/dist/{{pkg_name}}-*-linux-*.tar.gz
-            build/dist/{{pkg_name}}-*-linux-*.AppImage
-            build/dist/third-party-sources.tar.gz
+            {{dist_dir}}/{{pkg_name}}-*-linux-*.tar.gz
+            {{dist_dir}}/{{pkg_name}}-*-linux-*.AppImage
+            {{dist_dir}}/third-party-sources.tar.gz
           if-no-files-found: error
 
   windows:
@@ -252,6 +254,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - uses: msys2/setup-msys2@v2
         with:
@@ -275,7 +278,7 @@ jobs:
       # package.py has checked that every DLL loads from the package or from Windows
       - name: Check the package (with only Windows's own directories on the PATH)
         run: |
-          mkdir check && cd check && unzip -q ../build/dist/{{pkg_name}}-*-windows-x86_64.zip
+          mkdir check && cd check && unzip -q ../{{dist_dir}}/{{pkg_name}}-*-windows-x86_64.zip
           cd {{pkg_name}}-*-windows-x86_64
           PATH=/c/Windows/system32:/c/Windows /usr/bin/ldd {{exe}}.exe
           if PATH=/c/Windows/system32:/c/Windows /usr/bin/ldd {{exe}}.exe | grep -viE '=> (/c/windows/|'"$PWD"'/)'; then exit 1; fi
@@ -287,11 +290,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: build/dist/{{pkg_name}}-*-windows-x86_64.zip
+          path: {{dist_dir}}/{{pkg_name}}-*-windows-x86_64.zip
           if-no-files-found: error
 
   draft:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/{{tag_prefix}}')
     needs: [macos, linux, windows]
     runs-on: ubuntu-24.04
     permissions:
@@ -306,6 +309,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+{{release_name}}
           prerelease: false
           generate_release_notes: true
           fail_on_unmatched_files: true

@@ -1,5 +1,5 @@
 {{nightly_comment}}
-name: nightly
+name: {{wf_prefix}}nightly
 on:
   schedule:
     - cron: "{{nightly_cron}}"
@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: nightly
+  group: {{wf_prefix}}nightly
   cancel-in-progress: false
 jobs:
   make-test-full:
@@ -18,8 +18,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
-      - uses: ./.github/actions/linux-tools
+      - uses: ./.github/actions/{{linux_tools_action}}
         with:
           full: "true"
       - uses: ./.github/actions/{{assets_action}}

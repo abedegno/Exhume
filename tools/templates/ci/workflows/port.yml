@@ -1,12 +1,12 @@
 {{port_comment}}
-name: port
+name: {{wf_prefix}}port
 on:
-  push:
-  pull_request:
+  push:{{on_paths}}
+  pull_request:{{on_paths}}
 permissions:
   contents: read
 concurrency:
-  group: port-${{ github.ref }}
+  group: {{wf_prefix}}port-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   linux:
@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - name: System packages
         run: |
@@ -41,6 +42,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - name: Homebrew packages
         env:
@@ -64,6 +66,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       # MSYS2's CLANG64 environment: clang targeting the Universal C Runtime, SDL3 and
       # pkg-config from its packages; no libmt32emu, so the Windows build has no MT-32

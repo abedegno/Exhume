@@ -1,14 +1,14 @@
 {{accuracy_comment}}
-name: accuracy
+name: {{wf_prefix}}accuracy
 on:
-  push:
+  push:{{on_paths}}
     branches: [main]
-  pull_request:
+  pull_request:{{on_paths}}
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: accuracy-${{ github.ref }}
+  group: {{wf_prefix}}accuracy-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   make-test:
@@ -19,8 +19,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
-      - uses: ./.github/actions/linux-tools
+      - uses: ./.github/actions/{{linux_tools_action}}
       - uses: ./.github/actions/{{assets_action}}
         with:
           deploy-key: ${{ secrets.{{deploy_secret}} }}
@@ -66,6 +67,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - uses: msys2/setup-msys2@v2
         with:
@@ -136,6 +138,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - uses: msys2/setup-msys2@v2
         with:
@@ -196,6 +199,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+{{checkout_submodules}}
 {{exhume_checkout}}
       - name: Homebrew packages
         env:

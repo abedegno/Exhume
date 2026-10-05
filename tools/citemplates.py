@@ -6,7 +6,9 @@
 
 It writes OUTDIR/.github/workflows/{accuracy,nightly,port,repocheck,release}.yml and
 OUTDIR/.github/actions/linux-tools/action.yml and OUTDIR/.github/actions/<assets_action>/action.yml
-from tools/templates/ci/. The values are tools/templates/ci/defaults.toml (a project that uses
+from tools/templates/ci/. With a [[games]] list in the values (a repository of several games,
+each in its own folder, with Exhume as a submodule), repocheck.yml is written once and the rest
+once per game, with that game's values, as <wf_prefix>accuracy.yml and so on. The values are tools/templates/ci/defaults.toml (a project that uses
 Exhume from a checkout in .exhume, with the Makefile template) overridden by the file exhume.toml's
 [ci] vars names (UW2's: examples/uw2/ci.toml) and by any other [ci] keys.
 
@@ -35,12 +37,12 @@ import os, re, sys, tomllib
 
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 TEMPLATES = os.path.join(here, 'templates', 'ci')
-FILES = [('workflows/accuracy.yml', '.github/workflows/accuracy.yml'),
-         ('workflows/nightly.yml', '.github/workflows/nightly.yml'),
-         ('workflows/port.yml', '.github/workflows/port.yml'),
-         ('workflows/repocheck.yml', '.github/workflows/repocheck.yml'),
-         ('workflows/release.yml', '.github/workflows/release.yml'),
-         ('actions/linux-tools/action.yml', '.github/actions/linux-tools/action.yml'),
+FILES = [('workflows/accuracy.yml', '.github/workflows/{wf_prefix}accuracy.yml'),
+         ('workflows/nightly.yml', '.github/workflows/{wf_prefix}nightly.yml'),
+         ('workflows/port.yml', '.github/workflows/{wf_prefix}port.yml'),
+         ('workflows/repocheck.yml', '.github/workflows/{wf_prefix}repocheck.yml'),
+         ('workflows/release.yml', '.github/workflows/{wf_prefix}release.yml'),
+         ('actions/linux-tools/action.yml', '.github/actions/{linux_tools_action}/action.yml'),
          ('actions/assets/action.yml', '.github/actions/{assets_action}/action.yml')]
 VAR = re.compile(r'\{\{(\w+)\}\}')
 
@@ -92,13 +94,25 @@ def main(argv):
         v = values(None, config.load(path))
     if len(argv) != 1: sys.exit(__doc__)
     out = argv[0]
-    for src, dst in FILES:
+    games = v.pop('games', None)
+    if not games:
+        write(out, v, FILES)
+        return 0
+    # a repository of several games: repocheck once for the repository, the rest per game
+    write(out, v, [f for f in FILES if f[0] == 'workflows/repocheck.yml'])
+    for g in games:
+        gv = dict(v); gv.update(g)
+        write(out, gv, [f for f in FILES if f[0] != 'workflows/repocheck.yml'])
+    return 0
+
+
+def write(out, v, files):
+    for src, dst in files:
         dst = os.path.join(out, dst.format(**v))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         text = render(open(os.path.join(TEMPLATES, src)).read(), v, src)
         open(dst, 'w').write(text)
         print('wrote', os.path.relpath(dst, out))
-    return 0
 
 
 if __name__ == '__main__':

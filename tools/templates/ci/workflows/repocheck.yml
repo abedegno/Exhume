@@ -1,5 +1,5 @@
 {{repocheck_comment}}
-name: repocheck
+name: {{wf_prefix}}repocheck
 on:
   push:
   pull_request:

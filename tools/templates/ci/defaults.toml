@@ -150,3 +150,16 @@ assets_comment = '''
 # `if: always()` step, and must never cache or upload anything from them. Needs git, ssh, tar
 # and age on the PATH: Linux and macOS runners (age from apt or Homebrew), and Windows, where
 # bash is Git Bash and the job puts the official age build on the PATH first (accuracy.yml).'''
+
+# A repository of several games ([[games]] in the values, tools/citemplates.py): each game's
+# workflows are rendered with its own values, files and names prefixed by wf_prefix (uw1-);
+# on_paths limits accuracy and port to the changes that concern it. A single-game project
+# leaves all of these as they are.
+wf_prefix = ""
+on_paths = ""
+checkout_submodules = ""
+linux_tools_action = "linux-tools"
+release_tags = '"v*"'
+tag_prefix = "v"
+dist_dir = "build/dist"
+release_name = ""
