@@ -93,7 +93,25 @@ static int find_ci(const char *dir, const char *name, char *out, size_t outsz)
     return found;
 }
 
-/* Splits a DOS path into components: drive letter dropped, both separators, "." dropped. */
+/* A component as DOS names it: a name longer than 8 characters or an extension longer than 3
+   is cut short, as DOS's name parsing does without an error (UW1 opens its critter pages with
+   a name that ends in "N01$", and DOS opens CR..PAGE.N01). "." and ".." stay as they are. */
+static void dos83(char *c)
+{
+    char *dot;
+    if (c[0] == '.') return;
+    dot = strchr(c, '.');
+    if (dot) {
+        size_t nl = (size_t)(dot - c), el = strlen(dot + 1);
+        if (el > 3) dot[4] = 0;
+        if (nl > 8) memmove(c + 8, dot, strlen(dot) + 1);
+    } else if (strlen(c) > 8) {
+        c[8] = 0;
+    }
+}
+
+/* Splits a DOS path into components: drive letter dropped, both separators, "." dropped, each
+   component cut to 8.3 (dos83). */
 static int split(const char *dospath, char comp[][64], int max)
 {
     int n = 0, k = 0;
@@ -102,6 +120,7 @@ static int split(const char *dospath, char comp[][64], int max)
     for (;; s++) {
         if (*s == '\\' || *s == '/' || *s == 0) {
             comp[n][k] = 0;
+            dos83(comp[n]);
             if (k && strcmp(comp[n], ".") != 0) {
                 if (strcmp(comp[n], "..") == 0) { if (n) n--; }
                 else if (++n == max) return -1;
