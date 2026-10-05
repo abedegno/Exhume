@@ -201,7 +201,9 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     SDL_Texture *tex = NULL;
     int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg->scale > 0 ? cfg->scale : 3;
     unsigned buttons = 0, swallow = 0;
-    int locked = 0, cursor_hidden = 0;
+    int locked = 0, cursor_hidden = 0, hidden_win = 0, vsync = 0;
+    Uint64 frame_ns = 0, last_present = 0, pace_from = 0;
+    unsigned presents = 0, paced = 0, hidden_passes = 0;
     void *targ[2];
     SDL_FRect dst = { 0, 0, 0, 0 };
     Uint64 start;
@@ -224,7 +226,15 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
             fprintf(stderr, PLAT_NAME ": no window: %s\n", SDL_GetError());
             return 1;
         }
-        SDL_SetRenderVSync(ren, 1);
+        vsync = SDL_SetRenderVSync(ren, 1);
+        {
+            /* the display's frame time, which the loop below never presents faster than */
+            const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+            float hz = m && m->refresh_rate > 0 ? m->refresh_rate : 60.0f;
+            frame_ns = (Uint64)(1e9f / hz);
+            fprintf(stderr, PLAT_NAME ": renderer %s, display %.0f Hz, vsync %s\n", SDL_GetRendererName(ren), hz,
+                    vsync ? "requested" : "refused");
+        }
         set_icon(win);
         if (cfg->mouse_lock) mouse_title(win, cfg, 0);
     }
@@ -340,12 +350,20 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                 hooks->pointer(&p);
                 break;
             }
+            case SDL_EVENT_WINDOW_OCCLUDED:
+                hidden_win = 1;
+                break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+                hidden_win = 0;
+                break;
             case SDL_EVENT_WILL_ENTER_BACKGROUND:
             case SDL_EVENT_WINDOW_MINIMIZED:
+                if (e.type == SDL_EVENT_WINDOW_MINIMIZED) hidden_win = 1;
                 if (hooks->lifecycle) hooks->lifecycle(PLAT_SUSPEND);
                 break;
             case SDL_EVENT_DID_ENTER_FOREGROUND:
             case SDL_EVENT_WINDOW_RESTORED:
+                if (e.type == SDL_EVENT_WINDOW_RESTORED) hidden_win = 0;
                 if (hooks->lifecycle) hooks->lifecycle(PLAT_RESUME);
                 break;
             default:
@@ -361,7 +379,11 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
         }
         if (cfg->exit_after_ms > 0 && SDL_GetTicks() - start >= (Uint64)cfg->exit_after_ms) quit = 1;
         if (SDL_GetAtomicInt(&game_done)) quit = 1;
-        if (ren) {
+        if (ren && hidden_win) {
+            /* minimised or covered: nothing to draw, and presenting would not wait */
+            SDL_Delay(16);
+            hidden_passes++;
+        } else if (ren) {
             if (w != tw || hgt != th) {
                 if (tex) SDL_DestroyTexture(tex);
                 tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, hgt);
@@ -396,10 +418,32 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                 shot = 2;
             }
             SDL_RenderPresent(ren);
+            {
+                /* vsync is only a request: a driver may ignore it, and on Windows a present to a
+                   window in the background can return at once. Unpaced, this loop then uploads and
+                   presents as fast as it can, which can stall the desktop's compositor and with it
+                   the pointer in every program. So it never presents faster than the display
+                   refreshes: when a present came back in under half a frame time, it waits out the
+                   rest. Where vsync holds, a present takes about a frame and it never waits. */
+                Uint64 now = SDL_GetTicksNS();
+                if (last_present && now - last_present < frame_ns / 2) {
+                    SDL_DelayPrecise(frame_ns - (now - last_present));
+                    paced++;
+                    now = SDL_GetTicksNS();
+                }
+                last_present = now;
+                if (!pace_from) pace_from = now;
+                if (++presents == 600) {
+                    /* once, for bug reports: whether the display's vsync held */
+                    fprintf(stderr, PLAT_NAME ": %u presents in %.1f s, %u paced (vsync %s)\n", presents,
+                            (double)(now - pace_from) / 1e9, paced, paced > presents / 4 ? "not honoured" : "holds");
+                }
+            }
         } else {
             SDL_Delay(10);
         }
     }
+    if (ren) fprintf(stderr, PLAT_NAME ": %u presents, %u paced, %u passes with the window hidden\n", presents, paced, hidden_passes);
     if (tex) SDL_DestroyTexture(tex);
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
