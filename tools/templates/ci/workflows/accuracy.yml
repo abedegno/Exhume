@@ -119,6 +119,75 @@ jobs:
         shell: bash
         run: rm -rf "$RUNNER_TEMP/{{tmp_assets}}" "$RUNNER_TEMP/{{tmp_clone}}" "$RUNNER_TEMP/{{tmp_key}}" {{verify_cleanup}}
 
+  package-windows:
+    if: {{job_if}}
+    # Windows Server 2022, the hosted Windows nearest Windows 10: the players' zip, unpacked and
+    # started with only Windows's folders on the PATH (a DLL missing from the zip stops it), then
+    # the sessions replayed by that program against the goldens (Exhume's tools/pkgcheck.py)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # the recordings and scripts must keep their bytes and LF line ends (also .gitattributes)
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+{{exhume_checkout}}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: false
+          install: make curl git
+          pacboy: clang:p llvm:p pkgconf:p sdl3:p python:p cmake:p ninja:p
+      # age's own Windows build at a pinned version, checked against its SHA-256, for the
+      # {{assets_action}} action (which runs in Git Bash)
+      - name: age
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'age.zip'
+          Invoke-WebRequest -Uri 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-windows-amd64.zip' -OutFile $zip
+          $sum = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($sum -ne 'f48d8f8f9ebe903ab5027ed067652f2cc1db94bc206976430133b905dcd8e8c7') { throw "age: unexpected SHA-256 $sum" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'age-bin')
+          Join-Path $env:RUNNER_TEMP 'age-bin\age' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - uses: ./.github/actions/{{assets_action}}
+        with:
+          deploy-key: ${{ secrets.{{deploy_secret}} }}
+          age-key: ${{ secrets.{{age_secret}} }}
+      - name: Cache libmt32emu
+        uses: actions/cache@v4
+        with:
+          path: {{libs_dir}}
+          key: libs-windows-clang64-${{ hashFiles('{{libs_script}}') }}
+      - name: Build libmt32emu (when not cached), fetch Nuked OPL3
+        run: |
+          {{setup_libs_windows}}
+          {{setup_sound}}
+      - name: The players' package, unpacked, started and replayed
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/logs"
+          ({{package_check_windows}}) 2>&1 | tee "$RUNNER_TEMP/logs/package-windows.log"
+      - name: Upload the difference pictures and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-windows-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/logs/*.log
+            {{verify_dir}}/**/diff_ck*.png
+            {{verify_dir}}/**/port.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the game data and everything built from it
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/pkg" "$RUNNER_TEMP/{{tmp_assets}}" "$RUNNER_TEMP/{{tmp_clone}}" "$RUNNER_TEMP/{{tmp_key}}" {{verify_cleanup}}
+
   verify-macos:
     if: {{job_if}}
     runs-on: macos-15

@@ -18,6 +18,7 @@ setup_libs_windows = "UW2_LIBS=mt32emu make setup-libs"
 port_check = "make port-check"
 port_windows = "make PY=python port"
 port_check_windows = "make PY=python port-check"
+package_check_windows = 'make PY=python port-release && make PY=python package && exe=$(python .exhume/tools/pkgcheck.py "$(ls build/dist/*-windows-x86_64.zip)" --exe uw2port --data "$UW2_DIR" --unpack "$RUNNER_TEMP/pkg") && EXHUME_PORT="$exe" make PY=python verify'
 repocheck = "python3 tools/repocheck.py"
 nightly_cron = "17 3 * * *"
 pkg_name = "UW2"

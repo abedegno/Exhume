@@ -520,8 +520,28 @@ def run_dos(out, rec=None, steps=(), timeout=900, cfg=None, stage=None, log=None
     return r.returncode
 
 
+def port_env():
+    """The environment to run the port in. On Windows a development build finds its DLLs on
+    PATH, and those tools/setup-libs.sh built (libmt32emu) are in [port] libs' bin, which no shell
+    puts there: without it the port exits 0xC0000135 (a DLL not found) before writing anything.
+    From UW2Decomp's tools/replay.py."""
+    env = dict(os.environ)
+    if os.name == 'nt':
+        libs = portcfg.port(CFG).libs
+        dirs = [os.path.join(libs, 'bin'), os.path.join(libs, 'lib')]
+        prefix = os.environ.get('MINGW_PREFIX')     # /clang64 in MSYS2's CLANG64 shell: SDL3 and the C++ runtime
+        if prefix and shutil.which('cygpath'):
+            w = subprocess.run(['cygpath', '-w', prefix + '/bin'], capture_output=True, text=True).stdout.strip()
+            if w: dirs.append(w)
+        extra = [d for d in dirs if os.path.isdir(d)]
+        env['PATH'] = os.pathsep.join(extra + [env.get('PATH', '')])
+    return env
+
+
 def port_exe(variant=''):
-    """The port's program in the variant's build: the name, or the name with .exe on Windows."""
+    """The port's program in the variant's build: the name, or the name with .exe on Windows.
+    EXHUME_PORT names another (tools/pkgcheck.py: the program from a player's package)."""
+    if os.environ.get('EXHUME_PORT') and not variant: return os.environ['EXHUME_PORT']
     p = os.path.join(portcfg.variant_out(CFG, variant), RC.port_exe_name)
     return p + '.exe' if not os.path.exists(p) and os.path.exists(p + '.exe') else p
 
@@ -567,7 +587,7 @@ def run_port(rec, out, extra=(), stage=None, quiet=False):
         shutil.copy(cfg, dst)
     cmd = [exe, RC.port_data_flag, port_data(out), RC.port_home_flag, home] + RC.port_args + \
           [RC.port_replay_flag, os.path.abspath(rec)] + list(extra)
-    r = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+    r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=port_env())
     open(os.path.join(out, 'port.log'), 'w').write(r.stdout + r.stderr)
     for f in ('STATE.OUT',):
         if os.path.exists(os.path.join(out, f)): os.remove(os.path.join(out, f))

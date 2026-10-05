@@ -19,6 +19,9 @@ setup_libs_windows = "SETUP_LIBS=mt32emu sh .exhume/tools/setup-libs.sh tools/li
 port_check = "make EXHUME=.exhume port-check"
 port_windows = "make EXHUME=.exhume PY=python port"
 port_check_windows = "make EXHUME=.exhume PY=python port-check"
+# package-windows: build and package the release build, check the zip starts as a player gets it
+# (tools/pkgcheck.py, which prints the unpacked program), then replay the sessions with it
+package_check_windows = 'make EXHUME=.exhume PY=python port-release && make EXHUME=.exhume PY=python package && exe=$(python .exhume/tools/pkgcheck.py "$(ls build/dist/*-windows-x86_64.zip)" --exe port --data "$GAME_DIR" --unpack "$RUNNER_TEMP/pkg") && EXHUME_PORT="$exe" make EXHUME=.exhume PY=python verify'
 repocheck = "python3 .exhume/tools/repocheck.py --root . --allow '^\\.exhume/'"
 nightly_cron = "17 3 * * *"
 # the condition of accuracy.yml's jobs, and a line (with its indentation) that gives nightly.yml's
