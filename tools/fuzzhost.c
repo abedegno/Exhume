@@ -17,6 +17,19 @@
                     runs a call kind of its own (a C entry such as UW2's cSqRt, taking and
                     leaving its values in the emulated registers); 1 when it knew the kind
 
+   tools/vectors.py links a second project file ([vectors] host_glue), compiled as port C so
+   that it can include the game's headers, and defines FUZZ_VECTORS when it compiles this one.
+   That file defines
+
+     int fuzz_vector(const char *kind, unsigned char *block);
+                    runs the routine kind names on the inputs in block (32-bit little-endian
+                    words, in the order of the vector target's inputs), setting the globals
+                    the routine reads, and writes its outputs as 32-bit words at block + 0x100;
+                    1 when it knew the kind
+
+   and a call kind fuzz_call does not know goes to it, with block the memory at seg:off (a
+   region's).
+
    It then serves cases on its standard input, one at a time. Before each case every region is
    put back as it was after fuzz_init. A case is text lines:
 
@@ -77,6 +90,10 @@ static unsigned char *at(uint32_t lin)
     return NULL;
 }
 
+#ifdef FUZZ_VECTORS
+int fuzz_vector(const char *kind, unsigned char *block);
+#endif
+
 static int hexval(int c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
 
 int main(int argc, char **argv)
@@ -106,11 +123,11 @@ int main(int argc, char **argv)
                 if (p) *p = (unsigned char)(hexval(h[0]) << 4 | hexval(h[1]));
             }
         } else if (line[0] == 'C') {
-            char kind[16];
+            char kind[64];
             unsigned seg, off, rcs, rip;
             int status = 0;
             uint32_t c = 0;
-            sscanf(line + 2, "%15s %x %x %x %x", kind, &seg, &off, &rcs, &rip);
+            sscanf(line + 2, "%63s %x %x %x %x", kind, &seg, &off, &rcs, &rip);
             EAX = r[0]; EBX = r[1]; ECX = r[2]; EDX = r[3]; ESI = r[4]; EDI = r[5]; EBP = r[6]; ESP = r[7];
             SET_DS(r[8]); SET_ES(r[9]); SET_SS(r[10]); SET_FS(r[11]); SET_GS(r[12]);
             asm_set_flags((uint16_t)r[13]);
@@ -119,7 +136,11 @@ int main(int argc, char **argv)
             if (setjmp(halted)) status = 1;
             else if (!strcmp(kind, "near")) c = asm_call(ASM_JMP(seg, off), (uint16_t)rip);
             else if (!strcmp(kind, "far")) c = asm_callf(ASM_JMP(seg, off), (uint16_t)rcs, (uint16_t)rip);
-            else if (!fuzz_call(kind, seg, off, &c)) {
+            else if (!fuzz_call(kind, seg, off, &c)
+#ifdef FUZZ_VECTORS
+                     && !(at(seg * 16u + off) && fuzz_vector(kind, at(seg * 16u + off)))
+#endif
+                    ) {
                 status = 1; snprintf(halt_why, sizeof halt_why, "unknown kind %s", kind);
             }
             if (!status && c) { status = 1; snprintf(halt_why, sizeof halt_why, "returned past the call (%08X)", c); }

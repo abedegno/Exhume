@@ -217,6 +217,16 @@ Add a target for every routine of a translated module that the port has as hand-
 
 Unicorn 2.1.4's `emu_start` in 16-bit mode takes a linear address, and sets IP to it minus CS's base, modulo 64 KB. Pass `CS * 16 + IP`; passing the offset alone works only while CS's base is a multiple of 64 KB.
 
+## Test vectors
+
+Fuzzing compares the port with the original and keeps nothing. `tools/vectors.py` keeps the cases: for each target ([vectors] targets, a Python file of `V()` definitions) it makes a few hundred inputs from a fixed seed, edge values first, runs the routine's bytes from the user's EXE in Unicorn on each, and writes a CSV of the inputs and the original's outputs to the project's vectors directory ([vectors] out). The tables are for checking another reimplementation of the same program against the original, rule by rule: they hold numbers the original computed, not its code or data.
+
+A routine is called as the program's C calls a far function: DS and SS the data group, the arguments on the stack in C order, and each global it reads laid over the image from the case. Only resident routines can run this way; a call into an overlay stops at INT 3Fh. A routine that calls `rand()` takes the generator's 32-bit state as an input column (`seed`, which the target writes to the C library's seed; in Turbo C++ 1.01 its data group offset is the word at `srand + 7`, which `vectors.image_word` reads) and gives the state it leaves (`seed_out`), so the draws follow from the two.
+
+The port is checked on the same cases: the project's glue ([vectors] host_glue, compiled as port C so it can include the game's headers, and linked into fuzzhost.c's host built with `FUZZ_VECTORS`) defines `fuzz_vector(kind, block)`, which reads the inputs as 32-bit words from the block, sets the globals the routine reads, calls the port's C and writes the outputs at the block's offset 100h. Every case where it and the original differ is reported, and the run exits 1. `runtime/port/sys/borland.c`'s `port_set_rand_seed` gives the port's generator a whole 32-bit state, which `srand` cannot.
+
+Regeneration must be byte-identical: `--check` regenerates in memory and exits 1 if a file would change. tools/templates/Makefile's `make vectors` builds the port and runs it. UW1Decomp's are `tools/vector_targets.py` and `tools/vectorhost-uw1.c`; UW2Decomp's, the same names with `-uw2`, run with examples/uw2/exhume.toml and `--targets`, `--glue` and `--out`.
+
 ## Packages for players
 
 A port is played from packages built from the sources alone: no game data, no DOS toolchain and nothing from the original's art goes in, and the program finds the player's own copy of the game (The platform layer, "Finding the game").

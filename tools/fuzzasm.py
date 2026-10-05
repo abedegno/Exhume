@@ -254,9 +254,12 @@ class T:
 
 # ---- running ---------------------------------------------------------------------------------
 
-def build_host(coverage=False):
+def build_host(coverage=False, vectors=None):
     """fuzzhost.c compiled with the project's glue ([fuzz] host_glue) and linked with the port's
-    objects, in place of the port's main ([fuzz] main)."""
+    objects, in place of the port's main ([fuzz] main). vectors, tools/vectors.py's glue file
+    ([vectors] host_glue), is compiled as port C (it may include the game's headers) and linked
+    too, with fuzzhost.c compiled to pass it the call kinds it does not know (FUZZ_VECTORS):
+    that host is build/vectors/fuzzhost."""
     import portbuild, portcheck, sources
     P = portcfg.port(CFG); F = portcfg.fuzz(CFG)
     if not F.host_glue: sys.exit('fuzzasm.py: [fuzz] host_glue is not set')
@@ -270,18 +273,30 @@ def build_host(coverage=False):
         objs.append(portbuild.port_object(out, p))
     _, libs, extra = portbuild.sound_deps()
     objs += [os.path.join(out, 'deps', os.path.basename(p)[:-2] + '.o') for p in extra]
-    host = os.path.join(CFG.build, 'fuzz' + ('-cov' if coverage else ''), 'fuzzhost')
+    host = os.path.join(CFG.build, 'vectors' if vectors else 'fuzz' + ('-cov' if coverage else ''), 'fuzzhost')
     os.makedirs(os.path.dirname(host), exist_ok=True)
     src = os.path.join(here, 'fuzzhost.c')
-    newest = max(os.path.getmtime(o) for o in objs + [src, F.host_glue])
-    if os.path.exists(host) and os.path.getmtime(host) >= newest: return host
+    newest = max(os.path.getmtime(o) for o in objs + [src, F.host_glue] + ([vectors] if vectors else []))
+    # what the host was built with: another glue file needs a new build whatever the times say
+    stamp = host + '.glue'
+    built = '\n'.join([F.host_glue, vectors or ''])
+    old = open(stamp).read() if os.path.exists(stamp) else None
+    if os.path.exists(host) and os.path.getmtime(host) >= newest and old == built: return host
     cov = ['-fprofile-instr-generate', '-fcoverage-mapping'] if coverage else []
-    r = subprocess.run([portcheck.host_cc()] + portbuild.PORT_FLAGS + cov + [f'-DFUZZ_GLUE="{F.host_glue}"', '-c', '-o', host + '.o', src],
+    vec = ['-DFUZZ_VECTORS'] if vectors else []
+    r = subprocess.run([portcheck.host_cc()] + portbuild.PORT_FLAGS + cov + vec + [f'-DFUZZ_GLUE="{F.host_glue}"', '-c', '-o', host + '.o', src],
                        capture_output=True, text=True)
     if r.returncode: sys.exit('fuzzasm.py: fuzzhost.c does not compile:\n' + r.stderr[-3000:])
+    if vectors:
+        cc = portcheck.host_cc()
+        r = subprocess.run([cc] + portbuild.PORT_FLAGS + portcheck.layout_flags(cc) + ['-c', '-o', host + '-vectors.o', vectors],
+                           capture_output=True, text=True, cwd=root)
+        if r.returncode: sys.exit(f'fuzzasm.py: {vectors} does not compile:\n' + r.stderr[-3000:])
+        objs = objs + [host + '-vectors.o']
     r = subprocess.run([portcheck.host_cc(), '-o', host] + (['-fprofile-instr-generate'] if coverage else []) + [host + '.o'] + objs +
                        portbuild.pkg_config('--libs') + libs, capture_output=True, text=True)
     if r.returncode: sys.exit('fuzzasm.py: fuzzhost does not link:\n' + r.stderr[-3000:])
+    with open(stamp, 'w') as f: f.write(built)
     return host
 
 

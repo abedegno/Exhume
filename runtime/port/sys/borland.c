@@ -415,6 +415,10 @@ void bc_srand(unsigned seed) { rand_seed = (uint16_t)seed; }
 /* The seed, for the state dump (runtime/replay/replay.c). */
 uint32_t port_rand_seed(void) { return rand_seed; }
 
+/* Sets the whole 32-bit seed, which srand cannot (it sets the low word only): for tools that
+   run a routine from a given generator state (tools/vectors.py). */
+void port_set_rand_seed(uint32_t seed) { rand_seed = seed; }
+
 long bc_time(long *t)
 {
     long now = (long)time(NULL);

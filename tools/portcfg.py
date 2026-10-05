@@ -266,6 +266,15 @@ def fuzz(cfg):
     )
 
 
+def vectors(cfg):
+    """[vectors]: tools/vectors.py's targets (a Python file of V() definitions), its port glue
+    (C compiled as port C, defining fuzz_vector) and the directory the vectors are written to."""
+    v = cfg.raw.get('vectors', {})
+    return _NS(targets=_path(cfg, v['targets']) if v.get('targets') else None,
+               host_glue=_path(cfg, v['host_glue']) if v.get('host_glue') else None,
+               out=_path(cfg, v.get('out', 'vectors')))
+
+
 def asm2c(cfg):
     a = cfg.raw.get('asm2c', {})
     return _NS(spec=_path(cfg, a['spec']) if a.get('spec') else None,

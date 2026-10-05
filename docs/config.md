@@ -136,6 +136,10 @@ The record and replay harness and its golden references (tools/replay.py, golden
 
 tools/fuzzasm.py's routine fuzzing: `targets`, a Python file of target definitions (examples/uw2/port/fuzz_targets.py), and `host_glue`, the C file fuzzhost.c includes for the project's call kinds and memory regions.
 
+## [vectors]
+
+tools/vectors.py's test vectors: `targets`, a Python file of `V()` definitions (each routine, its input and output columns, its input generator and how a case becomes a call); `host_glue`, a C file compiled as port C that defines `fuzz_vector` for the port's side; `out`, the directory the CSV files are written to (default `vectors`). `--targets`, `--glue` and `--out` override them.
+
 ## [asm2c]
 
 tools/asm2c.py's static recompiler: `spec`, a Python file with the modules, code segments, hand-written ranges and overrides (examples/uw2/port/asm2c_spec.py); `overrides`, a Python file of the project's whose `OVERRIDES` (and `PATCH_OVERRIDDEN`, if it has one) are merged over the spec's, for a spec published apart from the decompilation (UW2: `tools/asm2c.py`, UW2Decomp's own, relative to `[project] root`).
