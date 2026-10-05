@@ -23,11 +23,11 @@
 #    boot with --no-boot);
 # 9. with --map, the map pipeline into a copy of the map (the files whose inputs are only the
 #    EXE, the listing and the sibling must come out identical).
-# Needs: UW2Decomp at $UW2DECOMP (default ~/UW2Decomp) with its build/ populated for the
+# Needs: UW2Decomp at $UW2DECOMP (default ~/underworld-exhumed/uw2) with its build/ populated for the
 # comparisons, the toolchain and UW2.EXE as in examples/uw2/exhume.toml.
 set -e
 here=$(cd "$(dirname "$0")" && pwd); ex=$(cd "$here/../.." && pwd)
-UW=${UW2DECOMP:-$HOME/UW2Decomp}
+UW=${UW2DECOMP:-$HOME/underworld-exhumed/uw2}
 OUT=${OUT:-$ex/build/uw2}
 case "$OUT/" in "$UW"/*) echo "refusing: OUT is inside $UW"; exit 1;; esac
 export EXHUME_CONFIG="$here/exhume.toml" EXHUME_BUILD="$OUT" EXHUME_SYMBOLS="$OUT/symbols.tsv" EXHUME_MAP="$OUT/map" EXHUME_MATCHED="$OUT/matched.txt"

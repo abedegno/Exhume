@@ -42,13 +42,13 @@
 # handlers (src/port/x86/divfault.c, asm_divfault) and asm2c's overrides ([asm2c] overrides,
 # tools/asm2c.py) come from the snapshot.
 #
-# Needs: UW2Decomp at $UW2DECOMP (default ~/UW2Decomp) with TC/, TASM/, .venv (iced-x86,
+# Needs: UW2Decomp at $UW2DECOMP (default ~/underworld-exhumed/uw2) with TC/, TASM/, .venv (iced-x86,
 # unicorn), node_modules, tools/emu2 and tools/nuked-opl3 in place; your UW2.EXE and game
 # directory (UW2_EXE, UW2_DIR); SDL3 and libmt32emu (brew install sdl3 mt32emu); DOSBox-X for
 # --dos; actionlint for ci.
 set -e
 here=$(cd "$(dirname "$0")" && pwd); ex=$(cd "$here/../.." && pwd)
-UW=${UW2DECOMP:-$HOME/UW2Decomp}
+UW=${UW2DECOMP:-$HOME/underworld-exhumed/uw2}
 OUT=${OUT:-$ex/build/uw2-port}
 case "$OUT/" in "$UW"/*) echo "refusing: OUT is inside $UW"; exit 1;; esac
 PY=${PY:-$ex/.venv/bin/python}

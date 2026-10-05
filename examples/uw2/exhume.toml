@@ -8,7 +8,7 @@
 
 [project]
 name = "UW2"
-root = "${UW2DECOMP:-~/UW2Decomp}"
+root = "${UW2DECOMP:-~/underworld-exhumed/uw2}"
 src = "${EXHUME_SRC:-src}"            # a copy of src/ to build a modded game from (prove.sh)
 targets = "targets"
 symbols = "${EXHUME_SYMBOLS:-symbols.tsv}"
@@ -36,8 +36,8 @@ profile = "borland-tc101"
 # Turbo C++ 1.01's directory (TCC, TLINK, TLIB, the libraries, C0.ASM) and TASM 2.0, as
 # unpacked by profiles/borland-tc101/setup-tc.sh and setup-tasm.sh. Each entry of stage is
 # copied into C:\ for a build: a directory's contents, or a single file.
-home = "${EXHUME_TC:-~/UW2Decomp/TC}"
-stage = ["${EXHUME_TC:-~/UW2Decomp/TC}", "${EXHUME_TASM:-~/UW2Decomp/TASM}/TASM.EXE"]
+home = "${EXHUME_TC:-~/underworld-exhumed/uw2/TC}"
+stage = ["${EXHUME_TC:-~/underworld-exhumed/uw2/TC}", "${EXHUME_TASM:-~/underworld-exhumed/uw2/TASM}/TASM.EXE"]
 c_opts = "-mm -1 -G -O -Z"
 
 [names]

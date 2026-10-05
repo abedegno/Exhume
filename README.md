@@ -48,7 +48,7 @@ python3 ~/Exhume/tools/verify.py src/FILE.C
 python3 ~/Exhume/tools/merge.py src/FILE.C
 ```
 
-Once the whole program matches and links, the gate proves the tree in one command, and is what every later change must pass: copy `tools/templates/Makefile` beside the project's exhume.toml, fill in its `[gate]` section, and run `make check` (or `python3 ~/Exhume/tools/gate.py check`).
+Once the whole program matches and links, the gate proves the tree in one command, and is what every later change must pass: copy `tools/templates/Makefile` beside the project's exhume.toml, fill in its `[gate]` section, and run `make check` (or `python3 ~/Exhume/tools/gate.py check`). A project includes Exhume best as a git submodule (docs/port.md, "Where it is"); the template Makefile finds it at `../exhume`, then `.exhume`, then `~/Exhume`, unless `$EXHUME` names it.
 
 To check the toolkit against UW2 (needs a UW2Decomp checkout, its build, the toolchain and your UW2.EXE): `examples/uw2/prove.sh --map`, and `python3 tools/gate.py check` with `EXHUME_CONFIG=examples/uw2/exhume.toml`; for the port, `sh examples/uw2/prove-port.sh --dos`.
 
