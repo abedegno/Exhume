@@ -277,7 +277,7 @@ ci)
   UW2_ASSETS_AGE_KEY="$K" sh "$B/uw2-ci-assets.sh" "$B/b.age" "$B/out-uw2" | sed "s#$B/out-uw2#DEST#" > "$B/uw2.txt"
   AGE_KEY_ENV=UW2_ASSETS_AGE_KEY UW2_ASSETS_AGE_KEY="$K" sh "$ex/tools/ci-assets.sh" "$B/b.age" "$B/out-ex" \
     --require game/UW2/UW2.EXE --require tc/Disk01.img --require tc/Disk02.img --require tc/Disk03.img --require tc/Disk04.img \
-    --require tasm/Disk01.img --export UW2_EXE=game/UW2/UW2.EXE --export UW2_DIR=game/UW2 --export TC_DISKS=tc --export TASM_DISKS=tasm \
+    --require tasm/Disk01.img --export UW2_EXE=game/UW2/UW2.EXE --export UW2_DIR=game/UW2 --export TC_DISKS=tc --export TASM_DISKS=tasm --export MT32_ROMS=mt32 \
     | sed "s#$B/out-ex#DEST#" > "$B/ex.txt"
   cmp -s "$B/uw2.txt" "$B/ex.txt" && diff -r "$B/out-uw2" "$B/out-ex" > /dev/null \
     && echo "   ci-assets.sh: the same output and tree as UW2Decomp's on a dummy bundle ($(head -1 "$B/ex.txt"))" \

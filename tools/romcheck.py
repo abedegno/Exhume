@@ -63,6 +63,7 @@ def main():
     ap.add_argument('--sound', default='5,1')
     ap.add_argument('--split', help='a folder of split ROM halves only (_a/_b, _h/_l), which must not make a pair')
     a = ap.parse_args()
+    if not os.path.exists(a.exe) and os.path.exists(a.exe + '.exe'): a.exe += '.exe'
     roles = identify(a.roms)
     results = []
 

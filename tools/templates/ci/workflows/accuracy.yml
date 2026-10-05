@@ -36,6 +36,7 @@ jobs:
       # Only pictures and text logs: the difference pictures of a session that differs from its
       # golden, the port's own log of each replay, and this run's output. Never the state dumps,
       # the saved games, objects, EXEs or anything else under build/.
+{{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -105,6 +106,7 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/logs"
           {{verify_windows}} 2>&1 | tee "$RUNNER_TEMP/logs/verify-windows.log"
+{{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -217,6 +219,7 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/logs"
           {{verify}} 2>&1 | tee "$RUNNER_TEMP/logs/verify-macos.log"
+{{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()
         uses: actions/upload-artifact@v4

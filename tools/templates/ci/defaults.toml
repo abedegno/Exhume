@@ -169,3 +169,7 @@ release_name_step = ""
 # extra filters on port.yml's push trigger (for example branches: ['**'], so that a tag push, a
 # release, does not build the port again)
 port_push_branches = ""
+# a step in accuracy's make-test, verify-windows and verify-macos jobs after the sessions, with the
+# bundle's ROMs (MT32_ROMS): how the port finds MT-32 ROMs (tools/romcheck.py) and a session's
+# MT-32 audio against its digest (tools/audiocheck.py); empty: none
+mt32_step = ""
