@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -39,7 +39,7 @@ jobs:
 {{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: make-test-${{ github.run_id }}
           path: |
@@ -65,7 +65,7 @@ jobs:
       # the recordings and scripts must keep their bytes and LF line ends (also .gitattributes)
       - run: git config --global core.autocrlf false
         shell: pwsh
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -92,7 +92,7 @@ jobs:
           deploy-key: ${{ secrets.{{deploy_secret}} }}
           age-key: ${{ secrets.{{age_secret}} }}
       - name: Cache libmt32emu
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: {{libs_dir}}
           key: libs-windows-clang64-${{ hashFiles('{{libs_script}}') }}
@@ -109,7 +109,7 @@ jobs:
 {{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verify-windows-${{ github.run_id }}
           path: |
@@ -137,7 +137,7 @@ jobs:
       # the recordings and scripts must keep their bytes and LF line ends (also .gitattributes)
       - run: git config --global core.autocrlf false
         shell: pwsh
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -164,7 +164,7 @@ jobs:
           deploy-key: ${{ secrets.{{deploy_secret}} }}
           age-key: ${{ secrets.{{age_secret}} }}
       - name: Cache libmt32emu
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: {{libs_dir}}
           key: libs-windows-clang64-${{ hashFiles('{{libs_script}}') }}
@@ -179,7 +179,7 @@ jobs:
           ({{package_check_windows}}) 2>&1 | tee "$RUNNER_TEMP/logs/package-windows.log"
       - name: Upload the difference pictures and logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: package-windows-${{ github.run_id }}
           path: |
@@ -198,7 +198,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -222,7 +222,7 @@ jobs:
 {{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verify-macos-${{ github.run_id }}
           path: |

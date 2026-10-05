@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -29,6 +29,7 @@ jobs:
           age-key: ${{ secrets.{{age_secret}} }}
       - name: {{setup_name}}
         run: {{setup}}
+{{nightly_extra_step}}
       - name: {{test_full}}
         run: |
           set -o pipefail
@@ -71,7 +72,7 @@ jobs:
       # DOS screenshots and may go too; their golden.json files hold only digests.
       - name: Upload the difference pictures and logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: make-test-full-${{ github.run_id }}
           path: |
@@ -85,3 +86,4 @@ jobs:
       - name: Remove the game data and everything built from it
         if: always()
         run: rm -rf "$RUNNER_TEMP/{{tmp_assets}}" "$RUNNER_TEMP/{{tmp_clone}}" "$RUNNER_TEMP/{{tmp_key}}" {{cleanup}}
+{{nightly_extra_jobs}}

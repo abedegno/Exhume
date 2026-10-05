@@ -15,6 +15,20 @@ LINE = re.compile(r'mt32: (?:ROMs (\w+) (.+?) \((\S+), (\S+)\)|no ROMs)')
 WIN = sys.platform == 'win32' or os.environ.get('MSYSTEM')
 
 
+def dll_path(exe, env):
+    """On Windows, a development build finds its DLLs on PATH: the game folder's tools/libs/bin
+    (libmt32emu, built by setup-libs.sh) above the program, as replay.py's port_env adds them."""
+    if os.name != 'nt': return env
+    d = os.path.dirname(os.path.abspath(exe)); extra = []
+    for _ in range(4):
+        for sub in (('tools', 'libs', 'bin'), ('tools', 'libs', 'lib')):
+            p = os.path.join(d, *sub)
+            if os.path.isdir(p): extra.append(p)
+        d = os.path.dirname(d)
+    if extra: env['PATH'] = os.pathsep.join(extra + [env.get('PATH', '')])
+    return env
+
+
 def identify(src):
     """name -> 'cm32l-ctrl' | 'cm32l-pcm' | 'mt32-ctrl' | 'mt32-pcm', by size and the copy's
     role in the case (the port identifies by content; the test only needs to place them)."""
@@ -47,11 +61,11 @@ def run(a, scratch, home, extra=(), env_rom=None):
     if env_rom: env[a.env] = env_rom
     cmd = [a.exe, '--data', a.data, '--home', home, '--hidden', '--no-recording', '--sound', a.sound,
            '--exit-after', '3000'] + list(extra)
-    r = subprocess.run(cmd, env=env, capture_output=True, text=True, errors='replace', timeout=120)
+    r = subprocess.run(cmd, env=dll_path(a.exe, env), capture_output=True, text=True, errors='replace', timeout=120)
     m = None
     for line in (r.stdout + r.stderr).splitlines():
         m = LINE.search(line) or m
-    if not m: return ('?', '', '', '', (r.stdout + r.stderr)[-600:])
+    if not m: return ('?', '', '', '', f'exit {r.returncode & 0xFFFFFFFF:#x}: ' + (r.stdout + r.stderr)[-600:])
     if m.group(1) is None: return ('none', '', '', '', '')
     return (m.group(1), os.path.normpath(m.group(2)), m.group(3), m.group(4), '')
 

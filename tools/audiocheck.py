@@ -19,6 +19,20 @@ def plat():
     return f'{sys.platform}-{m}'
 
 
+def dll_path(exe, env):
+    """On Windows, a development build finds its DLLs on PATH: the game folder's tools/libs/bin
+    (libmt32emu, built by setup-libs.sh) above the program, as replay.py's port_env adds them."""
+    if os.name != 'nt': return env
+    d = os.path.dirname(os.path.abspath(exe)); extra = []
+    for _ in range(4):
+        for sub in (('tools', 'libs', 'bin'), ('tools', 'libs', 'lib')):
+            p = os.path.join(d, *sub)
+            if os.path.isdir(p): extra.append(p)
+        d = os.path.dirname(d)
+    if extra: env['PATH'] = os.pathsep.join(extra + [env.get('PATH', '')])
+    return env
+
+
 def exe_path(p):
     return p + '.exe' if not os.path.exists(p) and os.path.exists(p + '.exe') else p
 
@@ -40,7 +54,7 @@ def main():
                    XDG_DATA_DIRS=os.path.join(work, 'none'), LOCALAPPDATA=os.path.join(work, 'user'), SDL_AUDIODRIVER='dummy')
         cmd = [exe_path(a.exe), '--data', a.data, '--home', home, '--hidden', '--exit-on-halt', '--exit-after', '900000',
                '--replay', a.rec, '--audio-wav', wav, '--mt32-roms', a.roms]
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, errors='replace', timeout=1800)
+        r = subprocess.run(cmd, env=dll_path(exe_path(a.exe), env), capture_output=True, text=True, errors='replace', timeout=1800)
         log = r.stdout + r.stderr
         m = re.search(r'mt32: ROMs \w+ .+? \((\S+), (\S+)\)', log)
         if not m or not m.group(1).startswith(a.want_ctrl):

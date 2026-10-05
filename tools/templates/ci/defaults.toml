@@ -43,7 +43,7 @@ macos_archs_env = "SETUP_MACOS_ARCHS"
 # Exhume's tools need: a step that sets up a newer one (empty for a project with tools of its own)
 release_linux_python = '''
       # Exhume's tools need Python 3.11 or later (tomllib); Ubuntu 22.04 has 3.10
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"'''
 port_release = "make EXHUME=.exhume port-release"
@@ -53,7 +53,7 @@ package_windows = "make EXHUME=.exhume PY=python package"
 
 # Exhume itself: checked out beside the project in every job that builds
 exhume_checkout = '''
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: abedegno/Exhume
           ref: ${{ vars.EXHUME_REF || 'master' }}
@@ -61,7 +61,7 @@ exhume_checkout = '''
           persist-credentials: false'''
 repocheck_env = ""
 repocheck_exhume_checkout = '''
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: abedegno/Exhume
           ref: ${{ vars.EXHUME_REF || 'master' }}
@@ -173,3 +173,18 @@ port_push_branches = ""
 # bundle's ROMs (MT32_ROMS): how the port finds MT-32 ROMs (tools/romcheck.py) and a session's
 # MT-32 audio against its digest (tools/audiocheck.py); empty: none
 mt32_step = ""
+# release.yml: jobs that test the packages the workflow built before the draft is made (a repository's
+# own, from its values), the jobs the draft waits for, and a schedule (the packages built and tested
+# with no draft, between releases); by default none, the three packaging jobs, and no schedule
+release_test_jobs = ""
+draft_needs = "[macos, linux, windows]"
+release_schedule = ""
+# a step in the nightly before make test-full (for example dos-mcp's headless Chrome, for a session
+# whose goldens only js-dos can make); empty: none
+nightly_extra_step = ""
+# more jobs in the nightly (for example the project tested against Exhume's latest master instead of
+# its pinned submodule); empty: none
+nightly_extra_jobs = ""
+# the draft release's notes, as the release action's inputs (default: GitHub's, from the commits);
+# a project can take them from a file release_name_step writes (body_path)
+release_notes = "          generate_release_notes: true"

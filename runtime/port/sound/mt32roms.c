@@ -43,7 +43,7 @@ int mt32roms_available(void)
 static int is_dir(const char *p)
 {
     struct stat st;
-    return p && *p && stat(p, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+    return p && *p && stat(p, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 /* PATH's folder: PATH itself when it is a folder, else the folder of the file it names. */
@@ -98,7 +98,7 @@ int mt32roms_pick(const char *path, char *ctrl, char *pcm, char *ctrl_id, char *
         if (e->d_name[0] == '.') continue;
         snprintf(full, sizeof full, "%s/%s", folder, e->d_name);
         /* ROM images are 32 KB to 1 MB; anything else is not worth reading */
-        if (stat(full, &st) || (st.st_mode & S_IFMT) != S_IFREG || st.st_size < 32768 || st.st_size > 1048576) continue;
+        if (stat(full, &st) || !S_ISREG(st.st_mode) || st.st_size < 32768 || st.st_size > 1048576) continue;
         memset(&ri, 0, sizeof ri);
         if (mt32emu_identify_rom_file(&ri, full, NULL) != MT32EMU_RC_OK) continue;
         if (ri.control_rom_id) {
@@ -125,7 +125,7 @@ int mt32roms_pick(const char *path, char *ctrl, char *pcm, char *ctrl_id, char *
                     mt32emu_rom_info ri;
                     struct stat st;
                     snprintf(full, sizeof full, "%s/%s", folder, e->d_name);
-                    if (e->d_name[0] == '.' || stat(full, &st) || (st.st_mode & S_IFMT) != S_IFREG
+                    if (e->d_name[0] == '.' || stat(full, &st) || !S_ISREG(st.st_mode)
                         || st.st_size < 32768 || st.st_size > 1048576) continue;
                     memset(&ri, 0, sizeof ri);
                     if (mt32emu_identify_rom_file(&ri, full, NULL) == MT32EMU_RC_OK && ri.control_rom_id

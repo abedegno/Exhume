@@ -1,0 +1,48 @@
+# Exhume's own checks, on every push and pull request, with no game data and no secrets: the
+# repository check (script syntax, Markdown links, no executables or game data), every tool
+# compiled, the CI templates rendered for the defaults, the UW2 example and Underworld Exhumed's
+# ci.toml and linted, and every action the templates use at its latest major version
+# (tools/actioncheck.py; Dependabot cannot see the templates). Underworld Exhumed's nightly tests
+# both games against Exhume's latest master (its exhume-master jobs), which needs their bundles.
+name: ci
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '41 5 * * 1'
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: The repository check
+        run: python3 tools/repocheck.py
+      - name: Every tool compiles
+        run: python3 -m py_compile tools/*.py examples/uw2/*.py
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: The CI templates render and lint
+        run: |
+          set -e
+          python3 tools/citemplates.py --vars tools/templates/ci/defaults.toml "$RUNNER_TEMP/defaults" > /dev/null
+          UW2DECOMP=/nonexistent python3 tools/citemplates.py --config examples/uw2/exhume.toml "$RUNNER_TEMP/uw2" > /dev/null
+          curl -fsSL https://raw.githubusercontent.com/abedegno/underworld-exhumed/main/ci.toml -o "$RUNNER_TEMP/ue-ci.toml"
+          python3 tools/citemplates.py --vars "$RUNNER_TEMP/ue-ci.toml" "$RUNNER_TEMP/ue" > /dev/null
+          for d in defaults uw2 ue; do ( cd "$RUNNER_TEMP/$d" && actionlint .github/workflows/*.yml && echo "actionlint: $d clean" ); done
+      - name: The templates' actions are current
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/actioncheck.py

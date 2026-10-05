@@ -9,6 +9,7 @@ on:
         description: notarise the macOS app (as a tag build does), when the Apple secrets are set
         type: boolean
         default: false
+{{release_schedule}}
 permissions:
   contents: read
 concurrency:
@@ -21,7 +22,7 @@ jobs:
     env:
       NOTARISE: ${{ startsWith(github.ref, 'refs/tags/{{tag_prefix}}') || inputs.notarise == true }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -32,7 +33,7 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install pkgconf ninja
       - name: Cache the universal SDL3 and libmt32emu
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: {{libs_dir}}
           key: release-libs-macos-universal-${{ hashFiles('{{libs_script}}') }}
@@ -129,7 +130,7 @@ jobs:
             spctl -a -vvv -t exec "$app"
           fi
           "$app/Contents/MacOS/{{exe}}" --help
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: {{dist_dir}}/{{pkg_name}}-*-macos.zip
@@ -146,7 +147,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -161,7 +162,7 @@ jobs:
 {{release_linux_python}}
       # not port.yml's cache: that SDL3 is built without windows
       - name: Cache SDL3 and libmt32emu
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: {{libs_dir}}
           key: release-libs-linux-ubuntu2204-${{ runner.arch }}-${{ hashFiles('{{libs_script}}') }}
@@ -232,7 +233,7 @@ jobs:
             "type2-runtime-$rt.tar.gz: https://github.com/AppImage/type2-runtime at tag $rt, the AppImage's runtime (static, with libfuse 3), and the scripts that build it" \
             "THIRD-PARTY-NOTICES in each package says how they are built and how to replace them." > README.txt
           cd .. && tar czf ../{{dist_dir}}/third-party-sources.tar.gz third-party-sources
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: |
@@ -251,7 +252,7 @@ jobs:
       # the scripts must keep their LF line ends for MSYS2's sh
       - run: git config --global core.autocrlf false
         shell: pwsh
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 {{checkout_submodules}}
@@ -263,7 +264,7 @@ jobs:
           install: make curl git unzip
           pacboy: clang:p llvm:p pkgconf:p sdl3:p python:p cmake:p ninja:p
       - name: Cache libmt32emu
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: {{libs_dir}}
           key: release-libs-windows-clang64-${{ hashFiles('{{libs_script}}') }}
@@ -287,32 +288,33 @@ jobs:
           # broken pipe then failed the check although the icon was there
           res=$(llvm-readobj --coff-resources {{exe}}.exe)
           case "$res" in *'Type: ICON'*) echo "icon: present" ;; *) echo "::error::{{exe}}.exe has no icon"; exit 1 ;; esac
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: {{dist_dir}}/{{pkg_name}}-*-windows-x86_64.zip
           if-no-files-found: error
 
+{{release_test_jobs}}
   draft:
     if: startsWith(github.ref, 'refs/tags/{{tag_prefix}}')
-    needs: [macos, linux, windows]
+    needs: {{draft_needs}}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - run: ls -l dist
 {{release_name_step}}
       # a draft only: nothing is published until the owner publishes it on GitHub
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
 {{release_name}}
           prerelease: ${{ contains(github.ref_name, '-rc') }}
-          generate_release_notes: true
+{{release_notes}}
           fail_on_unmatched_files: true
           files: |
             dist/{{pkg_name}}-*-macos.zip

@@ -1,0 +1,8 @@
+# The actions Exhume's own workflow uses. The CI templates' actions (tools/templates/ci) are checked
+# by tools/actioncheck.py in that workflow, since Dependabot reads only .github/workflows.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

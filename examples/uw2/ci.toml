@@ -40,7 +40,7 @@ exhume_checkout = '''
         id: exhume
         shell: bash
         run: echo "ref=$(cut -d' ' -f1 tools/exhume-ref)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: abedegno/Exhume
           ref: ${{ steps.exhume.outputs.ref }}

@@ -19,7 +19,7 @@ runs:
         # shellcheck disable=SC2086
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $pkgs >/dev/null
         clang --version | head -1
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v7
       with:
         python-version: "3.12"
         cache: pip
@@ -29,7 +29,7 @@ runs:
       run: |
         python -m venv {{venv}}
         {{venv}}/bin/pip install -q -r {{requirements}}
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: "22"
         cache: npm
@@ -41,17 +41,17 @@ runs:
         PUPPETEER_SKIP_DOWNLOAD: "true"
       run: {{npm_ci}}
     - name: Cache emu2
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: {{emu2_dir}}
         key: emu2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('{{emu2_script}}', '{{emu2_patch}}') }}
     - name: Cache SDL3 and libmt32emu
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: {{libs_dir}}
         key: libs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('{{libs_script}}') }}
     - name: Cache Nuked OPL3
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: {{nuked_dir}}
         key: nuked-opl3-${{ hashFiles('{{sound_script}}') }}
