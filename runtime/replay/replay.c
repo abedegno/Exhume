@@ -53,6 +53,10 @@
    REPLAY.IN, the same), little-endian: RP_MAGIC, version (word, 4; 2 and 3 are read too, and
    differ only in SOUND), 0 (word), the number of hook calls at which the recording stopped (dword, 0
    if it never did); then the chunks.
+   Version 5, the port only: version 4 with, right after the header, one chunk of stream 9
+   (ENH), the enhancements the session was played with, their names comma-separated
+   (runtime/port/sys/enhance.c); the port writes it only when one is on, and the DOS build,
+   which reads versions 2 to 4, never replays it.
      1 TIME     count, then a byte d: the clock is the last run's plus d, or d = FFh and the
                 clock (dword) follows
      2 KEY      count, the key read's result (word), n (byte) and n pairs (offset, byte): the
@@ -149,6 +153,13 @@
 #define STOP_SCAN   RP_STOP_SCAN
 #define CHUNK       200                 /* bytes a stream buffers */
 #define HDR_LEN     12
+
+#ifndef __TURBOC__
+#include "sys/enhance.h"
+#define RP_MAX_VERSION 5                /* the port: 5 is 4 with the enhancements' chunk first */
+#else
+#define RP_MAX_VERSION 4
+#endif
 
 #ifndef __TURBOC__
 /* The port's side (runtime/port): the emulated VGA's memory and registers, Borland's rand
@@ -567,13 +578,23 @@ static void rp_start_on(void)
         log_fd = open("REPLAY.IN", O_RDONLY | O_BINARY);
         if (log_fd >= 0) {
             read(log_fd, bounce, HDR_LEN);
-            if (memcmp(bounce, hdr, 4) || (bounce[4] < 2 || bounce[4] > 4) || bounce[5]) {
+            if (memcmp(bounce, hdr, 4) || (bounce[4] < 2 || bounce[4] > RP_MAX_VERSION) || bounce[5]) {
                 close(log_fd);
                 return;
             }
             rp_version = bounce[4];
             stop_at = bounce[8] | (uint32)bounce[9] << 8 | (uint32)bounce[10] << 16 | (uint32)bounce[11] << 24;
             for (s = 1; s < NSTREAMS; s++) st[s].scan = HDR_LEN;
+#ifndef __TURBOC__
+            if (bounce[4] == 5) {
+                /* skip the enhancements' chunk (stream 9): main applied them before the game
+                   started; the streams start after it, and the rest is version 4's */
+                unsigned char c[3];
+                read(log_fd, c, 3);
+                for (s = 1; s < NSTREAMS; s++) st[s].scan = HDR_LEN + 3 + (c[1] | c[2] << 8);
+                rp_version = 4;
+            }
+#endif
             rp_mode = RP_REPLAY;
         } else if (rp_request == RP_REPLAY)
             return;
@@ -582,6 +603,23 @@ static void rp_start_on(void)
         log_fd = open(RECORD_NAME, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0x180);
         if (log_fd < 0) return;
         rp_mode = RP_RECORD;
+#ifndef __TURBOC__
+        if (enhance_on) {
+            /* format 5: the enhancements the session is played with, as one chunk of stream 9
+               after the header (enhance.c reads it before the game starts) */
+            char names[512], h5[HDR_LEN];
+            unsigned n = (unsigned)strlen(enhance_names(enhance_on, names, sizeof names));
+            unsigned char c[3];
+            memcpy(h5, hdr, HDR_LEN);
+            h5[4] = 5;
+            write(log_fd, h5, HDR_LEN);
+            c[0] = 9;
+            c[1] = (unsigned char)n;
+            c[2] = (unsigned char)(n >> 8);
+            write(log_fd, c, 3);
+            write(log_fd, names, n);
+        } else
+#endif
         write(log_fd, hdr, HDR_LEN);
     }
     if (BLACKBOX) return;
