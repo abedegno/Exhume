@@ -1,7 +1,7 @@
 # Exhume's own checks, on every push and pull request, with no game data and no secrets: the
 # repository check (script syntax, Markdown links, no executables or game data), every tool
 # compiled, the CI templates rendered for the defaults, the UW2 example and Underworld Exhumed's
-# ci.toml and linted, and every action the templates use at its latest major version
+# ci.toml and linted, and every action the templates and those ci.toml files use at its latest major version
 # (tools/actioncheck.py; Dependabot cannot see the templates). Underworld Exhumed's nightly tests
 # both games against Exhume's latest master (its exhume-master jobs), which needs their bundles.
 name: ci
@@ -42,7 +42,7 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/abedegno/underworld-exhumed/main/ci.toml -o "$RUNNER_TEMP/ue-ci.toml"
           python3 tools/citemplates.py --vars "$RUNNER_TEMP/ue-ci.toml" "$RUNNER_TEMP/ue" > /dev/null
           for d in defaults uw2 ue; do ( cd "$RUNNER_TEMP/$d" && actionlint .github/workflows/*.yml && echo "actionlint: $d clean" ); done
-      - name: The templates' actions are current
+      - name: The actions are current (the templates, the UW2 example's and Underworld Exhumed's ci.toml)
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 tools/actioncheck.py
+        run: python3 tools/actioncheck.py examples/uw2/ci.toml "$RUNNER_TEMP/ue-ci.toml"

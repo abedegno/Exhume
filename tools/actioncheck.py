@@ -2,9 +2,11 @@
 major version. Dependabot reads only a repository's own .github/workflows, so it cannot see the
 templates; Exhume's CI runs this instead.
 
-    python3 tools/actioncheck.py [--token TOKEN]
+    python3 tools/actioncheck.py [--token TOKEN] [FILE ...]
 
-Asks GitHub for each action's latest release (anonymously, or with GITHUB_TOKEN / --token for a
+FILE is a project's ci.toml (or any workflow), checked too: a ci.toml can carry its own steps,
+which neither the templates' check nor Dependabot sees (Dependabot reads the rendered workflows,
+and the next render overwrites its changes). Asks GitHub for each action's latest release (anonymously, or with GITHUB_TOKEN / --token for a
 higher rate limit). Exit status 0 when every action is at its latest major version."""
 import json, os, re, sys, urllib.request
 
@@ -12,13 +14,14 @@ here = os.path.dirname(os.path.abspath(__file__))
 USES = re.compile(r'uses:\s*([\w.-]+/[\w.-]+)@v(\d+)')
 
 
-def used():
+def used(extra=()):
+    """action -> {major: [files using it]}, from the templates and the EXTRA files"""
+    files = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(here, 'templates', 'ci'))
+             for f in fs if f.endswith(('.yml', '.toml'))] + list(extra)
     found = {}
-    for d, _, fs in os.walk(os.path.join(here, 'templates', 'ci')):
-        for f in fs:
-            if f.endswith(('.yml', '.toml')):
-                for m in USES.finditer(open(os.path.join(d, f), encoding='utf-8').read()):
-                    found.setdefault(m.group(1), set()).add(int(m.group(2)))
+    for path in files:
+        for m in USES.finditer(open(path, encoding='utf-8').read()):
+            found.setdefault(m.group(1), {}).setdefault(int(m.group(2)), []).append(path)
     return found
 
 
@@ -34,13 +37,17 @@ def latest(action, token):
 
 def main(argv):
     token = argv[argv.index('--token') + 1] if '--token' in argv else os.environ.get('GITHUB_TOKEN')
+    extra = [a for i, a in enumerate(argv) if a != '--token' and (i == 0 or argv[i - 1] != '--token')]
     bad = 0
-    for action, majors in sorted(used().items()):
+    for action, majors in sorted(used(extra).items()):
         major, tag = latest(action, token)
-        mine = max(majors)
-        ok = major is None or (len(majors) == 1 and mine >= major)
+        ok = major is None or (len(majors) == 1 and max(majors) >= major)
         bad += not ok
-        print(f"{'ok  ' if ok else 'OLD '} {action}: templates v{', v'.join(map(str, sorted(majors)))}, latest {tag}")
+        print(f"{'ok  ' if ok else 'OLD '} {action}: v{', v'.join(map(str, sorted(majors)))}, latest {tag}")
+        if not ok:
+            for v in sorted(majors):
+                if major is None or v < major:
+                    for path in sorted(set(majors[v])): print(f'       v{v} in {os.path.relpath(path)}')
     return 1 if bad else 0
 
 
