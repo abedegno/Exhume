@@ -364,11 +364,39 @@ def script():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def coverage():
+    """--enhance perspective's mapper covers exactly the original's pixels: with the project's texture
+    probe (<PORT>_TEXTURE_PROBE: each face drawn in a colour of its own), the screen at every checkpoint
+    of [replay] coverage_session, dumped in full, is the same with the enhancement on and off."""
+    name = R.CFG.raw.get('replay', {}).get('coverage_session')
+    if not name: return
+    import golden as G
+    probe = R.RC.port_name.upper() + '_TEXTURE_PROBE'
+    screens = {}
+    old = {k: os.environ.get(k) for k in ('UWRPFULL', probe)}
+    os.environ['UWRPFULL'] = '0'; os.environ[probe] = '1'
+    try:
+        for on in (True, False):
+            d = tempfile.mkdtemp(prefix='enhcheck-')
+            R.run_port(G.rec_of(name), d, ['--enhance', 'perspective'] if on else [], quiet=True)
+            screens[on] = [ck['secs'].get('VGA ') for ck in R.read_dump(d)]
+            shutil.rmtree(d, ignore_errors=True)
+    finally:
+        for k, v in old.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+    a, b = screens[True], screens[False]
+    bad = [i for i, (x, y) in enumerate(zip(a, b)) if x is None or x != y]
+    check(f'perspective covers the original mappers\' pixels exactly ({name}, {len(b)} checkpoints)',
+          len(a) == len(b) and a and not bad, f'{len(a)} and {len(b)} checkpoints; differ at {bad[:8]}')
+
+
 def main(argv):
     cmd = argv[0] if argv else 'selftest'
     if cmd == 'selftest': selftest()
     elif cmd == 'registry': registry()
     elif cmd == 'script': script()
+    elif cmd == 'coverage': coverage()
     elif cmd == 'presentation': presentation()
     elif cmd == 'baseline': baseline(argv[1:])
     elif cmd == 'all':
@@ -382,7 +410,7 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); script(); presentation(); baseline(['check'])
+            selftest(); registry(); script(); presentation(); coverage(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
