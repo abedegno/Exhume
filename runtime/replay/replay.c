@@ -155,7 +155,7 @@
 #define HDR_LEN     12
 
 #ifndef __TURBOC__
-#include "sys/enhance.h"
+/* enhance_on and enhance_names: sys/enhance.h, through compat.h, which the port force-includes */
 #define RP_MAX_VERSION 5                /* the port: 5 is 4 with the enhancements' chunk first */
 #else
 #define RP_MAX_VERSION 4
