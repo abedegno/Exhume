@@ -49,7 +49,7 @@ def place(roles, where, kinds=('cm32l-ctrl', 'cm32l-pcm'), names=('Control Rom.b
     return where
 
 
-def run(a, scratch, home, extra=(), env_rom=None):
+def run(a, scratch, home, extra=(), env_rom=None, unset=()):
     env = dict(os.environ)
     for k in list(env):
         if k.endswith('_MT32_ROMS'): del env[k]
@@ -59,6 +59,7 @@ def run(a, scratch, home, extra=(), env_rom=None):
                LOCALAPPDATA=os.path.join(fake, 'AppData', 'Local'), APPDATA=os.path.join(fake, 'AppData', 'Roaming'),
                SDL_VIDEODRIVER='offscreen', SDL_AUDIODRIVER='dummy')
     if env_rom: env[a.env] = env_rom
+    for k in unset: env.pop(k, None)
     cmd = [a.exe, '--data', a.data, '--home', home, '--hidden', '--no-recording', '--sound', a.sound,
            '--exit-after', '3000'] + list(extra)
     r = subprocess.run(cmd, env=dll_path(a.exe, env), capture_output=True, text=True, errors='replace', timeout=120)
@@ -81,7 +82,7 @@ def main():
     roles = identify(a.roms)
     results = []
 
-    def case(name, setup, want_src, want_dir=None, want_ctrl=None, env_rom=None, extra_args=()):
+    def case(name, setup, want_src, want_dir=None, want_ctrl=None, env_rom=None, extra_args=(), unset=()):
         scratch = tempfile.mkdtemp(prefix='romcheck-')
         try:
             home = os.path.join(scratch, 'home'); os.makedirs(home)
@@ -89,7 +90,7 @@ def main():
             given = setup(ctx) if setup else None
             extra = list(extra_args)
             if given and given.get('arg'): extra += ['--mt32-roms', given['arg']]
-            src, d, ctrl, pcm, tail = run(a, scratch, home, extra, env_rom=(given or {}).get('env'))
+            src, d, ctrl, pcm, tail = run(a, scratch, home, extra, env_rom=(given or {}).get('env'), unset=unset)
             ok = src == want_src
             if ok and want_dir: ok = os.path.normpath(d).lower() == os.path.normpath(want_dir(ctx)).lower()
             if ok and want_ctrl: ok = ctrl.startswith(want_ctrl)
@@ -103,14 +104,33 @@ def main():
     case('given file (its folder)', lambda c: {'arg': P(place(roles, P(c['scratch'], 'given')), 'pcm image.ROM')}, 'given', lambda c: P(c['scratch'], 'given'), 'ctrl_cm32l')
     case('environment', lambda c: {'env': place(roles, P(c['scratch'], 'env'))}, 'environment', lambda c: P(c['scratch'], 'env'), 'ctrl_cm32l')
 
+    def keep(c, path):
+        with open(P(c['home'], a.env.split('_')[0].lower() + '.cfg'), 'w') as f: f.write(f'mt32-roms={path}\n')
+
     def remembered(c):
-        d = place(roles, P(c['scratch'], 'kept'))
-        with open(P(c['home'], a.env.split('_')[0].lower() + '.cfg'), 'w') as f: f.write(f'mt32-roms={d}\n')
+        keep(c, place(roles, P(c['scratch'], 'kept')))
         return {}
     case('remembered setting', remembered, 'remembered', lambda c: P(c['scratch'], 'kept'), 'ctrl_cm32l')
+
+    def remembered_file(c):
+        keep(c, P(place(roles, P(c['scratch'], 'kept')), 'pcm image.ROM'))
+        return {}
+    case('remembered setting, a file (its folder)', remembered_file, 'remembered', lambda c: P(c['scratch'], 'kept'), 'ctrl_cm32l')
+
+    def remembered_gone(c):
+        keep(c, P(c['scratch'], 'gone'))
+        place(roles, P(c['home'], 'roms'))
+        return {}
+    case('remembered folder gone: the search finds them', remembered_gone, 'found', lambda c: P(c['home'], 'roms'), 'ctrl_cm32l')
+
+    def mistyped(c):
+        place(roles, P(c['scratch'], 'given'))
+        return {'arg': P(c['scratch'], 'given', 'mt23')}
+    case('a mistyped path is not its folder: none', mistyped, 'none')
     case('search: home roms/', lambda c: place(roles, P(c['home'], 'roms')) and {}, 'found', lambda c: P(c['home'], 'roms'), 'ctrl_cm32l')
     case('search: home mt32-roms/', lambda c: place(roles, P(c['home'], 'mt32-roms')) and {}, 'found', lambda c: P(c['home'], 'mt32-roms'), 'ctrl_cm32l')
     if WIN:
+        case('APPDATA is not searched without LOCALAPPDATA: none', lambda c: place(roles, P(c['user'], 'AppData', 'Roaming', 'DOSBox', 'mt32-roms')) and {}, 'none', unset=('LOCALAPPDATA',))
         case('search: DOSBox Staging (Windows)', lambda c: place(roles, P(c['user'], 'AppData', 'Local', 'DOSBox', 'mt32-roms')) and {}, 'found', lambda c: P(c['user'], 'AppData', 'Local', 'DOSBox', 'mt32-roms'), 'ctrl_cm32l')
     elif sys.platform == 'darwin':
         case('search: DOSBox Staging (macOS)', lambda c: place(roles, P(c['user'], 'Library', 'Preferences', 'DOSBox', 'mt32-roms')) and {}, 'found', lambda c: P(c['user'], 'Library', 'Preferences', 'DOSBox', 'mt32-roms'), 'ctrl_cm32l')

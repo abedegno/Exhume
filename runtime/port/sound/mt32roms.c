@@ -46,12 +46,20 @@ static int is_dir(const char *p)
     return p && *p && stat(p, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* PATH's folder: PATH itself when it is a folder, else the folder of the file it names. */
+static int is_file(const char *p)
+{
+    struct stat st;
+    return p && *p && stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* PATH's folder: PATH itself when it is a folder, the folder of the file it names when it is a
+   file. A path to nothing stays as it is, so that a mistyped one finds no ROMs rather than its
+   parent folder's. */
 static void folder_of(const char *path, char *out, size_t n)
 {
     char *s;
     snprintf(out, n, "%s", path);
-    if (is_dir(out)) return;
+    if (is_dir(out) || !is_file(out)) return;
     s = strrchr(out, '/');
 #ifdef _WIN32
     { char *b = strrchr(out, '\\'); if (b && (!s || b > s)) s = b; }
@@ -164,9 +172,8 @@ static int search_dirs(const char *home, const char *data, char list[][1024], in
     if (base && *base) ADD("%s", base);
 #if defined(_WIN32)
     {
-        const char *la = getenv("LOCALAPPDATA"), *ad = getenv("APPDATA");
+        const char *la = getenv("LOCALAPPDATA");
         if (la && *la) ADD("%s/DOSBox/mt32-roms", la);
-        else if (ad && *ad) ADD("%s/DOSBox/mt32-roms", ad);
         ADD("C:/mt32-rom-data");
     }
 #elif defined(__APPLE__)
