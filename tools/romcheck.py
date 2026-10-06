@@ -8,8 +8,10 @@ and reads the port's line `mt32: ROMs SOURCE DIR (CONTROL, PCM)` or `mt32: no RO
 
 PORT is the built port; GAME_DIR the game; DIR holds the ROM images to copy (a CM-32L pair and an
 MT-32 pair, any names); NAME the port's ROM variable (UW2PORT_MT32_ROMS); S the --sound value
-that picks the MT-32 for music (UW2: 5,1; UW1: 6,1); --split a folder of split ROM halves, which
-must never make a pair. Besides each source and the search's folders on this system, the cases
+that picks the MT-32 for music (UW2: 5,1; UW1: 6,1); --split a folder of split ROM halves (Munt's
+names: an MT-32 control ROM's _a and _b, the MT-32 PCM's _l and _h, the CM-32L PCM's _h), which the
+port joins: matching halves make a pair, a half without its partner makes nothing, and the whole
+MT-32 PCM is the CM-32L PCM's low half. Besides each source and the search's folders on this system, the cases
 are a remembered file, a remembered folder that has gone (the search must find the ROMs), a
 mistyped path (none, never its parent folder's) and, on Windows, %APPDATA% (never searched).
 Exit status 0 when every case passes."""
@@ -86,7 +88,7 @@ def main():
     roles = identify(a.roms)
     results = []
 
-    def case(name, setup, want_src, want_dir=None, want_ctrl=None, env_rom=None, extra_args=(), unset=()):
+    def case(name, setup, want_src, want_dir=None, want_ctrl=None, env_rom=None, extra_args=(), unset=(), want_pcm=None):
         scratch = tempfile.mkdtemp(prefix='romcheck-')
         try:
             home = os.path.join(scratch, 'home'); os.makedirs(home)
@@ -98,6 +100,7 @@ def main():
             ok = src == want_src
             if ok and want_dir: ok = os.path.normpath(d).lower() == os.path.normpath(want_dir(ctx)).lower()
             if ok and want_ctrl: ok = ctrl.startswith(want_ctrl)
+            if ok and want_pcm: ok = pcm == want_pcm
             results.append(ok)
             print(f"{'ok  ' if ok else 'FAIL'} {name}: {src} {d} {ctrl} {pcm}".rstrip() + (f'\n     {tail}' if tail and not ok else ''))
         finally:
@@ -165,11 +168,28 @@ def main():
     case('wrong files under the right names: none', wrong, 'none')
     case('no ROMs anywhere: none', None, 'none')
     if a.split:
-        def halves(c):
-            d = P(c['home'], 'roms'); os.makedirs(d)
-            for f in os.listdir(a.split): shutil.copy(P(a.split, f), P(d, f))
+        # the halves by their usual names (Munt's): mt32_ctrl_*_a/_b, mt32_pcm_l/_h, cm32l_pcm_h
+        half = {}
+        for f in sorted(os.listdir(a.split)):
+            n = f.lower()
+            for k in ('ctrl_a', 'ctrl_b', 'mt32_pcm_l', 'mt32_pcm_h', 'cm32l_pcm_h'):
+                if k.startswith('ctrl') and 'ctrl' in n and n.rsplit('.', 1)[0].endswith('_' + k[-1]): half.setdefault(k, P(a.split, f))
+                elif not k.startswith('ctrl') and k in n: half.setdefault(k, P(a.split, f))
+
+        def put(c, kinds, names=None):
+            d = P(c['home'], 'roms'); os.makedirs(d, exist_ok=True)
+            for i, k in enumerate(kinds): shutil.copy(half[k], P(d, (names or {}).get(k, f'part {i}.bin')))
+            return d
+        case('split halves only: joined into an MT-32 pair', lambda c: put(c, ('ctrl_a', 'ctrl_b', 'mt32_pcm_l', 'mt32_pcm_h')) and {},
+             'found', lambda c: P(c['home'], 'roms'), 'ctrl_mt32')
+        case('unmatched halves: none', lambda c: put(c, ('ctrl_a', 'mt32_pcm_l', 'cm32l_pcm_h')) and {}, 'none')
+
+        def cm_from_half(c):
+            d = put(c, ('cm32l_pcm_h',))
+            place(roles, d, ('cm32l-ctrl', 'mt32-pcm'), ('a.rom', 'b.rom'))
             return {}
-        case('split halves only: none', halves, 'none')
+        case('the MT-32 PCM and the CM-32L high half: a CM-32L pair', cm_from_half, 'found', lambda c: P(c['home'], 'roms'), 'ctrl_cm32l')
+        case('the MT-32 PCM and the CM-32L high half: the CM-32L PCM', cm_from_half, 'found', lambda c: P(c['home'], 'roms'), None, want_pcm='pcm_cm32l')
     n = len(results); bad = results.count(False)
     print(f'romcheck: {n - bad} of {n} cases pass')
     return 1 if bad else 0

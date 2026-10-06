@@ -178,28 +178,25 @@ void audio_start(void)
    MT-32 pair of ROM images under any names (mt32roms.c), for the first run's choice of music card. */
 int audio_mt32_roms_present(const char *dir)
 {
-    return mt32roms_pick(dir, NULL, NULL, NULL, NULL, 0, NULL);
+    return mt32roms_pick(dir, NULL);
 }
 
 #ifdef AUDIO_HAVE_MT32EMU
 static void mt_open(void)
 {
     mt32emu_report_handler_i rh;
-    char ctrl[1300], pcm[1300];
+    static struct mt32roms_set set;   /* 5 KB: off the audio thread's stack */
     int roms = 0;
     if (mt) return;
     rh.v0 = NULL;
     mt = mt32emu_create_context(rh, NULL);
     if (!rom_dir) rom_dir = getenv(AUDIO_ROMS_ENV);
-    /* the pair the ROM finder picks in that folder, whatever the files are called */
-    if (rom_dir && mt32roms_pick(rom_dir, ctrl, pcm, NULL, NULL, sizeof ctrl, NULL)) {
-        if (mt32emu_add_rom_file(mt, ctrl) > 0) roms++;
-        if (mt32emu_add_rom_file(mt, pcm) > 0) roms++;
-    }
+    /* the pair the ROM finder picks in that folder, whatever the files are called, halves joined */
+    if (rom_dir && mt32roms_pick(rom_dir, &set)) roms = mt32roms_add(mt, &set);
     mt32emu_set_stereo_output_samplerate(mt, AUDIO_RATE);
     mt_ok = roms >= 2 && mt32emu_open_synth(mt) == MT32EMU_RC_OK;
     if (!mt_ok)
-        fprintf(stderr, PORT_NAME ": no MT-32 or CM-32L ROMs%s%s (--mt32-roms DIR); the MT-32 is silent\n",
+        fprintf(stderr, PORT_NAME ": no MT-32 or CM-32L ROMs%s%s (--mt32-roms PATH); the MT-32 is silent\n",
                 rom_dir ? " in " : "", rom_dir ? rom_dir : "");
 }
 #endif
