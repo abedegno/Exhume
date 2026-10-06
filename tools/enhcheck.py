@@ -190,12 +190,27 @@ def presentation():
         check('presentation: the list was read', port_flags('timing') != [], 'no enhancements listed at all')
         return
     sessions = sorted(f[:-4] for f in os.listdir(R.RC.sessions) if f.endswith('.rec'))
+    # a session replayed from the saved game another writes ([replay] stage_from) runs after it,
+    # with that saved game staged, as verify does
+    order = [n for n in sessions if n not in G.STAGE_FROM] + [n for n in sessions if n in G.STAGE_FROM]
     for flag in flags:
-        for name in sessions:
-            g = G.load_golden(name)
-            if not g: continue
-            diff = state_diff(g['checkpoints'], run_checkpoints(G.rec_of(name), ['--enhance', flag]))
-            check(f"{flag}: {name} keeps DOS's game state", not diff, diff[:3])
+        work = tempfile.mkdtemp(prefix='enhcheck-')
+        try:
+            for name in order:
+                g = G.load_golden(name)
+                if not g: continue
+                d = os.path.join(work, name); os.makedirs(d)
+                stage = None
+                if name in G.STAGE_FROM:
+                    sd = os.path.join(work, G.STAGE_FROM[name])
+                    stage = os.path.join(work, name + '-stage'); os.makedirs(stage)
+                    for x in G.stage_dirs(sd): shutil.copytree(os.path.join(sd, x), os.path.join(stage, x))
+                R.run_port(G.rec_of(name), d, ['--enhance', flag], stage=stage, quiet=True)
+                got = [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
+                diff = state_diff(g['checkpoints'], got)
+                check(f"{flag}: {name} keeps DOS's game state", not diff, diff[:3])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def enh_dir(name): return os.path.join(R.RC.sessions, 'enhanced', name)
