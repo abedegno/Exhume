@@ -1,5 +1,5 @@
 /* A host test of the enhancement registry (runtime/port/sys/enhance.c), not part of any build:
-   cc -I runtime/port -I runtime/port/sys -DPORT_NAME='"test"' runtime/tests/enhance_test.c \
+   cc -I runtime/tests -I runtime/port -I runtime/port/sys runtime/tests/enhance_test.c \
       runtime/port/sys/enhance.c runtime/tests/config_stub.c -o /tmp/enh && /tmp/enh */
 #include <stdio.h>
 #include <string.h>

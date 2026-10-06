@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "enhance.h"
+#include "portgame.h"                 /* PORT_NAME */
 #ifndef PORT_NAME
 #define PORT_NAME "port"
 #endif
