@@ -55,7 +55,7 @@ def place(roles, where, kinds=('cm32l-ctrl', 'cm32l-pcm'), names=('Control Rom.b
     return where
 
 
-def run(a, scratch, home, extra=(), env_rom=None, unset=()):
+def run(a, scratch, home, extra=(), env_rom=None, unset=(), player=False):
     env = dict(os.environ)
     for k in list(env):
         if k.endswith('_MT32_ROMS'): del env[k]
@@ -66,8 +66,9 @@ def run(a, scratch, home, extra=(), env_rom=None, unset=()):
                SDL_VIDEODRIVER='offscreen', SDL_AUDIODRIVER='dummy')
     if env_rom: env[a.env] = env_rom
     for k in unset: env.pop(k, None)
-    cmd = [a.exe, '--data', a.data, '--home', home, '--hidden', '--no-recording', '--sound', a.sound,
-           '--exit-after', '3000'] + list(extra)
+    # a player's run (no --hidden: settings written, the sound card chosen) or a test's
+    cmd = [a.exe, '--data', a.data, '--home', home, '--no-recording', '--exit-after', '3000'] + \
+          ([] if player else ['--hidden', '--sound', a.sound]) + list(extra)
     r = subprocess.run(cmd, env=dll_path(a.exe, env), capture_output=True, text=True, errors='replace', timeout=120)
     m = None
     for line in (r.stdout + r.stderr).splitlines():
@@ -190,6 +191,41 @@ def main():
             return {}
         case('the MT-32 PCM and the CM-32L high half: a CM-32L pair', cm_from_half, 'found', lambda c: P(c['home'], 'roms'), 'ctrl_cm32l')
         case('the MT-32 PCM and the CM-32L high half: the CM-32L PCM', cm_from_half, 'found', lambda c: P(c['home'], 'roms'), None, want_pcm='pcm_cm32l')
+    # the music card in a player's runs: the Sound Blaster (3) on a first run with no ROMs, which
+    # turns into the MT-32 (the --sound value's card) when ROMs turn up later or are given as a bare
+    # argument (a folder dropped on the program's icon); never after the player's own --sound.
+    # Each step: what to put in place first ('home' ROMs in home/roms, 'arg' ROMs given as a bare
+    # argument), the run's own options, and the music card UW.CFG must name after it.
+    mt = a.sound.split(',')[0]
+
+    def music(home):
+        try: return open(P(home, 'DATA', 'UW.CFG'), 'rb').read().split()[0].decode()
+        except OSError: return '-'
+
+    def player_case(name, steps):
+        scratch = tempfile.mkdtemp(prefix='romcheck-')
+        try:
+            home = P(scratch, 'home'); os.makedirs(home)
+            got, want = [], [w for _, _, w in steps]
+            for put, extra, _ in steps:
+                extra = list(extra)
+                if put == 'home': place(roles, P(home, 'roms'))
+                if put == 'arg': extra.append(place(roles, P(scratch, 'dropped')))
+                run(a, scratch, home, extra, player=True)
+                got.append(music(home))
+            ok = got == want
+            results.append(ok)
+            print(f"{'ok  ' if ok else 'FAIL'} {name}: music cards {' '.join(got)}" + ('' if ok else f" (want {' '.join(want)})"))
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    player_case('player: ROMs that turn up later move the music to the MT-32',
+                [(None, (), '3'), ('home', (), mt), (None, (), mt)])
+    player_case("player: the player's own --sound stays",
+                [(None, (), '3'), (None, ('--sound', '3,1'), '3'), ('home', (), '3')])
+    player_case('player: a folder as a bare argument (dropped on the icon)',
+                [(None, ('--sound', '3,1'), '3'), ('arg', (), mt), (None, (), mt)])
+
     n = len(results); bad = results.count(False)
     print(f'romcheck: {n - bad} of {n} cases pass')
     return 1 if bad else 0
