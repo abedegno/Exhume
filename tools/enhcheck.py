@@ -230,10 +230,15 @@ def main(argv):
     elif cmd == 'all':
         d = tempfile.mkdtemp(prefix='enhcheck-')
         rc, out = port(d, '--enhance', 'list'); shutil.rmtree(d, ignore_errors=True)
+        declared = os.path.isdir(os.path.join(R.RC.sessions, 'enhanced'))   # the project has some
         if rc != 0 or 'Enhancements for' not in out:
-            print('enhcheck: the port has no enhancements (no --enhance list): nothing to check')
-            return 0
-        selftest(); registry(); presentation(); baseline(['check'])
+            if not declared:
+                print('enhcheck: the port has no enhancements (no --enhance list, no tests/replay/enhanced): nothing to check')
+                return 0
+            check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
+                  False, f'exit {rc}: {out[-300:]}')
+        else:
+            selftest(); registry(); presentation(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
