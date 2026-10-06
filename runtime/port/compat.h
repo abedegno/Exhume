@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "portgame.h"
+#include "sys/enhance.h"                /* ENHANCED(i): the port's enhancements, all off by default */
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
