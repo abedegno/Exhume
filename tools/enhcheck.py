@@ -296,6 +296,24 @@ def baseline(args):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def png_pixels(data):
+    """The decompressed image data of a PNG's bytes (the port's screenshots: one IDAT stream)."""
+    import zlib
+    i, idat = 8, b''
+    while i + 8 <= len(data):
+        n = struct.unpack('>I', data[i:i + 4])[0]
+        if data[i + 4:i + 8] == b'IDAT': idat += data[i + 8:i + 8 + n]
+        i += 12 + n
+    return zlib.decompress(idat) if idat else b''
+
+
+def differ(a, b):
+    """The fraction of two screenshots' image bytes that differ (1.0 when either is missing)."""
+    a, b = png_pixels(a), png_pixels(b)
+    if not a or len(a) != len(b): return 1.0
+    return sum(1 for x, y in zip(a, b) if x != y) / len(a)
+
+
 def script():
     d = tempfile.mkdtemp(prefix='enhcheck-')
     try:
@@ -305,6 +323,9 @@ def script():
         check('a bad script line stops the run, naming it', rc != 0 and 'bad.script:3' in out, out[-300:])
         rc, out = port(h, '--input-script', os.path.join(d, 'missing.script'))
         check('a missing script stops the run', rc != 0 and 'missing.script' in out, out[-300:])
+        p = os.path.join(d, 'player'); os.makedirs(p)
+        rc, out = port(p, '--enhance', 'skip-intro', '--input-script', os.path.join(d, 'missing.script'), hidden=False)
+        check('a bad script stops a player\'s run before it saves anything', rc != 0 and 'enhance=' not in settings(p), settings(p))
         good = os.path.join(d, 'k.script'); open(good, 'w').write('500 key space\n')
         r = os.path.join(d, 'rec'); os.makedirs(r)
         rc, out = port(r, '--record', '--input-script', good)
@@ -318,11 +339,20 @@ def script():
         for flags in ('skip-intro,wrap-menu', 'skip-intro'):
             w = os.path.join(d, 'w' + str(len(shots))); os.makedirs(w)
             png = os.path.join(d, f'menu{len(shots)}.png')
-            port(w, '--enhance', flags, '--sound', '0,0', '--input-script', m, '--screenshot-after', '5000',
-                 '--screenshot', png, exit_after=5500)
+            port(w, '--enhance', flags, '--sound', '0,0', '--input-script', m, '--screenshot-after', '7000',
+                 '--screenshot', png, exit_after=7500)
             shots.append(open(png, 'rb').read() if os.path.exists(png) else b'')
+        # and positively: the screen is the one end (the last item, directly) gives, taken at 7 s,
+        # after the screen's fade-in (the screenshot's time is the wall clock's, the script's the PIT's);
+        # nearly the same (a colour cycle may be caught at another moment), and unlike no flag's
+        e = os.path.join(d, 'end.script'); open(e, 'w').write('3000 key home\n3300 key end\n3600 key enter\n')
+        w = os.path.join(d, 'wend'); os.makedirs(w); png = os.path.join(d, 'menuend.png')
+        port(w, '--enhance', 'skip-intro', '--sound', '0,0', '--input-script', e, '--screenshot-after', '7000',
+             '--screenshot', png, exit_after=7500)
+        shots.append(open(png, 'rb').read() if os.path.exists(png) else b'')
         check('wrap-menu: up from the first item opens the last, not the first',
-              shots[0] and shots[1] and shots[0] != shots[1], [len(x) for x in shots])
+              differ(shots[0], shots[2]) < 0.10 and differ(shots[0], shots[1]) > 0.50,
+              f'differs from end by {differ(shots[0], shots[2]):.3f}, from no flag by {differ(shots[0], shots[1]):.3f}')
         check('a scripted key reaches the game (the recording holds it)',
               any(v & 0xFF == 0x20 or (v >> 8) == 0x39 for v in keys), [hex(v) for v in keys[:12]])
     finally:
