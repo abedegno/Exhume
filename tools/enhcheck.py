@@ -263,6 +263,18 @@ def script():
         rec = os.path.join(r, 'RECORD.OUT')
         s = R.read_log(rec)[0] if os.path.exists(rec) else {}
         keys = [v for _, v in s.get('KEY', [])]
+        # wrap-menu: from the start menu's first item (home), up then enter opens the last item
+        # where without it the selection stays on the first (the introduction): the screens differ
+        m = os.path.join(d, 'menu.script'); open(m, 'w').write('3000 key home\n3300 key up\n3600 key enter\n')
+        shots = []
+        for flags in ('skip-intro,wrap-menu', 'skip-intro'):
+            w = os.path.join(d, 'w' + str(len(shots))); os.makedirs(w)
+            png = os.path.join(d, f'menu{len(shots)}.png')
+            port(w, '--enhance', flags, '--sound', '0,0', '--input-script', m, '--screenshot-after', '5000',
+                 '--screenshot', png, exit_after=5500)
+            shots.append(open(png, 'rb').read() if os.path.exists(png) else b'')
+        check('wrap-menu: up from the first item opens the last, not the first',
+              shots[0] and shots[1] and shots[0] != shots[1], [len(x) for x in shots])
         check('a scripted key reaches the game (the recording holds it)',
               any(v & 0xFF == 0x20 or (v >> 8) == 0x39 for v in keys), [hex(v) for v in keys[:12]])
     finally:
