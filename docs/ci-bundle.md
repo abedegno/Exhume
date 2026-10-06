@@ -1,10 +1,10 @@
 # CI with private data on free public runners
 
-A decompilation's gate needs the original program and the original toolchain, and a port's accuracy suite needs the game's data; none of them may be published. Exhume's first answer was to run the gate only in a git pre-push hook and give hosted CI only `tools/repocheck.py` (docs/readability.md). This page is the second: run the whole gate and the port's tests on GitHub's free hosted runners, in a public repository, from an encrypted bundle that only the repository's own workflows can open. UW2Decomp has run it this way since its CI commit (`6252fdf`), and skills/ci-bundle is the working order.
+A decompilation's gate needs the original program and the original toolchain, and a port's accuracy suite needs the game's data; none of them may be published. Exhume's first answer was to run the gate only in a git pre-push hook and give hosted CI only `tools/repocheck.py` (docs/readability.md). This page is the second: run the whole gate and the port's tests on GitHub's free hosted runners, in a public repository, from an encrypted bundle that only the repository's own workflows can open. UW2Decomp ran it this way from its CI commit (`6252fdf`), and Underworld Exhumed, where UW1 and UW2 now live together, runs it for both games; skills/ci-bundle is the working order.
 
 ## The pattern
 
-- **A private storage repository** (UW2: `abedegno/uw2-ci-assets`) holds one file, the bundle: an [age](https://age-encryption.org)-encrypted tar.gz of `game/` (the owner's own copy of the program), `tc/` and `tasm/` (the toolchain's disk images), `MANIFEST.txt` and `SHA256SUMS`. Its Actions are disabled, so nothing in it ever runs.
+- **A private storage repository** (UW2: `abedegno/uw2-ci-assets`) holds one file, the bundle: an [age](https://age-encryption.org)-encrypted tar.gz of `game/` (the owner's own copy of the program), `tc/` and `tasm/` (the toolchain's disk images), `MANIFEST.txt` and `SHA256SUMS`; for a port with MT-32 music, also `mt32/` (the owner's CM-32L and MT-32 ROM pairs) and `mt32-split/` (split halves of them, which the port must never take for whole images). Its Actions are disabled, so nothing in it ever runs.
 - **A read-only deploy key** of that repository, its private half a secret of the public repository (`UW2_ASSETS_DEPLOY_KEY`). It can read that one repository and nothing else.
 - **The age secret key**, a second secret (`UW2_ASSETS_AGE_KEY`), and kept by the owner in the macOS Keychain (`security find-generic-password -s uw2-ci-assets-age -w` prints it; piped to `age-keygen -y`, its recipient). Without it the bundle is noise, so a leaked deploy key alone exposes nothing.
 - **A local composite action** (`.github/actions/<name>-assets`) writes the deploy key to `$RUNNER_TEMP` with mode 600, clones the storage repository over SSH trusting only GitHub's published host key, deletes the key, and runs `tools/ci-assets.sh`, which decrypts with the age key on age's standard input (never a file), checks every file against SHA256SUMS, prints only how many passed, and sets the variables the tools read (UW2: `UW2_EXE`, `UW2_DIR`, `TC_DISKS`, `TASM_DISKS`).
@@ -12,25 +12,24 @@ A decompilation's gate needs the original program and the original toolchain, an
 
 ## The workflows
 
-`tools/citemplates.py` writes them from `tools/templates/ci/`, with a project's values from the file exhume.toml's `[ci] vars` names; with examples/uw2/ci.toml they are UW2Decomp's, byte for byte, and both UW2's and the defaults' pass actionlint (examples/uw2/prove-port.sh, `ci`).
+`tools/citemplates.py` writes them from `tools/templates/ci/`, with a project's values from the file exhume.toml's `[ci] vars` names, or from `--vars FILE`. examples/uw2/ci.toml gives a one-game project's set (UW2's before the merge); Underworld Exhumed's `ci.toml` gives one set per game, each workflow named with the game's prefix (`uw1-accuracy.yml`, `uw2-release.yml`), and one `repocheck.yml`. Exhume's own CI (`.github/workflows/ci.yml`) renders the defaults, the UW2 example and Underworld Exhumed's `ci.toml` and lints all three with actionlint, and `tools/actioncheck.py` checks that every action the templates and those `ci.toml` files use is at its latest major version, which Dependabot cannot see (it reads only rendered workflows, and the next render overwrites its changes).
 
 | Workflow | When | What it runs | Needs the bundle |
 | --- | --- | --- | --- |
 | `port.yml` | every push and pull request, forks included | the port's build and compile-only measurement on Ubuntu, macOS and Windows (MSYS2 CLANG64); nothing is run | no |
 | `repocheck.yml` | every push and pull request, forks included | `tools/repocheck.py` | no |
-| `accuracy.yml` | pushes to `main`, pull requests from branches of this repository, and by hand | the toolchain unpacked, then the fast tier: the gate, the port, the quick fuzzing, every session against its golden | yes |
-| `nightly.yml` | a schedule, and by hand | the full tier, with DOSBox-X from Ubuntu making every golden again; fails if a regenerated golden differs from the committed one, and puts the step times and coverage totals in the job summary | yes |
-
-| `release.yml` | a tag `v*`, and by hand | the players' packages for macOS, Linux and Windows (docs/port.md, "Packages for players"); for a tag, a draft release with them and the LGPL libraries' source | no (Apple's secrets, when set, sign and notarise the macOS app) |
+| `accuracy.yml` | pushes to `main`, pull requests from branches of this repository, and by hand | the toolchain unpacked, then the fast tier: the gate, the port, the quick fuzzing, every session against its golden; with `mt32_step`, the MT-32 checks on Linux, macOS and Windows: `tools/romcheck.py` (how the port finds ROMs: each source, their order, the wrong cases, `--split` for the bundle's halves) and `tools/audiocheck.py` (a session's MT-32 audio against a digest per platform) | yes |
+| `nightly.yml` | a schedule, and by hand | the full tier, with DOSBox-X from Ubuntu making every golden again; fails if a regenerated golden differs from the committed one, and keeps the list, the changed screens and the text diff of each changed `golden.json` (`golden-diff.txt`, printed in the log too); puts the step times and coverage totals in the job summary. `nightly_extra_jobs` can add jobs, such as Underworld Exhumed's `make test` against Exhume's latest `master` | yes |
+| `release.yml` | a tag (`release_tags`, such as `uw2-v*`), on `release_schedule` if set, and by hand | the players' packages for macOS, Linux and Windows (docs/port.md, "Packages for players"); with `release_test_jobs`, each package then tested as a player gets it on other systems (`tools/pkgcheck.py`: unpacked, started, every session replayed, MT-32 audio checked); for a tag push only, once every test passes, a draft release with them and the LGPL libraries' source. A scheduled or hand-made run never drafts | no for the build; the test jobs need it (Apple's secrets, when set, sign and notarise the macOS app) |
 
 A pull request from a fork gets `port.yml` and `repocheck.yml` only: GitHub gives a fork's pull request no secrets, and `accuracy.yml` skips itself for one rather than fail.
 
-A project whose bundle is not made yet can keep `accuracy.yml` and `nightly.yml` and have them skipped rather than fail: `job_if`, the condition of accuracy.yml's jobs, and `nightly_if`, a line giving nightly.yml's job one, can require a repository variable (UW1Decomp's: `vars.UW1_CI_ASSETS == 'true'`), which the owner sets once the bundle and its two secrets are in place.
+A project whose bundle is not made yet can keep `accuracy.yml` and `nightly.yml` and have them skipped rather than fail: `job_if`, the condition of accuracy.yml's jobs, and `nightly_if`, a line giving nightly.yml's job one, can require a repository variable (Underworld Exhumed's UW1 jobs used `vars.UW1_CI_ASSETS == 'true'`), which the owner sets once the bundle and its two secrets are in place.
 
 ## The safeguards
 
 - **Nothing decrypted is cached**, nor anything built from it. The caches hold only emu2, the built libraries, Nuked OPL3, and pip's and npm's downloads, each keyed on the script or file that pins it.
-- **Artifacts are pictures and text only**: the difference pictures of a session that differs from its golden, the port's log of each replay, the run's own output, and at night the changed golden screens and the list of changed golden files. Never a state dump, a saved game, an object, an EXE or anything else under `build/`.
+- **Artifacts are pictures and text only**: the difference pictures of a session that differs from its golden, the port's log of each replay, the run's own output, and at night the changed golden screens, the list of changed golden files and the text diff of their `golden.json` (digests only). The release workflow's package tests upload nothing, and the MT-32 checks copy ROMs only into temporary folders they delete, printing only the ROMs' identities. Never a state dump, a saved game, an object, an EXE or anything else under `build/`.
 - **Nothing lists or prints the decrypted tree.** ci-assets.sh reports a count; the tools print only the path of the EXE.
 - **The last step of every job deletes it**, whatever happened before: the decrypted tree, the clone, the key file, the unpacked toolchain and `build/` (`if: always()`). The runner is discarded after the job anyway.
 - **No `pull_request_target`.** The jobs with secrets run on pushes to `main`, on the schedule, by hand, and on pull requests whose branch is in the repository itself, whose authors can already push there. Fork pull requests get no data.
@@ -38,11 +37,11 @@ A project whose bundle is not made yet can keep `accuracy.yml` and `nightly.yml`
 
 ## Making the bundle
 
-Put `game/`, `tc/` (`Disk01.img` to `Disk04.img`), `tasm/` (`Disk01.img`) and a `MANIFEST.txt` in an empty directory, and in it:
+Put `game/`, `tc/` (`Disk01.img` to `Disk04.img`), `tasm/` (`Disk01.img`), for the MT-32 checks `mt32/` and `mt32-split/`, and a `MANIFEST.txt` in an empty directory, and in it (leave out the `mt32` folders a project does not have):
 
 ```sh
-find game tc tasm MANIFEST.txt -type f | sort | xargs shasum -a 256 > SHA256SUMS
-COPYFILE_DISABLE=1 tar --no-xattrs -czf - game tc tasm MANIFEST.txt SHA256SUMS \
+find game tc tasm mt32 mt32-split MANIFEST.txt -type f | sort | xargs shasum -a 256 > SHA256SUMS
+COPYFILE_DISABLE=1 tar --no-xattrs -czf - game tc tasm mt32 mt32-split MANIFEST.txt SHA256SUMS \
   | age -r "$(security find-generic-password -s PROJECT-ci-assets-age -w | age-keygen -y)" -o PROJECT-ci-assets.tar.gz.age
 ```
 

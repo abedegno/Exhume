@@ -12,7 +12,7 @@ once per game, with that game's values, as <wf_prefix>accuracy.yml and so on. Th
 Exhume from a checkout in .exhume, with the Makefile template) overridden by the file exhume.toml's
 [ci] vars names (UW2's: examples/uw2/ci.toml) and by any other [ci] keys.
 
-The templates are the workflows UW2Decomp runs, with what is UW2's as {{name}} variables:
+The templates began as UW2Decomp's workflows, with what was UW2's as {{name}} variables:
 {{name}} in a line is replaced by the value; a line that is only {{name}}, from its first
 column, is replaced by the value's lines (which carry their own indentation), or removed when
 the value is empty. GitHub's own ${{ expr }} has spaces
@@ -21,13 +21,16 @@ and is left alone. A variable with no value stops the tool.
     accuracy    the gate, the port build, the quick fuzzing and every session against its golden,
                 on pushes to main, by hand, and on pull requests from the repository's own branches
     nightly     the long tier on a schedule: goldens made again from DOS, UBSan, the drivers, the
-                deep fuzzing, coverage; fails when a regenerated golden differs
+                deep fuzzing, coverage; fails when a regenerated golden differs, keeping the
+                text diff of each changed golden.json (golden-diff.txt)
     port        the port's build on Linux, macOS and Windows, with no game data and no secrets,
                 on every push and pull request, forks included
     repocheck   tools/repocheck.py on every push and pull request
-    release     the players' packages on a tag v* (tools/package.py), on macOS, Linux and
-                Windows, into a draft release; signed and notarised with Apple's secrets when
-                they are set, ad hoc without them
+    release     the players' packages (tools/package.py) on macOS, Linux and Windows, on a tag
+                (release_tags), a schedule (release_schedule) or by hand; each tested on other
+                systems (release_test_jobs, tools/pkgcheck.py); for a tag push only, a draft
+                release; signed and notarised with Apple's secrets when they are set, ad hoc
+                without them
     linux-tools the Ubuntu packages, Python and Node packages, and the tools built from source,
                 each cached by the script that pins it; nothing cached touches the game
     assets      the private bundle: cloned with a read-only deploy key, decrypted with an age key

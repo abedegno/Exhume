@@ -8,7 +8,11 @@ and reads the port's line `mt32: ROMs SOURCE DIR (CONTROL, PCM)` or `mt32: no RO
 
 PORT is the built port; GAME_DIR the game; DIR holds the ROM images to copy (a CM-32L pair and an
 MT-32 pair, any names); NAME the port's ROM variable (UW2PORT_MT32_ROMS); S the --sound value
-that picks the MT-32 for music (UW2: 5,1; UW1: 6,1). Exit status 0 when every case passes."""
+that picks the MT-32 for music (UW2: 5,1; UW1: 6,1); --split a folder of split ROM halves, which
+must never make a pair. Besides each source and the search's folders on this system, the cases
+are a remembered file, a remembered folder that has gone (the search must find the ROMs), a
+mistyped path (none, never its parent folder's) and, on Windows, %APPDATA% (never searched).
+Exit status 0 when every case passes."""
 import argparse, os, re, shutil, subprocess, sys, tempfile
 
 LINE = re.compile(r'mt32: (?:ROMs (\w+) (.+?) \((\S+), (\S+)\)|no ROMs)')
