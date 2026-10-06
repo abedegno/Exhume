@@ -303,12 +303,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # the checkout (for the changelog's notes) first: a checkout cleans the workspace, so after
+      # the download it would delete the packages
+{{release_name_step}}
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - run: ls -l dist
-{{release_name_step}}
       # a draft only: nothing is published until the owner publishes it on GitHub
       - uses: softprops/action-gh-release@v3
         with:
