@@ -11,8 +11,10 @@ Tracked means committed or not ignored, so a new file is checked before it is ad
 
 - Every tracked .py compiles, every .mjs and .js passes `node --check` (when node is on
   PATH) and every .sh passes `sh -n`.
-- Every relative link in a tracked Markdown file names a file or directory in the repository
-  (links inside code spans and code blocks are ignored; web links are not fetched).
+- Every relative link in a tracked Markdown file names a file or directory in the repository,
+  and its #anchor, when it has one into a Markdown file, names a heading there as GitHub makes
+  them (#L12 line anchors are left alone; links inside code spans and code blocks are ignored;
+  web links are not fetched).
 - Nothing tracked is a binary of the kind a decompilation must never publish: no DOS
   executable, object, library, overlay or disk image by name (BANNED below, plus --ban), and
   no file starting with an MZ header or an OMF record, whatever its name. Game data formats
@@ -47,6 +49,25 @@ def check_code(root, files, problems):
             if r.returncode: problems.append(f'{p}: sh -n: {r.stderr.strip()}')
 
 
+def md_anchors(full, cache={}):
+    """The anchors GitHub gives a Markdown file's headings (lower case, punctuation dropped,
+    spaces to hyphens, -1, -2 ... for repeats), and any <a name> or <a id>."""
+    if full not in cache:
+        found, seen, code = set(), {}, False
+        for line in open(full, encoding='utf-8', errors='replace'):
+            if line.lstrip().startswith('```'): code = not code
+            if code: continue
+            m = re.match(r'#{1,6}\s+(.*?)\s*#*\s*$', line)
+            if m:
+                h = re.sub(r'\]\([^)]*\)', '', re.sub(r'<[^>]+>', '', m.group(1))).lower()
+                a = re.sub(r'[^\w\- ]', '', h).replace(' ', '-')
+                n = seen.get(a, 0); seen[a] = n + 1
+                found.add(a if n == 0 else f'{a}-{n}')
+            found.update(re.findall(r'<a\s+(?:name|id)="([^"]+)"', line))
+        cache[full] = found
+    return cache[full]
+
+
 def check_links(root, files, problems):
     for p in files:
         if not p.lower().endswith('.md'): continue
@@ -54,10 +75,14 @@ def check_links(root, files, problems):
         text = re.sub(r'(?ms)^\s*```.*?^\s*```', '', text)   # code blocks
         text = re.sub(r'`[^`\n]*`', '', text)                 # code spans
         for target in re.findall(r'\]\(([^)\s]+)(?:\s+"[^"]*")?\)', text):
-            if re.match(r'[a-z][a-z0-9+.-]*:', target, re.I) or target.startswith('#'): continue
-            path = target.split('#')[0]
-            if not os.path.exists(os.path.normpath(os.path.join(root, os.path.dirname(p), path))):
+            if re.match(r'[a-z][a-z0-9+.-]*:', target, re.I): continue
+            path, _, anchor = target.partition('#')
+            full = os.path.normpath(os.path.join(root, os.path.dirname(p), path)) if path else os.path.join(root, p)
+            if not os.path.exists(full):
                 problems.append(f'{p}: link to {target}, which does not exist')
+            elif anchor and full.lower().endswith('.md') and not re.fullmatch(r'L\d+(-L\d+)?', anchor) \
+                    and anchor.lower() not in md_anchors(full):
+                problems.append(f'{p}: link to {target}, which has no such heading')
 
 
 def check_payload(root, files, banned, allow, problems):
