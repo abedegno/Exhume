@@ -150,7 +150,12 @@ def info_plist(ver):
          'CFBundleIconFile': K.icon, 'CFBundleIdentifier': K.bundle_id, 'CFBundleInfoDictionaryVersion': '6.0',
          'CFBundleName': K.name, 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': v,
          'CFBundleVersion': v, 'LSApplicationCategoryType': K.category, 'LSMinimumSystemVersion': K.min_macos,
-         'NSHighResolutionCapable': True}
+         'NSHighResolutionCapable': True,
+         # a folder or file may be dropped on the app (the port's drop hook: MT-32 ROMs); never
+         # the default app for anything
+         'CFBundleDocumentTypes': [{'CFBundleTypeName': 'Folder or file', 'CFBundleTypeRole': 'Viewer',
+                                    'LSHandlerRank': 'None',
+                                    'LSItemContentTypes': ['public.folder', 'public.data']}]}
     if K.copyright: d['NSHumanReadableCopyright'] = K.copyright
     return plistlib.dumps(d)
 

@@ -265,6 +265,9 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                 if (hooks->lifecycle) hooks->lifecycle(PLAT_QUIT_REQUEST);
                 quit = 1;
                 break;
+            case SDL_EVENT_DROP_FILE:
+                if (hooks->drop && e.drop.data) hooks->drop(e.drop.data);
+                break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP:
                 if (cfg->mouse_lock && e.key.scancode == SDL_SCANCODE_F10 && (e.key.mod & SDL_KMOD_CTRL)) {

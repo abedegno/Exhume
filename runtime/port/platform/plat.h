@@ -76,6 +76,9 @@ typedef struct PlatHooks {
     void (*key)(uint8_t scancode);
     void (*pointer)(const PlatPointer *ev);
     void (*lifecycle)(int event);
+    /* A file or folder dropped on the window, or, on macOS, on the app's icon (in the Finder or
+       the Dock, before or after it started): its path. May be NULL. */
+    void (*drop)(const char *path);
 } PlatHooks;
 
 /* How the backend presents the screen, and the debug options. */
