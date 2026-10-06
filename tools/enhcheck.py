@@ -13,7 +13,7 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
                                                             baseline check
 
 Exit status 0 when every check passes."""
-import os, sys, struct, tempfile, shutil, subprocess
+import os, sys, json, struct, hashlib, tempfile, shutil, subprocess
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 import replay as R
 
@@ -47,6 +47,20 @@ def selftest():
         check('DOS refuses format 5, saying why', not ok5 and 'skip-intro' in why, why)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+    selftest_presentation()
+
+
+def selftest_presentation():
+    g = [{'ck': [1, 1, 3, 0], 'secs': {'PLYR': 'a', 'VGA': 'x', 'PAL': 'p'}}]
+    check('only the screen differs: passes',
+          state_diff(g, [{'ck': [1, 1, 3, 0], 'secs': {'PLYR': 'a', 'VGA': 'y', 'PAL': 'q'}}]) == [])
+    check('a state section differs: caught',
+          state_diff(g, [{'ck': [1, 1, 3, 0], 'secs': {'PLYR': 'b', 'VGA': 'x', 'PAL': 'p'}}]) == [(0, ['PLYR'])])
+    check('a missing checkpoint: caught', state_diff(g, []) != [])
+    check('a section only one side has: caught',
+          state_diff(g, [{'ck': [1, 1, 3, 0], 'secs': {'PLYR': 'a', 'RAND': 'r'}}]) == [(0, ['RAND'])])
+    check('a checkpoint header differs: caught',
+          state_diff(g, [{'ck': [1, 1, 4, 0], 'secs': {'PLYR': 'a'}}]) == [(0, ['header'])])
 
 
 def port(home, *args, hidden=True):
@@ -118,10 +132,108 @@ def registry():
         shutil.rmtree(d, ignore_errors=True)
 
 
+SCREEN = {'VGA', 'PAL', 'CRTC'}
+
+
+def state_diff(golden_cks, port_cks):
+    """The checkpoints where a section other than the screen's differs: [(i, [sections])].
+    golden_cks: golden.json's checkpoints; port_cks: [{'ck': header, 'secs': canon}]."""
+    if len(golden_cks) != len(port_cks): return [(-1, [f'{len(port_cks)} checkpoints, not {len(golden_cks)}'])]
+    out = []
+    for i, (g, p) in enumerate(zip(golden_cks, port_cks)):
+        if list(g['ck']) != list(p['ck']):
+            out.append((i, ['header'])); continue
+        keys = (set(g['secs']) | set(p['secs'])) - SCREEN
+        bad = sorted(k for k in keys if g['secs'].get(k) != p['secs'].get(k))
+        if bad: out.append((i, bad))
+    return out
+
+
+def run_checkpoints(rec, extra=()):
+    """The port's checkpoints replaying rec: [{'ck': header, 'secs': canon}]."""
+    import golden as G
+    d = tempfile.mkdtemp(prefix='enhcheck-')
+    try:
+        R.run_port(rec, d, list(extra), quiet=True)
+        return [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def port_flags(kind):
+    """The port's enhancements of one kind, from --enhance list."""
+    d = tempfile.mkdtemp(prefix='enhcheck-')
+    try:
+        rc, out = port(d, '--enhance', 'list')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return [l.split()[0] for l in out.splitlines() if l.startswith('  ') and len(l.split()) > 1 and l.split()[1] == kind]
+
+
+def presentation():
+    import golden as G
+    flags = port_flags('presentation')
+    if not flags:
+        print('presentation: the port has no presentation enhancement yet; nothing to replay')
+        check('presentation: the list was read', port_flags('timing') != [], 'no enhancements listed at all')
+        return
+    sessions = sorted(f[:-4] for f in os.listdir(R.RC.sessions) if f.endswith('.rec'))
+    for flag in flags:
+        for name in sessions:
+            g = G.load_golden(name)
+            if not g: continue
+            diff = state_diff(g['checkpoints'], run_checkpoints(G.rec_of(name), ['--enhance', flag]))
+            check(f"{flag}: {name} keeps DOS's game state", not diff, diff[:3])
+
+
+def enh_dir(name): return os.path.join(R.RC.sessions, 'enhanced', name)
+
+
+def sha(path): return hashlib.sha256(open(path, 'rb').read()).hexdigest()
+
+
+def baseline(args):
+    mode = args[0] if args else 'check'
+    root = os.path.join(R.RC.sessions, 'enhanced')
+    names = args[1:] or (sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))) if os.path.isdir(root) else [])
+    for name in names:
+        rec = os.path.join(enh_dir(name), 'session.rec'); gp = os.path.join(enh_dir(name), 'golden.json')
+        if mode == 'make':
+            a, b = run_checkpoints(rec), run_checkpoints(rec)
+            check(f'{name}: the port twice identical', a == b and a, f'{len(a)} and {len(b)} checkpoints')
+            if a != b or not a: continue
+            meta = {'format': 1, 'session': name, 'made_by': 'port',
+                    'note': 'made by the port, not DOS: a regression baseline for an enhancement DOS does not have',
+                    'enhancements': R.read_log(rec)[0].get('ENH', []),
+                    'recording': {'path': os.path.relpath(rec, R.root), 'sha256': sha(rec)}}
+            text = json.dumps(meta, indent=1)
+            lines = [json.dumps(c, separators=(',', ':')) for c in a]
+            text = text[:text.rindex('}')].rstrip() + ',\n "checkpoints": [\n  ' + ',\n  '.join(lines) + '\n ]\n}\n'
+            open(gp, 'w').write(text)
+            print(f'wrote {os.path.relpath(gp, R.root)}: {len(a)} checkpoints')
+        else:
+            g = json.load(open(gp))
+            check(f'{name}: made by the port, labelled so', g.get('made_by') == 'port')
+            check(f'{name}: its recording unchanged', g['recording']['sha256'] == sha(rec))
+            got = run_checkpoints(rec)
+            diff = [i for i, (x, y) in enumerate(zip(g['checkpoints'], got)) if x != y]
+            check(f'{name}: the port as its baseline', len(got) == len(g['checkpoints']) and not diff,
+                  f'{len(got)} checkpoints, not {len(g["checkpoints"])}; differ at {diff[:5]}')
+
+
 def main(argv):
     cmd = argv[0] if argv else 'selftest'
     if cmd == 'selftest': selftest()
     elif cmd == 'registry': registry()
+    elif cmd == 'presentation': presentation()
+    elif cmd == 'baseline': baseline(argv[1:])
+    elif cmd == 'all':
+        d = tempfile.mkdtemp(prefix='enhcheck-')
+        rc, out = port(d, '--enhance', 'list'); shutil.rmtree(d, ignore_errors=True)
+        if rc != 0 or 'Enhancements for' not in out:
+            print('enhcheck: the port has no enhancements (no --enhance list): nothing to check')
+            return 0
+        selftest(); registry(); presentation(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
