@@ -161,12 +161,12 @@ def state_diff(golden_cks, port_cks):
     return out
 
 
-def run_checkpoints(rec, extra=()):
+def run_checkpoints(rec, extra=(), stage=None):
     """The port's checkpoints replaying rec: [{'ck': header, 'secs': canon}]."""
     import golden as G
     d = tempfile.mkdtemp(prefix='enhcheck-')
     try:
-        R.run_port(rec, d, list(extra), quiet=True)
+        R.run_port(rec, d, list(extra), stage=stage, quiet=True)
         return [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -216,6 +216,40 @@ def presentation():
 def enh_dir(name): return os.path.join(R.RC.sessions, 'enhanced', name)
 
 
+def stage_of(name, work):
+    """The saved game an enhanced session starts from: its stage_from file names a session,
+    which is replayed (no enhancements) and its saved game copied into work/stage. None without."""
+    import golden as G
+    sf = os.path.join(enh_dir(name), 'stage_from')
+    if not os.path.exists(sf): return None
+    src = open(sf).read().strip()
+    d = os.path.join(work, 'src'); os.makedirs(d, exist_ok=True)
+    R.run_port(G.rec_of(src), d, [], quiet=True)
+    st = os.path.join(work, 'stage'); os.makedirs(st, exist_ok=True)
+    for x in G.stage_dirs(d): shutil.copytree(os.path.join(d, x), os.path.join(st, x), dirs_exist_ok=True)
+    return st
+
+
+def record_session(name, flags=None):
+    """Records enh_dir(name)/session.rec from its session.script with session.flags (or flags),
+    hidden, starting from its stage; returns the recording's path in a scratch directory."""
+    e = enh_dir(name)
+    flags = flags if flags is not None else open(os.path.join(e, 'session.flags')).read().strip()
+    script_path = os.path.join(e, 'session.script')
+    last = max([int(l.split()[0]) for l in open(script_path) if l.split() and l.split()[0].isdigit()] or [0])
+    work = tempfile.mkdtemp(prefix='enhcheck-')
+    stage = stage_of(name, work)
+    home = os.path.join(work, 'home'); os.makedirs(home)
+    if stage: shutil.copytree(stage, home, dirs_exist_ok=True)
+    data = R.port_data(work)
+    env = R.port_env(); env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+    cmd = [R.port_exe(), R.RC.port_data_flag, data, R.RC.port_home_flag, home, '--hidden', '--no-recording',
+           '--record', '--sound', '0,0', '--input-script', script_path, '--exit-after', str(last + 3000)] + \
+          (['--enhance', flags] if flags else [])
+    subprocess.run(cmd, capture_output=True, env=env, timeout=600)
+    return os.path.join(home, 'RECORD.OUT'), os.path.join(home, *R.RC.cfg_path.replace('\\', '/').split('/')), work
+
+
 def sha(path): return hashlib.sha256(open(path, 'rb').read()).hexdigest()
 
 
@@ -225,8 +259,21 @@ def baseline(args):
     names = args[1:] or (sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))) if os.path.isdir(root) else [])
     for name in names:
         rec = os.path.join(enh_dir(name), 'session.rec'); gp = os.path.join(enh_dir(name), 'golden.json')
-        if mode == 'make':
-            a, b = run_checkpoints(rec), run_checkpoints(rec)
+        work = tempfile.mkdtemp(prefix='enhcheck-')
+        stage = stage_of(name, work)
+        if mode == 'record':
+            r, cfg, w = record_session(name)
+            check(f'{name}: recorded from its script', os.path.exists(r), r)
+            if os.path.exists(r):
+                shutil.copy(r, rec)
+                if os.path.exists(cfg): shutil.copy(cfg, os.path.join(enh_dir(name), 'session.cfg'))
+                print(f'wrote {os.path.relpath(rec, R.root)}')
+            # that the session exercises its flag is shown once by hand when it is made (screenshots
+            # with and without it at the same moment; the commit records it): two recordings of
+            # one script differ in timing anyway, so comparing them would prove nothing
+            shutil.rmtree(w, ignore_errors=True)
+        elif mode == 'make':
+            a, b = run_checkpoints(rec, stage=stage), run_checkpoints(rec, stage=stage)
             check(f'{name}: the port twice identical', a == b and a, f'{len(a)} and {len(b)} checkpoints')
             if a != b or not a: continue
             meta = {'format': 1, 'session': name, 'made_by': 'port',
@@ -242,10 +289,11 @@ def baseline(args):
             g = json.load(open(gp))
             check(f'{name}: made by the port, labelled so', g.get('made_by') == 'port')
             check(f'{name}: its recording unchanged', g['recording']['sha256'] == sha(rec))
-            got = run_checkpoints(rec)
+            got = run_checkpoints(rec, stage=stage)
             diff = [i for i, (x, y) in enumerate(zip(g['checkpoints'], got)) if x != y]
             check(f'{name}: the port as its baseline', len(got) == len(g['checkpoints']) and not diff,
                   f'{len(got)} checkpoints, not {len(g["checkpoints"])}; differ at {diff[:5]}')
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def script():
