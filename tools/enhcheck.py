@@ -88,6 +88,18 @@ def registry():
         check('--enhance list: skip-intro, timing', rc == 0 and 'skip-intro' in out and 'timing' in out, out[-400:])
         rc, out = port(h, '--enhance', 'nope')
         check('an unknown enhancement stops the run, listing the names', rc != 0 and 'skip-intro' in out, out[-400:])
+        rc, out = port(h, '--enhance', 'list')
+        listed = [l.split()[0] for l in out.splitlines() if l.startswith('  ')]
+        # a flag another game has: listed in this game's table with "only", not in --enhance list,
+        # and --enhance NAME stops with "NAME is UW2 only"
+        others = []
+        for name in ('subtitles', 'skill-messages'):
+            if name in listed: continue
+            rc, out = port(h, '--enhance', name)
+            check(f"{name}: another game's, refused as such", rc != 0 and f'{name} is UW2 only' in out, out[-300:])
+            others.append(name)
+        if R.RC.port_name == 'uw1port':
+            check('UW1 lists neither UW2-only flag', others == ['subtitles', 'skill-messages'], (listed, others))
         rc, out = port(h)
         check('none by default: no enhance line', rc == 0 and 'enhance:' not in out, out[-400:])
         rc, out = port(h, '--enhance', 'skip-intro')
