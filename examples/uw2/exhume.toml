@@ -181,6 +181,9 @@ extensions = ["src/port/sound/tvfx.c"]
 vars = "${EXHUME}/examples/uw2/ci.toml"
 
 [replay]
+# the graphics engine's data (seg048 in UW1, seg003 in UW2): the renderer's working memory, which a
+# rendering enhancement changes by design; enhcheck.py presentation ignores it with the screen
+renderer_sections = ["GFX"]
 # The record and replay harness (docs/port.md, "Verifying a port"): tools/replay.py,
 # golden.py, replaydos.mjs. Sessions are tests/replay/NAME.rec (with NAME.cfg for a sound
 # card); goldens tests/replay/golden/NAME. The record and replay code is the runtime's

@@ -59,6 +59,7 @@ def selftest_presentation():
     check('a missing checkpoint: caught', state_diff(g, []) != [])
     check('a section only one side has: caught',
           state_diff(g, [{'ck': [1, 1, 3, 0], 'secs': {'PLYR': 'a', 'RAND': 'r'}}]) == [(0, ['RAND'])])
+    check('the renderer sections are ignored with the screen', SCREEN >= {'VGA', 'PAL', 'CRTC'})
     check('a checkpoint header differs: caught',
           state_diff(g, [{'ck': [1, 1, 4, 0], 'secs': {'PLYR': 'a'}}]) == [(0, ['header'])])
 
@@ -145,6 +146,10 @@ def registry():
 
 
 SCREEN = {'VGA', 'PAL', 'CRTC'}
+# and the sections a project names as its renderer's working memory ([replay] renderer_sections; UW:
+# GFX, the graphics engine's data segment), which a rendering enhancement changes by design; what
+# it did to the game itself shows in the other sections
+SCREEN |= set(R.CFG.raw.get('replay', {}).get('renderer_sections', []))
 
 
 def state_diff(golden_cks, port_cks):
