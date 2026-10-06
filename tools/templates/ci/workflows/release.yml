@@ -296,7 +296,8 @@ jobs:
 
 {{release_test_jobs}}
   draft:
-    if: startsWith(github.ref, 'refs/tags/{{tag_prefix}}')
+    # a tag push only: a run by hand, even with a tag chosen as its ref, makes no release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/{{tag_prefix}}')
     needs: {{draft_needs}}
     runs-on: ubuntu-24.04
     permissions:
