@@ -373,6 +373,7 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                 break;
             }
         }
+        if (hooks->tick) hooks->tick();     /* an input script's events (inscript.c) */
         hooks->scanout(pix, &w, &hgt, pal);
         if (!shot && cfg->screenshot_after_ms > 0 && SDL_GetTicks() - start >= (Uint64)cfg->screenshot_after_ms) {
             shot = 1;

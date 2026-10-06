@@ -79,6 +79,9 @@ typedef struct PlatHooks {
     /* A file or folder dropped on the window, or, on macOS, on the app's icon (in the Finder or
        the Dock, before or after it started): its path. May be NULL. */
     void (*drop)(const char *path);
+    /* Once per pass of the backend's loop, after the events: an input script's (inscript.c).
+       May be NULL. */
+    void (*tick)(void);
 } PlatHooks;
 
 /* How the backend presents the screen, and the debug options. */

@@ -63,13 +63,13 @@ def selftest_presentation():
           state_diff(g, [{'ck': [1, 1, 4, 0], 'secs': {'PLYR': 'a'}}]) == [(0, ['header'])])
 
 
-def port(home, *args, hidden=True):
+def port(home, *args, hidden=True, exit_after=1500):
     """Runs the port briefly in its own home (offscreen, no sound device), returning (exit
     status, output). hidden=False is a player's run: settings read and written."""
     env = R.port_env()
     env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')   # dummy: a player's run gets a window
     cmd = [R.port_exe(), R.RC.port_data_flag, R.DATA, R.RC.port_home_flag, home, '--no-recording',
-           '--exit-after', '1500'] + (['--hidden'] if hidden else []) + list(args)
+           '--exit-after', str(exit_after)] + (['--hidden'] if hidden else []) + list(args)
     r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=env, timeout=180)
     return r.returncode, r.stdout + r.stderr
 
@@ -248,10 +248,32 @@ def baseline(args):
                   f'{len(got)} checkpoints, not {len(g["checkpoints"])}; differ at {diff[:5]}')
 
 
+def script():
+    d = tempfile.mkdtemp(prefix='enhcheck-')
+    try:
+        h = os.path.join(d, 'home'); os.makedirs(h)
+        bad = os.path.join(d, 'bad.script'); open(bad, 'w').write('# x\n100 key F1\n200 jump 3\n')
+        rc, out = port(h, '--input-script', bad)
+        check('a bad script line stops the run, naming it', rc != 0 and 'bad.script:3' in out, out[-300:])
+        rc, out = port(h, '--input-script', os.path.join(d, 'missing.script'))
+        check('a missing script stops the run', rc != 0 and 'missing.script' in out, out[-300:])
+        good = os.path.join(d, 'k.script'); open(good, 'w').write('500 key space\n')
+        r = os.path.join(d, 'rec'); os.makedirs(r)
+        rc, out = port(r, '--record', '--input-script', good)
+        rec = os.path.join(r, 'RECORD.OUT')
+        s = R.read_log(rec)[0] if os.path.exists(rec) else {}
+        keys = [v for _, v in s.get('KEY', [])]
+        check('a scripted key reaches the game (the recording holds it)',
+              any(v & 0xFF == 0x20 or (v >> 8) == 0x39 for v in keys), [hex(v) for v in keys[:12]])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main(argv):
     cmd = argv[0] if argv else 'selftest'
     if cmd == 'selftest': selftest()
     elif cmd == 'registry': registry()
+    elif cmd == 'script': script()
     elif cmd == 'presentation': presentation()
     elif cmd == 'baseline': baseline(argv[1:])
     elif cmd == 'all':
@@ -265,7 +287,7 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); presentation(); baseline(['check'])
+            selftest(); registry(); script(); presentation(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
