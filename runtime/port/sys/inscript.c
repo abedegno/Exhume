@@ -4,6 +4,7 @@
        T down NAME       press          T up NAME     release
        T move X Y        the pointer to X, Y of the game's 320 by 200 screen
        T click X Y left|right
+       T mdown X Y left|right    press a button there    T mup X Y left|right   release it
        T look DX DY      relative motion, as a captured mouse gives (mouse-look), DX right and
                          DY down in host pixels, -1000..1000
    '#' starts a comment. Keys go in as PC set-1 scan codes through the hook real keys use, and
@@ -22,7 +23,7 @@
 uint32_t pit_bios_ticks(void);
 uint32_t pit_paused_ms(void);
 
-enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK };
+enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP };
 struct ev { uint32_t ms; int kind, code, x, y, button; };
 static struct ev *evs;
 static int nev, next;
@@ -90,12 +91,12 @@ int inscript_load(const char *path, void (*key)(uint8_t), void (*pointer)(const 
         if (!strcmp(word, "key") || !strcmp(word, "down") || !strcmp(word, "up")) {
             e.kind = word[0] == 'k' ? EV_KEY : word[0] == 'd' ? EV_DOWN : EV_UP;
             if (n < 3 || (e.code = key_code(arg)) < 0) return bad(f, path, line, "no such key");
-        } else if (!strcmp(word, "move") || !strcmp(word, "click")) {
-            e.kind = word[0] == 'm' ? EV_MOVE : EV_CLICK;
+        } else if (!strcmp(word, "move") || !strcmp(word, "click") || !strcmp(word, "mdown") || !strcmp(word, "mup")) {
+            e.kind = !strcmp(word, "move") ? EV_MOVE : !strcmp(word, "click") ? EV_CLICK : !strcmp(word, "mdown") ? EV_MDOWN : EV_MUP;
             btn[0] = 0;
             if (sscanf(buf, "%lu %31s %d %d %15s", &ms, word, &e.x, &e.y, btn) < 4
                 || e.x < 0 || e.x > 319 || e.y < 0 || e.y > 199
-                || (e.kind == EV_CLICK && strcmp(btn, "left") && strcmp(btn, "right")))
+                || (e.kind != EV_MOVE && strcmp(btn, "left") && strcmp(btn, "right")))
                 return bad(f, path, line, "a position 0..319 0..199 (and for a click, left or right)");
             e.button = !strcmp(btn, "right") ? PLAT_BUTTON_RIGHT : PLAT_BUTTON_LEFT;
         } else if (!strcmp(word, "look")) {
@@ -159,6 +160,8 @@ void inscript_tick(void)
         case EV_UP: send_key(e->code, 0); break;
         case EV_MOVE: send_ptr(PLAT_POINTER_MOVE, e, 0); break;
         case EV_LOOK: send_look(e); break;
+        case EV_MDOWN: send_ptr(PLAT_POINTER_MOVE, e, 0); send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button); break;
+        case EV_MUP: send_ptr(PLAT_POINTER_UP, e, 0); break;
         case EV_CLICK:
             send_ptr(PLAT_POINTER_MOVE, e, 0);
             send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button);

@@ -24,6 +24,8 @@ static const PlatHooks *hooks;
 static PlatConfig live;                /* the options as they stand: plat_set_display and plat_set_mouse_lock change it */
 static SDL_Window *g_win;
 static int locked, captured, cursor_hidden;   /* the pointer lock option's capture, mouse-look's, the host's cursor hidden */
+static unsigned buttons;                       /* the buttons the game saw go down */
+static float last_x, last_y;                   /* where the game's pointer last was */
 static int was_open, rel_restore, scaled_up;   /* scaled_up: the window was doubled for the screen (scale 1) */
 static uint8_t held[256];              /* the keys the game saw go down (a set-1 code, +128 after E0) */
 static SDL_AtomicInt game_done;
@@ -146,6 +148,19 @@ static void sync_open(void)
         }
         if (g_win && rel_restore) SDL_SetWindowRelativeMouseMode(g_win, true);
         rel_restore = 0;
+        /* a button held when it opened was let go over the screen: the game gets the release */
+        for (i = 0; i < 3; i++)
+            if ((buttons & (1u << i)) && hooks->pointer) {
+                PlatPointer p;
+                memset(&p, 0, sizeof p);
+                buttons &= ~(1u << i);
+                p.type = PLAT_POINTER_UP;
+                p.x = last_x; p.y = last_y;
+                p.button = 1u << i;
+                p.buttons = buttons;
+                p.absolute = !locked && !captured;
+                hooks->pointer(&p);
+            }
         for (i = 0; i < 256; i++)
             if (held[i] && hooks->key) {
                 if (i >= 128) hooks->key(0xE0);
@@ -251,6 +266,24 @@ void plat_key_byte(uint8_t b)
     handle_key((SDL_Scancode)sc, !(b & 0x80), 0);
 }
 
+void plat_pointer_event(const PlatPointer *ev)
+{
+    PlatPointer p;
+    if (!hooks || !hooks->pointer) return;
+    p = *ev;
+    if (settings_open()) {
+        settings_pointer((int)(p.x * SET_W / 320), (int)(p.y * SET_H / 200),
+                         p.type != PLAT_POINTER_UP && (p.buttons & PLAT_BUTTON_LEFT));
+        sync_open();
+        return;
+    }
+    if (p.type == PLAT_POINTER_DOWN) buttons |= p.button;
+    else if (p.type == PLAT_POINTER_UP) buttons &= ~p.button;
+    p.buttons = buttons;
+    if (p.absolute) { last_x = p.x; last_y = p.y; }
+    hooks->pointer(&p);
+}
+
 void plat_set_display(int fullscreen, int scale, int aspect, int integer_scale)
 {
     live.fullscreen = fullscreen;
@@ -271,6 +304,9 @@ void plat_set_mouse_lock(int on)
     if (!on && locked) {
         SDL_SetWindowRelativeMouseMode(g_win, false);
         locked = 0;
+        /* a screen open now would give the capture back on closing, with no lock to release it by:
+           only mouse-look's own capture may still be wanted then */
+        if (!captured) rel_restore = 0;
     }
     if (on) {
         SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "1");
@@ -362,7 +398,7 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
     static uint32_t layer[SET_W * SET_H];
     const PlatConfig *cfg = &live;
     int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg0->scale > 0 ? cfg0->scale : 3;
-    unsigned buttons = 0, swallow = 0;
+    unsigned swallow = 0;
     int hidden_win = 0, vsync = 0, left_down = 0;
     Uint64 frame_ns = 0, last_present = 0, pace_from = 0;
     unsigned presents = 0, paced = 0, hidden_passes = 0;
@@ -508,6 +544,7 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
                 p.y = (y - dst.y) * (float)hgt / dst.h;
                 p.buttons = buttons;
                 p.absolute = !locked && !captured;
+                last_x = p.x; last_y = p.y;
                 if (!locked && !captured) {
                     /* the game's cursor stands in for the host's over the picture */
                     int over = x >= dst.x && x < dst.x + dst.w && y >= dst.y && y < dst.y + dst.h;

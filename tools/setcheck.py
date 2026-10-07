@@ -5,6 +5,7 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] f11      F11 shows the layer (its title's gold)
     python3 tools/setcheck.py [--config PATH] pause    the game's clock stops while it is open
     python3 tools/setcheck.py [--config PATH] held     a key held when it opens is let go when it closes
+    python3 tools/setcheck.py [--config PATH] heldbutton  a mouse button held when it opens is let go when it closes
     python3 tools/setcheck.py [--config PATH] volume   volume=50 halves what the device plays
     python3 tools/setcheck.py [--config PATH] scale    scale, aspect in the file; --scale overrides
     python3 tools/setcheck.py [--config PATH] all      all of these
@@ -159,6 +160,28 @@ def held():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def heldbutton():
+    """A mouse button held when the screen opens and let go inside it: the game must get the release
+    when it closes. Observed in the recording's BUTTONS stream (what the game read of the buttons):
+    the last value it read is 0, and the hold did reach it (a read of 2, the right button)."""
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        stage_of('mouse-look', work)
+        stage_run.stage = os.path.join(work, 'stage')
+        at = '160 60 right'
+        res = {}
+        for name, lines in (('through', [f'9000 mdown {at}', '9500 key f11', f'10000 mup {at}', '10500 key f11']),
+                            ('plain', [f'9000 mdown {at}', f'9500 mup {at}'])):
+            h, out = stage_run(work, 'b-' + name, lines, 14000, ['--record'])
+            rec = os.path.join(h, 'RECORD.OUT')
+            res[name] = [v for _, v in R.read_log(rec)[0].get('BUTTONS', [])] if os.path.exists(rec) else []
+        for name, vals in res.items():
+            check(f'held button ({name}): the hold reached the game, and the last read is 0 (let go)',
+                  2 in vals and vals[-1] == 0, f'last {vals[-3:]}')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def rms(path, limit=100000):
     """The RMS of the first LIMIT samples of a raw 16-bit file. Only the start is the same in two
     runs: the replay runs faster than the device plays, so once the ring is full what is dropped
@@ -233,8 +256,8 @@ def scale():
 def main(argv):
     cmd = argv[0] if argv else 'all'
     if cmd == 'all':
-        f11(); pause(); held(); volume(); scale()
-    elif cmd in ('f11', 'pause', 'held', 'volume', 'scale'):
+        f11(); pause(); held(); heldbutton(); volume(); scale()
+    elif cmd in ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale'):
         globals()[cmd]()
     else: sys.exit(__doc__)
     n = len(E.results); bad = E.results.count(False)

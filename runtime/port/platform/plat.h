@@ -130,6 +130,11 @@ void plat_set_mouse_lock(int on);
    Main thread, from PlatHooks.tick. */
 void plat_key_byte(uint8_t scancode);
 
+/* The same for a pointer event that did not come from the host's pointer (an input script):
+   the settings screen has it while it is open, else the game's PlatHooks.pointer, with the
+   backend's own record of the buttons held. Main thread, from PlatHooks.tick. */
+void plat_pointer_event(const PlatPointer *ev);
+
 /* Time: a monotonic high-resolution counter and its rate, and a precise sleep. */
 uint64_t plat_counter(void);
 uint64_t plat_counter_hz(void);
