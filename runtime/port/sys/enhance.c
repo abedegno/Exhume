@@ -24,6 +24,16 @@ void enhance_init(const struct enhance_flag *table, int n, const char *game)
     game_name = game ? game : "";
 }
 
+int enhance_count(void)
+{
+    return ntab;
+}
+
+const struct enhance_flag *enhance_flag(int i)
+{
+    return i >= 0 && i < ntab ? &tab[i] : NULL;
+}
+
 int enhance_index(const char *name)
 {
     int i;
