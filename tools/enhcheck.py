@@ -479,10 +479,17 @@ def looking():
     try:
         stage = stage_of('mouse-look', work)
         shots = {}
-        for name, flags, toggle in (('on', 'skip-intro,mouse-look', 1), ('untoggled', 'skip-intro,mouse-look', 0),
-                                    ('inverted', 'skip-intro,mouse-look,invert-look', 1)):
+        # look-speed (the settings file's) is clamped to 10..400: 0 turns as 10 does, 100000 as 400
+        for name, flags, toggle, speed in (('on', 'skip-intro,mouse-look', 1, None),
+                                           ('untoggled', 'skip-intro,mouse-look', 0, None),
+                                           ('inverted', 'skip-intro,mouse-look,invert-look', 1, None),
+                                           ('speed0', 'skip-intro,mouse-look', 1, '0'), ('speed10', 'skip-intro,mouse-look', 1, '10'),
+                                           ('speedhuge', 'skip-intro,mouse-look', 1, '100000'),
+                                           ('speed400', 'skip-intro,mouse-look', 1, '400')):
             h = os.path.join(work, name)
             shutil.copytree(stage, h) if stage else os.makedirs(h)
+            if speed is not None:
+                open(os.path.join(h, R.RC.port_name + '.cfg'), 'a').write(f'look-speed={speed}\n')
             sp = os.path.join(work, name + '.script')
             open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ('9000 key grave\n' if toggle else '') +
                                 '9500 look 200 0\n10000 look 0 -40\n')
@@ -495,6 +502,10 @@ def looking():
               differ(shots['on'], shots['untoggled']) > 0.15, f'differs by {differ(shots["on"], shots["untoggled"]):.3f}')
         check('invert-look: the same motion pitches the view the other way',
               differ(shots['on'], shots['inverted']) > 0.15, f'differs by {differ(shots["on"], shots["inverted"]):.3f}')
+        lo, hi = differ(shots['speed0'], shots['speed10']), differ(shots['speedhuge'], shots['speed400'])
+        check('mouse-look: look-speed is clamped to 10..400 (0 turns as 10, 100000 as 400, and 10 unlike 400)',
+              lo < 0.05 and hi < 0.05 and differ(shots['speed10'], shots['speed400']) > 0.15,
+              f'0 against 10 {lo:.3f}, 100000 against 400 {hi:.3f}, 10 against 400 {differ(shots["speed10"], shots["speed400"]):.3f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
