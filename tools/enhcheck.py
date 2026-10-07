@@ -567,7 +567,8 @@ def keys():
         check('modern-keys: S on the map shows the next level (its label at least)', differ(m1, m2) > differ(m1, m1b),
               f'from the first level {differ(m1, m2):.4f}, a repeat {differ(m1, m1b):.4f}')
         mz = shot('m-zz', mk, ['9000 key z', '10000 key z'])
-        check('modern-keys: Z on the map does nothing (bound for the view only)', differ(m1, mz) <= differ(m1, m1b),
+        # (UW2's map screen itself varies between runs, by about 0.034: half as much again allowed)
+        check('modern-keys: Z on the map does nothing (bound for the view only)', differ(m1, mz) <= differ(m1, m1b) * 1.5 + 0.001,
               f'from the map {differ(m1, mz):.4f}, a repeat {differ(m1, m1b):.4f}')
         if R.RC.port_name == 'uw2port':                 # UW2's worlds: D the previous, A the next
             md = shot('m-zd', mk, ['9000 key z', '10000 key d'])
@@ -582,6 +583,19 @@ def keys():
         sp, semi, f5 = shot('f-space', mk, fight('space'), 11000), shot('f-semi', mk, fight(';'), 11000), shot('f-none', mk, fight(None), 11000)
         check('modern-keys: Space swings as ; does (slash, the first time)', differ(sp, f5) > 0.002 and differ(sp, semi) < differ(sp, f5),
               f'from fight mode alone {differ(sp, f5):.4f}, from ; {differ(sp, semi):.4f}')
+        # rune-keys: the staged player has no runes (both games), so every rune key is refused and
+        # leaves the screen as it was; that a rune the player has goes on the shelf was shown once by
+        # hand with the runes granted (the commit says so). Ctrl and Alt together hold movement.
+        rk = 'skip-intro,rune-keys'
+        chord = lambda keys: ['9000 down ctrl', '9050 down alt'] + [f'{9100 + 200 * i} key {k}' for i, k in enumerate(keys)] + \
+                             [f'{9200 + 200 * len(keys)} up alt', f'{9250 + 200 * len(keys)} up ctrl']
+        base = shot('r-none', rk, chord([]))
+        base2 = shot('r-none2', rk, chord(['f12']))                # a key nothing binds: the repeat noise
+        got = shot('r-lack', rk, chord(['a', 'b', 'c']))
+        check('rune-keys: runes the player lacks are refused (the screen as it was)', differ(got, base) <= differ(base, base2),
+              f'{differ(got, base):.4f}, a repeat {differ(base, base2):.4f}')
+        got = shot('r-ctrlaltw', rk, ['9000 down ctrl', '9050 down alt', '9100 down w', '10500 up w', '10600 up alt', '10650 up ctrl'])
+        check('rune-keys: Ctrl+Alt+W does not move', differ(got, base) <= max(differ(base, base2), 0.01), f'{differ(got, base):.4f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
