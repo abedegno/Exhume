@@ -21,6 +21,14 @@ static const struct setting T[] = {
 static const struct enhance_flag F[] = { { "skip-intro", "Starts at the main menu", ENH_TIMING, NULL, NULL } };
 static int fails;
 #define CHECK(c, m) do { if (!(c)) { printf("FAIL %s\n", m); fails++; } else printf("ok   %s\n", m); } while (0)
+static int get_bad(void) { return -1; }
+static int get_big(void) { return 150; }
+static int get_two(void) { return 2; }
+static const struct setting G[] = {
+    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL },
+    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL },
+    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL },
+};
 int main(void)
 {
     static uint32_t px[SET_W * SET_H];
@@ -48,6 +56,12 @@ int main(void)
     settings_key(SET_KEY_ESC);
     CHECK(!settings_open(), "Esc closes");
     CHECK(!settings_draw(px), "nothing drawn when closed");
+    settings_init("h", G, 3, "Test");                            /* get() results are validated like file text */
+    CHECK(settings_value(0) == 1, "a cycle get() of -1 reads as the default");
+    CHECK(settings_value(1) == 100, "a slider get() above hi reads as hi");
+    CHECK(settings_value(2) == 1, "a bool get() of 2 reads as the default");
+    settings_show(1);
+    CHECK(settings_draw(px), "and draws");
     printf("%d failed\n", fails);
     return fails != 0;
 }

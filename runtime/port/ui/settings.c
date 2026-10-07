@@ -93,7 +93,14 @@ static int load_value(int r)
     char text[PATH_MAX_LEN];
     int v, i;
     if (enh_bit[r] >= 0) return (int)(pending_enh >> enh_bit[r] & 1u);
-    if (s->get) return s->get();
+    if (s->get) {
+        v = s->get();
+        switch (s->kind) {
+        case SET_CYCLE: return v >= 0 && v < count_names(s) ? v : s->def;
+        case SET_BOOL:  return v == 0 || v == 1 ? v : s->def;
+        default:        return clamp(v, s->lo, s->hi);
+        }
+    }
     if (!s->key || port_config_get(home_dir, s->key, text, sizeof text) != 0) return s->def;
     switch (s->kind) {
     case SET_CYCLE:
