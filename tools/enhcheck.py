@@ -549,6 +549,39 @@ def keys():
         osw = shot('o-shift-w', 'skip-intro', ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
         check("modern-keys: Shift+W is no longer the original's step move", differ(sw, osw) > 0.15,
               f'from the original Shift+W {differ(sw, osw):.3f}')
+        # the new actions: each changes the screen where the same key without the flag does not
+        # (the map most of it, a panel a tenth, a few lines of text in the scroll 0.4% to 2%;
+        # the same script twice gives the same screen here, measured)
+        for key, what, least in (('z', 'opens the map', 0.10), ('r', 'flips to the rune bag', 0.02),
+                                 ('f', 'flips to the character panel', 0.02), ('up', 'pitches the view', 0.02),
+                                 ('g', 'clicks the compass (its lines in the scroll)', 0.002),
+                                 ('h', 'clicks the flasks (their lines in the scroll)', 0.002),
+                                 ('q', 'looks at what is under the cursor (a line in the scroll)', 0.002)):
+            on = shot('a-' + key, mk, [f'9000 key {key}'])
+            off = shot('o1-' + key, 'skip-intro', [f'9000 key {key}'])
+            check(f'modern-keys: {key} {what}', differ(on, off) > least,
+                  f'from the flag off {differ(on, off):.4f} (at least {least})')
+        m1 = shot('m-z', mk, ['9000 key z'])
+        m1b = shot('m-z2', mk, ['9000 key z', '10000 key 4'])        # a key the map ignores
+        m2 = shot('m-zs', mk, ['9000 key z', '10000 key s'])
+        check('modern-keys: S on the map shows the next level (its label at least)', differ(m1, m2) > differ(m1, m1b),
+              f'from the first level {differ(m1, m2):.4f}, a repeat {differ(m1, m1b):.4f}')
+        mz = shot('m-zz', mk, ['9000 key z', '10000 key z'])
+        check('modern-keys: Z on the map does nothing (bound for the view only)', differ(m1, mz) <= differ(m1, m1b),
+              f'from the map {differ(m1, mz):.4f}, a repeat {differ(m1, m1b):.4f}')
+        if R.RC.port_name == 'uw2port':                 # UW2's worlds: D the previous, A the next
+            md = shot('m-zd', mk, ['9000 key z', '10000 key d'])
+            ma = shot('m-za', mk, ['9000 key z', '10000 key a'])
+            check('modern-keys: D and A on the map show the previous and next world', differ(m1, md) > differ(m1, m1b)
+                  and differ(m1, ma) > differ(m1, m1b) and differ(md, ma) > 0,    # unvisited worlds: only the gem's lit facet tells them apart
+                  f'D {differ(m1, md):.4f}, A {differ(m1, ma):.4f}, D against A {differ(md, ma):.4f}, a repeat {differ(m1, m1b):.4f}')
+        # the attack keys act in fight mode (the icon of deal_with_icons' mode 1: F5 in UW1, F1 in
+        # UW2); Space is the last type, slash at first: as ;
+        fk = {'uw2port': 'f1'}.get(R.RC.port_name, 'f5')
+        fight = lambda k: [f'9000 key {fk}'] + ([f'9500 down {k}', f'10500 up {k}'] if k else [])
+        sp, semi, f5 = shot('f-space', mk, fight('space'), 11000), shot('f-semi', mk, fight(';'), 11000), shot('f-none', mk, fight(None), 11000)
+        check('modern-keys: Space swings as ; does (slash, the first time)', differ(sp, f5) > 0.002 and differ(sp, semi) < differ(sp, f5),
+              f'from fight mode alone {differ(sp, f5):.4f}, from ; {differ(sp, semi):.4f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
