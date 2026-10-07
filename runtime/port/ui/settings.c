@@ -245,6 +245,10 @@ void settings_init(const char *home, const struct setting *table, int n, const c
 int settings_open(void) { return shown; }
 void settings_show(int on) { shown = on != 0; drag_row = -1; }
 int settings_value(int row) { return row >= 0 && row < nrows ? value[row] : 0; }
+void settings_set_value(int row, int v)
+{
+    if (row >= 0 && row < nrows) value[row] = v;
+}
 
 /* ---- the tabs and their rows ---- */
 

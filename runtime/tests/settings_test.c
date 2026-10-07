@@ -15,8 +15,8 @@ static void apply_vol(int v) { applied = v; }
 static const char *const cards[] = { "None", "Sound Blaster", "MT-32", NULL };
 static const char *const cards_stored[] = { "0", "3", "6", NULL };
 static const struct setting T[] = {
-    { SET_TAB_SOUND, "Music", SET_CYCLE, "music-test", cards, cards_stored, 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Volume", SET_SLIDER, "volume", NULL, NULL, 0, 100, 10, 100, 0, apply_vol, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Music", SET_CYCLE, "music-test", cards, cards_stored, 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Volume", SET_SLIDER, "volume", NULL, NULL, 0, 100, 10, 100, 0, apply_vol, NULL, NULL, NULL, NULL },
 };
 static const struct enhance_flag F[] = { { "skip-intro", "Starts at the main menu", ENH_TIMING, NULL, NULL } };
 static int fails;
@@ -25,9 +25,9 @@ static int get_bad(void) { return -1; }
 static int get_big(void) { return 150; }
 static int get_two(void) { return 2; }
 static const struct setting G[] = {
-    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL },
-    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL },
-    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL },
+    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL, NULL },
 };
 int main(void)
 {
@@ -38,6 +38,9 @@ int main(void)
     port_config_set("h", "volume", "abc");                       /* a bad value: the default */
     settings_init("h", T, 2, "Test");
     CHECK(settings_value(1) == 100, "a bad volume reads as the default");
+    settings_set_value(1, 40);
+    CHECK(settings_value(1) == 40, "settings_set_value sets the current value");
+    settings_set_value(1, 100);
     settings_show(1);
     CHECK(settings_open(), "shown");
     CHECK(settings_draw(px), "drawn while shown");

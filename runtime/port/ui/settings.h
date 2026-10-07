@@ -37,7 +37,8 @@ void settings_show(int on);
 void settings_key(int key);         /* SET_KEY_* */
 void settings_pointer(int x, int y, int down);   /* in the layer's 640x400 pixels */
 int  settings_draw(uint32_t *rgba); /* 640*400 pixels; 0 when not shown */
-int  settings_value(int row);       /* the row's current value (index, 0/1, slider value) */
+int  settings_value(int row);
+void settings_set_value(int row, int value);   /* the row's current value only: nothing is written or applied */       /* the row's current value (index, 0/1, slider value) */
 void settings_folder_chosen(const char *path);   /* the async folder picker's answer */
 extern int (*settings_pick_folder)(void);        /* set by the backend: start the picker */
 #define SET_W 640

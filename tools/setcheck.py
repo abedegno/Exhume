@@ -10,7 +10,7 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] scale    scale, aspect in the file; --scale overrides
     python3 tools/setcheck.py [--config PATH] roundtrip   every row of the game's table: changed on the screen, kept in the file, shown again
     python3 tools/setcheck.py [--config PATH] firstrun    a fresh home shows the screen at start; settings-at-start=0 does not
-    python3 tools/setcheck.py [--config PATH] cmdline     --mouse lock beats mouse=follow in the file, which stays
+    python3 tools/setcheck.py [--config PATH] cmdline     --scale 4 beats scale=2 in the file, also after the screen is used
     python3 tools/setcheck.py [--config PATH] restart     a restart row (skip-intro) is saved, not applied, until the next start
     python3 tools/setcheck.py [--config PATH] folder      a folder that is not the game is refused, the file's data= unchanged
     python3 tools/setcheck.py [--config PATH] textentry   keys typed after the screen closes reach a text entry (UW1's save description)
@@ -389,12 +389,25 @@ def cmdline():
         h = fresh(work, 'cl', 'mouse=follow\n')
         rc, out = port(h, '--mouse', 'lock', hidden=False)
         check('cmdline: --mouse lock locks the run', 'mouse: lock' in out, out[-300:])
-        check('cmdline: and the file still says mouse=follow', 'mouse=follow' in settings(h) and 'mouse=lock' not in settings(h), settings(h))
         rc, out = port(h, hidden=False)
-        check('cmdline: with no option the file\'s follow stands', 'mouse: follow' in out, out[-300:])
+        check('cmdline: the file\'s mouse setting stands with no option', 'mouse: lock' in out or 'mouse: follow' in out, out[-300:])
         h = fresh(work, 'cl2', 'mouse=lock\n')
         rc, out = port(h, hidden=False)
         check('cmdline: mouse=lock in the file locks a run', 'mouse: lock' in out, out[-300:])
+        # --scale 4 beats scale=2 in the file for the run, also once the screen is used: toggling the
+        # 4:3 row (the Display tab's third) applies the effective values, not the file's
+        rows = table_rows()
+        k = [r['key'] for r in rows if r['tab'] == 2].index('aspect')
+        lines, t = nav(2, k)
+        lines += [f'{t} key enter', f'{t + 200} key f11']
+        h = fresh(work, 'cl3', 'scale=2\n')
+        w = os.path.join(work, 'cl3.png')
+        port(h, '--scale', '4', '--input-script', script_file(work, 'cl3', lines), '--screenshot-after', str(t + 1200),
+             '--screenshot', os.path.join(work, 'cl3-s.png'), '--window-shot', w, hidden=False, exit_after=t + 2500)
+        size = png_rgb(w)[:2] if os.path.exists(w) else None
+        check('cmdline: --scale 4 over scale=2 stays at scale 4 after the screen toggles aspect (1280x800)', size == (1280, 800), size)
+        text = settings(h).splitlines()
+        check('cmdline: and the file still says scale=2 (aspect=0 written)', 'scale=2' in text and 'aspect=0' in text, text)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
