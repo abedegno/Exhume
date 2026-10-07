@@ -120,6 +120,7 @@ unsigned char *port_frame_alloc(void);
    game GOG's installers recorded in the registry, its product id, title and folder, until fn
    returns non-zero, and returns that, or 0. */
 int port_find_game(const char *home, char *out, size_t outsz);
+int port_game_dir_ok(const char *dir);   /* 0 when DIR itself holds the game's build (sys/gamedir.c) */
 int port_game_in(const char *dir, const char *home, char *out, size_t outsz);
 const char *port_game_refused(void);
 int port_config_get(const char *home, const char *key, char *out, size_t outsz);

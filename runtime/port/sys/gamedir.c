@@ -129,6 +129,12 @@ static int game_dir_ok(const char *dir)
     return r;
 }
 
+/* The settings screen's check of a folder it was given: 0 when it holds the game's build. */
+int port_game_dir_ok(const char *dir)
+{
+    return game_dir_ok(dir);
+}
+
 /* ISO 9660, as much of it as GOG's CD images need: the primary volume descriptor, directory
    records and single-extent files. Names are compared without the ";1" version and case. */
 static uint32_t le32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }

@@ -23,6 +23,7 @@ struct setting {
     int (*get)(void);               /* optional: the value from elsewhere (UW.CFG) */
     void (*put)(int value);         /* optional: the value to elsewhere */
     int (*check)(const char *path); /* SET_FOLDER: 0 to accept a folder, else refuse */
+    const char *refuse;             /* SET_FOLDER: what the screen says of a refused folder (NULL: a general line) */
 };
 
 enum { SET_KEY_UP, SET_KEY_DOWN, SET_KEY_LEFT, SET_KEY_RIGHT, SET_KEY_TAB, SET_KEY_ENTER,

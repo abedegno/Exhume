@@ -58,6 +58,7 @@ static int shown;
 static int pick_row = -1;                 /* the folder row waiting for the picker */
 static int drag_row = -1;                 /* the slider being dragged */
 static int was_down;
+static char notice[96];                   /* a line under the rows: why a folder was refused */
 
 static uint32_t rgb(uint32_t c)
 {
@@ -177,7 +178,10 @@ static void change(int r, int dir)
         value[r] = clamp(value[r] + dir * step, s->lo, s->hi);
         break;
     default:                            /* SET_FOLDER: the answer comes through settings_folder_chosen */
-        if (settings_pick_folder) {
+        if (getenv("PORT_FOLDER_ANSWER")) {     /* a test's answer in place of the dialog */
+            pick_row = r;
+            settings_folder_chosen(getenv("PORT_FOLDER_ANSWER"));
+        } else if (settings_pick_folder) {
             pick_row = r;
             settings_pick_folder();
         }
@@ -191,7 +195,13 @@ void settings_folder_chosen(const char *p)
     int r = pick_row;
     pick_row = -1;
     if (r < 0 || !p) return;
-    if (rows[r].check && rows[r].check(p) != 0) return;
+    if (rows[r].check && rows[r].check(p) != 0) {
+        snprintf(notice, sizeof notice, "%s", rows[r].refuse ? rows[r].refuse : "That folder is not right for this");
+        fprintf(stderr, "settings: %s refused: %s (%s)\n", rows[r].label, p, notice);
+        return;
+    }
+    notice[0] = 0;
+    fprintf(stderr, "settings: %s accepted: %s\n", rows[r].label, p);
     snprintf(path[r], sizeof path[r], "%s", p);
     commit(r);
 }
@@ -223,6 +233,7 @@ void settings_init(const char *home, const struct setting *table, int n, const c
         enh_bit[nrows++] = i;
     }
     for (i = 0; i < nrows; i++) value[i] = load_value(i);
+    notice[0] = 0;
     cur_tab = SET_TAB_SOUND;
     sel = 0;
     top = 0;
@@ -274,6 +285,7 @@ void settings_key(int key)
     int n = tab_count(cur_tab);
     int r = sel >= 0 ? tab_row(cur_tab, sel) : -1;
     if (!shown) return;
+    notice[0] = 0;
     switch (key) {
     case SET_KEY_UP:
         sel = sel < 0 ? n - 1 : sel - 1;      /* the tab bar is one stop in the wrap */
@@ -320,6 +332,7 @@ void settings_pointer(int x, int y, int down)
     int press = down && !was_down;
     was_down = down;
     if (!shown) return;
+    if (press) notice[0] = 0;
     if (!down) {
         drag_row = -1;
         return;
@@ -457,6 +470,7 @@ int settings_draw(uint32_t *px)
     }
     if (top > 0) text(px, SET_W - 28, ROW_Y - 18, rgb(C_DIM), "^", -1);
     if (top + VISIBLE < n) text(px, SET_W - 28, ROW_Y + ROW_H * VISIBLE, rgb(C_DIM), "v", -1);
+    if (notice[0]) text(px, LABEL_X, FOOT_Y - 24, rgb(C_SELECT), notice, 76);
     text(px, LABEL_X, FOOT_Y, rgb(C_DIM), "F11 opens this at any time \xC2\xB7 Esc closes", -1);
     return 1;
 }

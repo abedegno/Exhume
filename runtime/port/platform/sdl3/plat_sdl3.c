@@ -300,6 +300,7 @@ static void mouse_title(SDL_Window *w, const PlatConfig *cfg, int locked);
 void plat_set_mouse_lock(int on)
 {
     live.mouse_lock = on != 0;
+    fprintf(stderr, PLAT_NAME ": mouse: %s\n", on ? "lock" : "follow");
     if (!g_win) return;
     if (!on && locked) {
         SDL_SetWindowRelativeMouseMode(g_win, false);
@@ -410,6 +411,7 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
 
     hooks = h;
     live = *cfg0;
+    fprintf(stderr, PLAT_NAME ": mouse: %s\n", live.mouse_lock ? "lock" : "follow");
     settings_pick_folder = start_pick;
     if (cfg->hidden) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     /* a captured pointer moves the game's cursor as fast as it moved the host's */

@@ -8,13 +8,19 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] heldbutton  a mouse button held when it opens is let go when it closes
     python3 tools/setcheck.py [--config PATH] volume   volume=50 halves what the device plays
     python3 tools/setcheck.py [--config PATH] scale    scale, aspect in the file; --scale overrides
+    python3 tools/setcheck.py [--config PATH] roundtrip   every row of the game's table: changed on the screen, kept in the file, shown again
+    python3 tools/setcheck.py [--config PATH] firstrun    a fresh home shows the screen at start; settings-at-start=0 does not
+    python3 tools/setcheck.py [--config PATH] cmdline     --mouse lock beats mouse=follow in the file, which stays
+    python3 tools/setcheck.py [--config PATH] restart     a restart row (skip-intro) is saved, not applied, until the next start
+    python3 tools/setcheck.py [--config PATH] folder      a folder that is not the game is refused, the file's data= unchanged
+    python3 tools/setcheck.py [--config PATH] textentry   keys typed after the screen closes reach a text entry (UW1's save description)
     python3 tools/setcheck.py [--config PATH] all      all of these
 
 Exit status 0 when every check passes."""
 import os, sys, struct, hashlib, tempfile, shutil, subprocess, zlib, math
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 import enhcheck as E
-from enhcheck import check, port, stage_of, differ
+from enhcheck import check, port, stage_of, differ, settings
 import replay as R
 
 GOLD = (0xF2, 0xC6, 0x6D)       # settings.c's C_SELECT, the title's colour
@@ -58,9 +64,12 @@ def script_file(work, name, lines):
     return p
 
 
-def fresh(work, name, text=''):
+def fresh(work, name, text='', start=False):
+    """A new home. A player's run shows the screen at start unless the file says settings-at-start=0,
+    so it does, as the other checks open it with F11 themselves; START=True leaves that to the game."""
     h = os.path.join(work, name)
     shutil.rmtree(h, ignore_errors=True); os.makedirs(h)
+    if not start: write_cfg(h, 'settings-at-start=0\n')
     if text: write_cfg(h, text)
     return h
 
@@ -253,11 +262,225 @@ def scale():
         shutil.rmtree(work, ignore_errors=True)
 
 
+TABS = 5    # settings.h's SET_TABS; the rows' tab numbers are its enum (sound, controls, display, enhancements, game)
+CYCLE, BOOL, SLIDER, FOLDER = range(4)
+
+
+def table_rows():
+    """The game's table as `--settings-list` prints it: one row a line, tab-separated: tab, kind, key
+    (- for none: the sound cards, kept in DATA\\UW.CFG), label, def, lo, hi, step, names, stored (| between)."""
+    d = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        rc, out = port(os.path.join(d, 'h'), '--settings-list')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    rows = []
+    for l in out.splitlines():
+        f = l.split('\t')
+        if len(f) == 10:
+            rows.append(dict(tab=int(f[0]), kind=int(f[1]), key=f[2], label=f[3], d=int(f[4]), lo=int(f[5]), hi=int(f[6]),
+                             step=int(f[7]), names=f[8].split('|') if f[8] else [], stored=f[9].split('|') if f[9] else []))
+    return rows
+
+
+def nav(tab, k, t0=500, dt=100):
+    """Script lines: F11, Tab to the tab, Down to its K-th row; returns the lines and the next time."""
+    lines = [f'{t0} key f11']; t = t0
+    for _ in range(tab): t += dt; lines.append(f'{t} key tab')
+    for _ in range(k): t += dt; lines.append(f'{t} key down')
+    return lines, t + dt
+
+
+def cfg_file(home): return os.path.join(home, *R.RC.cfg_path.replace('\\', '/').split('/'))
+
+
+def card_cfg(home, music, speech):
+    """DATA\\UW.CFG as the game's installer writes it (the first two lines are the cards)."""
+    p = cfg_file(home); os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, 'w', newline='').write(f'{music} -1 -1 -1 sound\r\n{speech} -1 -1 -1 speech\r\n0 cuts\r\n')
+
+
+def roundtrip():
+    rows = table_rows()
+    check('the table lists rows in all of the tabs but the generated one', {r['tab'] for r in rows} >= {0, 1, 2, 4}, [r['label'] for r in rows])
+    cards = [r for r in rows if r['key'] == '-']
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        def start_home(name):
+            h = fresh(work, name)
+            if cards: card_cfg(h, *[c['stored'][c['d']] for c in cards[:2]])
+            return h
+        seen = {}
+        seen_noise = False
+        for r in rows:
+            k = seen.get(r['tab'], 0); seen[r['tab']] = k + 1      # its place in its tab, folder rows counted
+            if r['kind'] == FOLDER: continue
+            label = r['label']
+            if r['key'] == 'settings-at-start': r['d'] = 0      # start_home's file turns it off, so that is where it starts
+            lines, t = nav(r['tab'], k)
+            if r['kind'] == SLIDER:
+                up = r['d'] + r['step'] <= r['hi']
+                want = r['d'] + r['step'] if up else r['d'] - r['step']
+                lines.append(f'{t} key {"right" if up else "left"}')
+            else:
+                n = len(r['names']) or 2
+                want = (r['d'] + 1) % n if r['kind'] == CYCLE else 1 - r['d']
+                lines.append(f'{t} key enter')
+            lines.append(f'{t + 200} key f11')
+            h = start_home('rt-' + label.replace(' ', '_'))
+            rc, out = port(h, '--input-script', script_file(work, 'rt', lines), hidden=False, exit_after=t + 1800)
+            if r['key'] == '-':
+                which = cards.index(r)
+                text = open(cfg_file(h)).read().splitlines() if os.path.exists(cfg_file(h)) else []
+                got = text[which].split()[0] if len(text) > which else None
+                ok, expect = got == r['stored'][want], r['stored'][want]
+            else:
+                if r['kind'] == CYCLE: expect = r['stored'][want] if r['stored'] else str(want)
+                else: expect = str(want)
+                ok, got = f"{r['key']}={expect}" in settings(h).splitlines(), None
+            check(f'roundtrip {label}: changed on the screen, the file holds {expect}', ok, (got, settings(h), out[-200:]))
+            # a second run with that file: the row's value text is drawn, and differs from the default's
+            lines2, t2 = nav(r['tab'], k)
+            shots = {}
+            same = [('again', start_home('rt1-' + label.replace(' ', '_')))] if not seen_noise else []
+            seen_noise = True
+            for name, home in (('changed', h), ('default', start_home('rt0-' + label.replace(' ', '_')))) + tuple(same):
+                if name == 'changed':
+                    h2 = os.path.join(work, 'rt2'); shutil.rmtree(h2, ignore_errors=True); shutil.copytree(h, h2); home = h2
+                w = os.path.join(work, f'rt-{name}.png')
+                if os.path.exists(w): os.remove(w)
+                port(home, '--input-script', script_file(work, 'rt2', lines2), '--screenshot-after', str(t2 + 800),
+                     '--screenshot', os.path.join(work, 'rt-s.png'), '--window-shot', w, hidden=False, exit_after=t2 + 2000)
+                shots[name] = open(w, 'rb').read() if os.path.exists(w) else b''
+            if 'again' in shots:
+                check('roundtrip: the check can tell (two shots of the same state are identical)', shots['again'] and differ(shots['again'], shots['default']) == 0,
+                      f"{differ(shots['again'], shots['default']):.5f}")
+            d = differ(shots['changed'], shots['default'])
+            check(f'roundtrip {label}: the saved value shows on the screen (differs from the default\'s)', shots['changed'] and d > 0, f'{d:.5f}')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def firstrun():
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        for name, start, want in (('first', True, True), ('off', False, False)):
+            h = fresh(work, name, start=start)
+            w = os.path.join(work, name + '.png')
+            port(h, '--screenshot-after', '1500', '--screenshot', os.path.join(work, name + '-s.png'), '--window-shot', w,
+                 hidden=False, exit_after=3000)
+            n = gold_pixels(w) if os.path.exists(w) else -1
+            check(f'first run: {"a fresh home shows the screen with no key pressed" if want else "settings-at-start=0 does not"}',
+                  n >= 20 if want else n == 0, n)
+        # a player turns it off in the screen, and the next start does not show it
+        h = fresh(work, 'toggle', start=True)
+        lines, t = nav(4, 2, t0=1000)       # Game tab, "Show this at start": the screen is open already, so F11 would close it
+        lines = lines[1:]                    # no F11 first
+        lines.append(f'{t} key enter'); lines.append(f'{t + 200} key f11')
+        port(h, '--input-script', script_file(work, 'toggle', lines), hidden=False, exit_after=t + 1500)
+        check('first run: turning "Show this at start" off in the screen is kept', 'settings-at-start=0' in settings(h), settings(h))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def cmdline():
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        h = fresh(work, 'cl', 'mouse=follow\n')
+        rc, out = port(h, '--mouse', 'lock', hidden=False)
+        check('cmdline: --mouse lock locks the run', 'mouse: lock' in out, out[-300:])
+        check('cmdline: and the file still says mouse=follow', 'mouse=follow' in settings(h) and 'mouse=lock' not in settings(h), settings(h))
+        rc, out = port(h, hidden=False)
+        check('cmdline: with no option the file\'s follow stands', 'mouse: follow' in out, out[-300:])
+        h = fresh(work, 'cl2', 'mouse=lock\n')
+        rc, out = port(h, hidden=False)
+        check('cmdline: mouse=lock in the file locks a run', 'mouse: lock' in out, out[-300:])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def enh_names():
+    d = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        rc, out = port(os.path.join(d, 'h'), '--enhance', 'list')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return [l.split()[0] for l in out.splitlines() if l.startswith('  ')]
+
+
+def restart():
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        names = enh_names()
+        k = names.index('skip-intro')
+        lines, t = nav(3, k)
+        lines += [f'{t} key enter', f'{t + 200} key f11']
+        h = fresh(work, 'rs')
+        rc, out = port(h, '--input-script', script_file(work, 'rs', lines), hidden=False, exit_after=t + 1800)
+        check('restart: skip-intro turned on in the screen does not apply in that run (no enhance: line)', 'enhance:' not in out, out[-300:])
+        check('restart: and the file says enhance=skip-intro', 'enhance=skip-intro' in settings(h), settings(h))
+        rc, out = port(h, hidden=False)
+        check('restart: the next start logs enhance: skip-intro', 'enhance: skip-intro' in out, out[-300:])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def folder():
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        empty = os.path.join(work, 'empty'); os.makedirs(empty)
+        want = 'data=' + os.path.abspath(R.DATA)
+        lines, t = nav(4, 0)
+        lines.append(f'{t} key enter')
+        res = {}
+        for name, ans in (('refused', empty), ('control', ''), ('accepted', os.path.abspath(R.DATA))):
+            h = fresh(work, 'f-' + name, want + '\n')
+            w = os.path.join(work, name + '.png')
+            if ans: os.environ['PORT_FOLDER_ANSWER'] = ans
+            try:
+                # the control never presses Enter on the row (without an answer set it would open the real dialog)
+                rc, out = port(h, '--input-script', script_file(work, 'folder', lines if ans else lines[:-1]), '--screenshot-after', str(t + 800),
+                               '--screenshot', os.path.join(work, 'f-s.png'), '--window-shot', w, hidden=False, exit_after=t + 2000)
+            finally:
+                os.environ.pop('PORT_FOLDER_ANSWER', None)
+            res[name] = (settings(h), out, open(w, 'rb').read() if os.path.exists(w) else b'')
+        check('folder: an empty folder is refused and the file\'s data= is unchanged',
+              want in res['refused'][0].splitlines() and 'refused' in res['refused'][1], (res['refused'][0], res['refused'][1][-300:]))
+        check('folder: the screen shows "That folder does not hold the game"',
+              'That folder does not hold the game' in res['refused'][1] and differ(res['refused'][2], res['control'][2]) > 0.0002,
+              f"{differ(res['refused'][2], res['control'][2]):.5f}")
+        check('folder: the game\'s own folder is accepted', 'accepted' in res['accepted'][1] and want in res['accepted'][0].splitlines(), res['accepted'][1][-300:])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def textentry():
+    """UW1 only (UW2's save dialog is not reached by these keys): the screen opened and closed again in
+    the middle of a text entry leaves the typing where it was: keys typed while it is open do not reach
+    the entry, and the ones typed after it closes do."""
+    if R.RC.port_name != 'uw1port': return
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        stage_of('mouse-look', work)
+        stage_run.stage = os.path.join(work, 'stage')
+        # Ctrl+S opens the save dialog, Enter takes the first slot and asks for the description
+        head = ['9000 down ctrl', '9100 key s', '9200 up ctrl', '10000 key enter']
+        for name, mid in (('through', ['11000 key f11', '11200 key z', '11300 key z', '11500 key f11']), ('plain', [])):
+            h, out = stage_run(work, 'te-' + name, head + mid + ['12000 key a', '12200 key b', '12500 key enter'], 15000)
+            p = os.path.join(h, 'SAVE1', 'DESC')
+            d = open(p, 'rb').read()[:40] if os.path.exists(p) else None
+            check(f'textentry ({name}): the save\'s description is ab', d is not None and d.startswith(b'ab') and not d.startswith(b'abz') and b'z' not in d, (d, out[-200:]))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main(argv):
     cmd = argv[0] if argv else 'all'
     if cmd == 'all':
         f11(); pause(); held(); heldbutton(); volume(); scale()
-    elif cmd in ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale'):
+        roundtrip(); firstrun(); cmdline(); restart(); folder(); textentry()
+    elif cmd in ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale', 'roundtrip', 'firstrun', 'cmdline', 'restart',
+                 'folder', 'textentry'):
         globals()[cmd]()
     else: sys.exit(__doc__)
     n = len(E.results); bad = E.results.count(False)
