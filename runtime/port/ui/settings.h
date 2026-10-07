@@ -24,21 +24,25 @@ struct setting {
     void (*put)(int value);         /* optional: the value to elsewhere */
     int (*check)(const char *path); /* SET_FOLDER: 0 to accept a folder, else refuse */
     const char *refuse;             /* SET_FOLDER: what the screen says of a refused folder (NULL: a general line) */
+    const char *(*show)(const char *path);   /* SET_FOLDER: the value shown for the row's folder (NULL: the path) */
 };
 
 enum { SET_KEY_UP, SET_KEY_DOWN, SET_KEY_LEFT, SET_KEY_RIGHT, SET_KEY_TAB, SET_KEY_ENTER,
        SET_KEY_ESC, SET_KEY_F11 };
 
 /* The table (at most 64 rows with the enhancement rows added after it), loaded from HOME's
-   settings file. TABLE must outlive the screen. */
+   settings file. The table is copied; the strings and functions its rows point to must outlive
+   the screen. */
 void settings_init(const char *home, const struct setting *table, int n, const char *title);
 int  settings_open(void);           /* 1 while shown */
 void settings_show(int on);
 void settings_key(int key);         /* SET_KEY_* */
 void settings_pointer(int x, int y, int down);   /* in the layer's 640x400 pixels */
 int  settings_draw(uint32_t *rgba); /* 640*400 pixels; 0 when not shown */
-int  settings_value(int row);
-void settings_set_value(int row, int value);   /* the row's current value only: nothing is written or applied */       /* the row's current value (index, 0/1, slider value) */
+int  settings_value(int row);       /* the row's current value (index, 0/1, slider value) */
+void settings_set_value(int row, int value);   /* the row's current value only: nothing is written or applied */
+const char *settings_note(int row); /* what the row's note column says ("Restart to apply", "changes play"), or NULL */
+const char *settings_help(int row); /* the help line under the rows when the row is selected, or NULL */
 void settings_folder_chosen(const char *path);   /* the async folder picker's answer */
 extern int (*settings_pick_folder)(void);        /* set by the backend: start the picker */
 #define SET_W 640

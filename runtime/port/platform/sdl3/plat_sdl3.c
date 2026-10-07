@@ -284,6 +284,25 @@ void plat_pointer_event(const PlatPointer *ev)
     hooks->pointer(&p);
 }
 
+void plat_window_click(float x, float y)
+{
+    SDL_Event ev;
+    int i;
+    if (!g_win) return;
+    for (i = 0; i < 2; i++) {
+        memset(&ev, 0, sizeof ev);
+        ev.type = i ? SDL_EVENT_MOUSE_BUTTON_UP : SDL_EVENT_MOUSE_BUTTON_DOWN;
+        ev.button.windowID = SDL_GetWindowID(g_win);
+        ev.button.which = 0;
+        ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.down = !i;
+        ev.button.clicks = 1;
+        ev.button.x = x;
+        ev.button.y = y;
+        SDL_PushEvent(&ev);
+    }
+}
+
 void plat_set_display(int fullscreen, int scale, int aspect, int integer_scale)
 {
     live.fullscreen = fullscreen;
@@ -494,6 +513,18 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
                     }
                     break;
                 }
+#ifdef __APPLE__
+                {
+                    /* Cmd+, (the macOS settings key) opens and closes the screen as F11 does, which
+                       the desktop may take for Show Desktop; the comma's release goes nowhere */
+                    static int cmd_comma;
+                    if (e.key.scancode == SDL_SCANCODE_COMMA && (e.type == SDL_EVENT_KEY_DOWN ? (e.key.mod & SDL_KMOD_GUI) != 0 : cmd_comma)) {
+                        cmd_comma = e.type == SDL_EVENT_KEY_DOWN;
+                        handle_key(SDL_SCANCODE_F11, cmd_comma, e.key.repeat);
+                        break;
+                    }
+                }
+#endif
                 handle_key(e.key.scancode, e.type == SDL_EVENT_KEY_DOWN, e.key.repeat);
                 break;
             case SDL_EVENT_MOUSE_MOTION:

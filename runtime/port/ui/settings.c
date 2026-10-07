@@ -36,15 +36,25 @@ int (*settings_pick_folder)(void);
 #define VALUE_X 248
 #define NOTE_X 496
 #define SLIDER_W 160
-#define HELP_Y 330
+#define HELP_Y 316
+#define HELP_LINES 3
+#define HELP_CHARS 72                   /* a line of help: clear of the scroll marker at x 612 */
 #define FOOT_Y 368
+
+/* macOS may give F11 to the desktop (Show Desktop), so the backend takes Cmd+, there too */
+#ifdef __APPLE__
+#define FOOTER "F11 or Cmd+, opens this at any time \xC2\xB7 Esc closes"
+#else
+#define FOOTER "F11 opens this at any time \xC2\xB7 Esc closes"
+#endif
 
 static const char *const tab_name[SET_TABS] = { "Sound", "Controls", "Display", "Enhancements", "Game" };
 
 static const char *home_dir = "";
 static const char *title_text = "";
 static struct setting rows[MAX_ROWS];     /* the table, then the enhancement rows */
-static const char *help[MAX_ROWS];        /* an enhancement's about line */
+static char help[MAX_ROWS][200];          /* an enhancement's about line and its credit ("" for none) */
+static const char *mark[MAX_ROWS];        /* the note column's text when not changed: "changes play" */
 static int enh_bit[MAX_ROWS];             /* the enhancement flag of a row, else -1 */
 static int value[MAX_ROWS];
 static char path[MAX_ROWS][PATH_MAX_LEN]; /* SET_FOLDER rows' text */
@@ -175,7 +185,9 @@ static void change(int r, int dir)
         break;
     case SET_SLIDER:
         step = s->step < 1 ? 1 : s->step;
-        value[r] = clamp(value[r] + dir * step, s->lo, s->hi);
+        n = clamp(value[r] + dir * step, s->lo, s->hi);
+        if (n == value[r]) return;          /* at an end already: nothing to write or apply */
+        value[r] = n;
         break;
     default:                            /* SET_FOLDER: the answer comes through settings_folder_chosen */
         if (getenv("PORT_FOLDER_ANSWER")) {     /* a test's answer in place of the dialog */
@@ -217,7 +229,8 @@ void settings_init(const char *home, const struct setting *table, int n, const c
     memset(path, 0, sizeof path);
     for (i = 0; i < n && nrows < MAX_ROWS; i++) {
         rows[nrows] = table[i];
-        help[nrows] = NULL;
+        help[nrows][0] = 0;
+        mark[nrows] = NULL;
         enh_bit[nrows++] = -1;
     }
     enhance_load(home_dir, &pending_enh);
@@ -229,7 +242,9 @@ void settings_init(const char *home, const struct setting *table, int n, const c
         rows[nrows].label = f->name;
         rows[nrows].kind = SET_BOOL;
         rows[nrows].restart = 1;
-        help[nrows] = f->about;
+        if (f->source) snprintf(help[nrows], sizeof help[nrows], "%s (from %s)", f->about, f->source);
+        else snprintf(help[nrows], sizeof help[nrows], "%s", f->about);
+        mark[nrows] = f->kind == ENH_GAMEPLAY ? "changes play" : NULL;
         enh_bit[nrows++] = i;
     }
     for (i = 0; i < nrows; i++) value[i] = load_value(i);
@@ -248,6 +263,17 @@ int settings_value(int row) { return row >= 0 && row < nrows ? value[row] : 0; }
 void settings_set_value(int row, int v)
 {
     if (row >= 0 && row < nrows) value[row] = v;
+}
+
+const char *settings_note(int row)
+{
+    if (row < 0 || row >= nrows) return NULL;
+    return changed[row] ? "Restart to apply" : mark[row];
+}
+
+const char *settings_help(int row)
+{
+    return row >= 0 && row < nrows && help[row][0] ? help[row] : NULL;
 }
 
 /* ---- the tabs and their rows ---- */
@@ -326,7 +352,9 @@ static void set_slider_from_x(int r, int x)
     int span = s->hi - s->lo;
     int v = s->lo + ((x - VALUE_X) * span + SLIDER_W / 2) / SLIDER_W;
     v = s->lo + (v - s->lo + step / 2) / step * step;
-    value[r] = clamp(v, s->lo, s->hi);
+    v = clamp(v, s->lo, s->hi);
+    if (v == value[r]) return;              /* a drag within one value: nothing to write or apply */
+    value[r] = v;
     commit(r);
 }
 
@@ -401,6 +429,23 @@ static int text(uint32_t *px, int x, int y, uint32_t c, const char *s, int max)
     return x - x0;
 }
 
+/* The help line, wrapped at spaces into HELP_LINES lines of HELP_CHARS. */
+static void help_text(uint32_t *px, const char *s)
+{
+    int line, len, cut;
+    for (line = 0; line < HELP_LINES && *s; line++) {
+        len = (int)strlen(s);
+        cut = len;
+        if (len > HELP_CHARS) {
+            for (cut = HELP_CHARS; cut > 0 && s[cut] != ' '; cut--) {}
+            if (cut == 0) cut = HELP_CHARS;
+        }
+        text(px, LABEL_X, HELP_Y + line * GLYPH_H, rgb(C_DIM), s, cut);
+        s += cut;
+        while (*s == ' ') s++;
+    }
+}
+
 static void value_text(const struct setting *s, int r, char *out, size_t n)
 {
     size_t len;
@@ -415,6 +460,10 @@ static void value_text(const struct setting *s, int r, char *out, size_t n)
         snprintf(out, n, "%d", value[r]);
         break;
     default:
+        if (s->show) {                      /* the row's own word for its folder ("found", "not found") */
+            snprintf(out, n, "%s", s->show(path[r]));
+            break;
+        }
         len = strlen(path[r]);
         snprintf(out, n, "%s", len > 30 ? path[r] + len - 30 : path[r]);
     }
@@ -469,12 +518,12 @@ int settings_draw(uint32_t *px)
         }
         value_text(s, r, buf, sizeof buf);
         text(px, s->kind == SET_SLIDER ? VALUE_X + SLIDER_W + GLYPH_W : VALUE_X, y + 1, fg, buf, -1);
-        if (changed[r]) text(px, NOTE_X, y + 1, fg == rgb(C_BACK) ? fg : rgb(C_DIM), "Restart to apply", -1);
-        if (k == sel && help[r]) text(px, LABEL_X, HELP_Y, rgb(C_DIM), help[r], 76);
+        if (settings_note(r)) text(px, NOTE_X, y + 1, fg == rgb(C_BACK) ? fg : rgb(C_DIM), settings_note(r), 18);
+        if (k == sel && help[r][0]) help_text(px, help[r]);
     }
     if (top > 0) text(px, SET_W - 28, ROW_Y - 18, rgb(C_DIM), "^", -1);
     if (top + VISIBLE < n) text(px, SET_W - 28, ROW_Y + ROW_H * VISIBLE, rgb(C_DIM), "v", -1);
     if (notice[0]) text(px, LABEL_X, FOOT_Y - 24, rgb(C_SELECT), notice, 76);
-    text(px, LABEL_X, FOOT_Y, rgb(C_DIM), "F11 opens this at any time \xC2\xB7 Esc closes", -1);
+    text(px, LABEL_X, FOOT_Y, rgb(C_DIM), FOOTER, -1);
     return 1;
 }

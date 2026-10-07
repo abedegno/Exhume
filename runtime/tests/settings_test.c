@@ -1,6 +1,6 @@
 /* A host test of the settings screen's model, drawing and input (runtime/port/ui/settings.c), not
    part of any build:
-   cc -I runtime/tests -I runtime/port -I runtime/port/sys -I runtime/port/ui runtime/tests/settings_test.c \
+   cc -std=c99 -Wall -Wextra -I runtime/tests -I runtime/port -I runtime/port/sys -I runtime/port/ui runtime/tests/settings_test.c \
       runtime/port/ui/settings.c runtime/port/ui/font.c runtime/port/sys/enhance.c runtime/tests/config_stub.c \
       -o /tmp/set && /tmp/set */
 #include <stdio.h>
@@ -10,31 +10,44 @@
 #include "enhance.h"
 int port_config_get(const char *home, const char *key, char *out, size_t n);
 int port_config_set(const char *home, const char *key, const char *value);
-static int applied = -1;
-static void apply_vol(int v) { applied = v; }
+static int applied = -1, applies;
+static void apply_vol(int v) { applied = v; applies++; }
 static const char *const cards[] = { "None", "Sound Blaster", "MT-32", NULL };
 static const char *const cards_stored[] = { "0", "3", "6", NULL };
 static const struct setting T[] = {
-    { SET_TAB_SOUND, "Music", SET_CYCLE, "music-test", cards, cards_stored, 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Volume", SET_SLIDER, "volume", NULL, NULL, 0, 100, 10, 100, 0, apply_vol, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Music", SET_CYCLE, "music-test", cards, cards_stored, 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Volume", SET_SLIDER, "volume", NULL, NULL, 0, 100, 10, 100, 0, apply_vol, NULL, NULL, NULL, NULL, NULL },
 };
-static const struct enhance_flag F[] = { { "skip-intro", "Starts at the main menu", ENH_TIMING, NULL, NULL } };
+static const struct enhance_flag F[] = {
+    { "skip-intro", "Starts at the main menu", ENH_TIMING, NULL, NULL },
+    { "free-heading", "Sliding along a wall no longer turns your view", ENH_GAMEPLAY, "UltimaHacks", NULL },
+};
+/* the games' Window scale row (settab.c): a cycle, 1x to 8x, the file's text the number */
+static const char *const scale_names[] = { "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", NULL };
+static const char *const scale_stored[] = { "1", "2", "3", "4", "5", "6", "7", "8", NULL };
+static const struct setting S[] = {
+    { SET_TAB_DISPLAY, "Window scale", SET_CYCLE, "scale", scale_names, scale_stored, 0, 0, 0, 2, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+};
+/* settings.c's layout: the rows start at y 72, 20 high; a slider's track starts at x 248, 160 wide */
+#define ROW_Y 72
+#define ROW_H 20
+#define VALUE_X 248
 static int fails;
 #define CHECK(c, m) do { if (!(c)) { printf("FAIL %s\n", m); fails++; } else printf("ok   %s\n", m); } while (0)
 static int get_bad(void) { return -1; }
 static int get_big(void) { return 150; }
 static int get_two(void) { return 2; }
 static const struct setting G[] = {
-    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL, NULL, NULL },
 };
 int main(void)
 {
     static uint32_t px[SET_W * SET_H];
     char v[64];
     int i, lit = 0;
-    enhance_init(F, 1, "UW1");
+    enhance_init(F, 2, "UW1");
     port_config_set("h", "volume", "abc");                       /* a bad value: the default */
     settings_init("h", T, 2, "Test");
     CHECK(settings_value(1) == 100, "a bad volume reads as the default");
@@ -56,6 +69,20 @@ int main(void)
     settings_key(SET_KEY_ENTER);
     CHECK(port_config_get("h", "enhance", v, sizeof v) == 0 && strstr(v, "skip-intro"), "an enhancement is saved");
     CHECK(enhance_on == 0, "but not turned on in this run");
+    /* the enhancement rows follow the table's two: a gameplay one has its mark and its credit */
+    CHECK(settings_note(3) && !strcmp(settings_note(3), "changes play"), "a gameplay enhancement's row is marked \"changes play\"");
+    CHECK(settings_note(2) && !strcmp(settings_note(2), "Restart to apply"), "a changed restart row says \"Restart to apply\"");
+    CHECK(settings_help(3) && strstr(settings_help(3), "(from UltimaHacks)"), "an enhancement's help line gives its credit");
+    CHECK(settings_help(2) && !strstr(settings_help(2), "(from"), "and one of the project's own has none");
+    settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* back to Sound: Volume is row 1 */
+    applies = 0;
+    settings_pointer(VALUE_X + 80, ROW_Y + ROW_H + 5, 1);       /* press on the track: 50 */
+    settings_pointer(VALUE_X + 81, ROW_Y + ROW_H + 5, 1);       /* dragged, still 50 */
+    settings_pointer(VALUE_X + 82, ROW_Y + ROW_H + 5, 1);
+    CHECK(settings_value(1) == 50 && applies == 1, "a slider dragged across one value commits once");
+    settings_pointer(VALUE_X + 96, ROW_Y + ROW_H + 5, 1);       /* 60 */
+    settings_pointer(VALUE_X + 96, ROW_Y + ROW_H + 5, 0);
+    CHECK(settings_value(1) == 60 && applies == 2, "and again when the value changes");
     settings_key(SET_KEY_ESC);
     CHECK(!settings_open(), "Esc closes");
     CHECK(!settings_draw(px), "nothing drawn when closed");
@@ -65,6 +92,19 @@ int main(void)
     CHECK(settings_value(2) == 1, "a bool get() of 2 reads as the default");
     settings_show(1);
     CHECK(settings_draw(px), "and draws");
+    /* bad file values read as the screen's validated ones (main.c starts the run with these) */
+    port_config_set("h", "scale", "0");
+    settings_init("h", S, 1, "Test");
+    CHECK(settings_value(0) == 2, "scale=0 reads as the default, 3x");
+    port_config_set("h", "scale", "99");
+    settings_init("h", S, 1, "Test");
+    CHECK(settings_value(0) == 2, "scale=99 reads as the default, 3x");
+    port_config_set("h", "scale", "8");
+    settings_init("h", S, 1, "Test");
+    CHECK(settings_value(0) == 7, "scale=8 reads as 8x");
+    port_config_set("h", "volume", "abc");
+    settings_init("h", T, 2, "Test");
+    CHECK(settings_value(1) == 100, "volume=abc reads as 100");
     printf("%d failed\n", fails);
     return fails != 0;
 }

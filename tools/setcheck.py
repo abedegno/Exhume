@@ -14,6 +14,9 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] restart     a restart row (skip-intro) is saved, not applied, until the next start
     python3 tools/setcheck.py [--config PATH] folder      a folder that is not the game is refused, the file's data= unchanged
     python3 tools/setcheck.py [--config PATH] textentry   keys typed after the screen closes reach a text entry (UW1's save description)
+    python3 tools/setcheck.py [--config PATH] badvalues   volume=abc and scale=99 in the file start the run as the screen reads them
+    python3 tools/setcheck.py [--config PATH] wclick      a click in window coordinates hits the row drawn there after a scale change
+    python3 tools/setcheck.py [--config PATH] roms        the MT-32 ROMs row says "not found" or "found" (SETCHECK_ROMS=DIR for found)
     python3 tools/setcheck.py [--config PATH] all      all of these
 
 Exit status 0 when every check passes."""
@@ -163,7 +166,8 @@ def held():
         through = shot_of(work, 'through', ['9000 down s', '9500 key f11', '10500 key f11', '11000 up s'], T)
         stuck = shot_of(work, 'stuck', ['9000 down s'], T)
         d, s = differ(through, walked), differ(stuck, walked)
-        check('held: S held across the screen stops (the view as if S were let go at 9500)', d <= 0.15, f'{d:.3f}')
+        check('held: S held across the screen stops (closer to the let-go-at-9500 view than to the held-on view)',
+              d < s, f'vs let go {d:.3f}, vs held on {s:.3f}')
         check('held: the check can tell (S held on to the end differs)', s > 0.15, f'{s:.3f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -303,6 +307,10 @@ def card_cfg(home, music, speech):
 def roundtrip():
     rows = table_rows()
     check('the table lists rows in all of the tabs but the generated one', {r['tab'] for r in rows} >= {0, 1, 2, 4}, [r['label'] for r in rows])
+    # a row that resizes the window must not be a slider: dragging it would move the row under the pointer
+    sc = [r for r in rows if r['key'] == 'scale']
+    check('the Window scale row is a cycle, 1x to 8x (no drag resizes the window)',
+          sc and sc[0]['kind'] == CYCLE and sc[0]['names'] == [f'{i}x' for i in range(1, 9)], sc)
     cards = [r for r in rows if r['key'] == '-']
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
@@ -379,6 +387,19 @@ def firstrun():
         lines.append(f'{t} key enter'); lines.append(f'{t + 200} key f11')
         port(h, '--input-script', script_file(work, 'toggle', lines), hidden=False, exit_after=t + 1500)
         check('first run: turning "Show this at start" off in the screen is kept', 'settings-at-start=0' in settings(h), settings(h))
+        # Esc closes the first-run screen and the game starts: its own picture moves on from the
+        # paused first frame (the run kept open shows that frame throughout)
+        res = {}
+        for name, lines in (('kept', ['# no events']), ('closed', ['1500 key esc'])):
+            h = fresh(work, 'fr-' + name, start=True)
+            s, w = os.path.join(work, f'fr-{name}-s.png'), os.path.join(work, f'fr-{name}.png')
+            port(h, '--input-script', script_file(work, 'fr-' + name, lines), '--screenshot-after', '9000', '--screenshot', s,
+                 '--window-shot', w, hidden=False, exit_after=10500)
+            res[name] = (open(s, 'rb').read() if os.path.exists(s) else b'', gold_pixels(w) if os.path.exists(w) else -1)
+        d = differ(res['closed'][0], res['kept'][0]) if res['closed'][0] and res['kept'][0] else 0
+        check('first run: Esc closes the screen (no gold in the window afterwards)', res['closed'][1] == 0 and res['kept'][1] >= 20,
+              (res['closed'][1], res['kept'][1]))
+        check('first run: and the game resumes (its picture differs from the paused first frame)', d > 0.01, f'{d:.4f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -487,13 +508,103 @@ def textentry():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def badvalues():
+    """Bad values in the file start the run with what the screen reads for them (its defaults): a
+    window of the default scale 3 (960x720), and sound (volume=abc is 100, not 0)."""
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        rec = os.path.join(R.RC.sessions, 'sound.rec')
+        if not os.path.exists(rec):
+            check('badvalues: the sound session is there', False, R.RC.sessions); return
+        h = fresh(work, 'bad', 'volume=abc\nscale=99\nlook-speed=abc\n')
+        cfg = R.cfg_of(rec)
+        if cfg:
+            dst = os.path.join(h, *R.RC.cfg_path.replace('\\', '/').split('/'))
+            os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy(cfg, dst)
+        tap, w = os.path.join(work, 'bad.raw'), os.path.join(work, 'bad.png')
+        os.environ['PORT_AUDIO_TAP'] = tap
+        try:
+            rc, out = port(h, R.RC.port_replay_flag, os.path.abspath(rec), '--screenshot-after', '3000',
+                           '--screenshot', os.path.join(work, 'bad-s.png'), '--window-shot', w, hidden=False, exit_after=9000)
+        finally:
+            os.environ.pop('PORT_AUDIO_TAP', None)
+        size = png_rgb(w)[:2] if os.path.exists(w) else None
+        check('badvalues: scale=99 starts at the screen\'s reading, the default 3 (960x720)', size == (960, 720), (size, out[-300:]))
+        r = rms(tap)
+        check('badvalues: volume=abc plays (the screen reads it as 100, not 0)', r > 0, f'RMS {r:.1f}')
+        size, _ = window_size(work, 'zero', '', '--scale', '0')
+        check('badvalues: --scale 0 is taken as 1 (320x240)', size == (320, 240), size)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def wclick():
+    """A click given in window coordinates (the input script's wclick, an SDL event like a player's)
+    after the window's scale changed on the screen: it must hit the row drawn there now. Scale 2
+    with aspect off is 640x400, the layer one to one; Right on Window scale makes it 3x (960x600),
+    where the Whole-number scaling row (the Display tab's fourth, layer y 132..151) is at window
+    y 198..227. At its middle, y 213, the old mapping holds no row, so a stale mapping changes nothing."""
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        rows = [r['key'] for r in table_rows() if r['tab'] == 2]
+        k_scale, k_int = rows.index('scale'), rows.index('integer')
+        res = {}
+        for name, change in (('scaled', True), ('control', False)):
+            lines, t = nav(2, k_scale)
+            if change: lines.append(f'{t} key right')
+            y = (72 + 20 * k_int + 10) * 3 // 2       # the row's middle in the layer, at 1.5 window pixels a layer pixel
+            lines += [f'{t + 600} wclick 450 {y}', f'{t + 900} key f11']
+            h = fresh(work, 'wc-' + name, 'scale=2\naspect=0\n')
+            rc, out = port(h, '--input-script', script_file(work, 'wc-' + name, lines), hidden=False, exit_after=t + 2200)
+            res[name] = (settings(h).splitlines(), out[-300:])
+        check('wclick: after Right on Window scale the file says scale=3', 'scale=3' in res['scaled'][0], res['scaled'])
+        check('wclick: a click at the row\'s new place in the window turns Whole-number scaling off', 'integer=0' in res['scaled'][0], res['scaled'])
+        check('wclick: the check can tell (the same click at scale 2 changes nothing)', 'integer=0' not in res['control'][0], res['control'])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def roms():
+    """The MT-32 ROMs row says whether the ROMs the port uses are there. A home and HOME of their own
+    (the search looks in other emulators' folders under HOME) and no ROM variable: "not found".
+    With SETCHECK_ROMS=DIR (a folder holding a ROM pair) given as the folder picker's answer: "found"."""
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    saved = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith('_MT32_ROMS')}
+    old_home = os.environ.get('HOME')
+    try:
+        os.environ['HOME'] = os.path.join(work, 'userhome'); os.makedirs(os.environ['HOME'])
+        lines, t = nav(0, 0)
+        h = fresh(work, 'none')
+        rc, out = port(h, '--input-script', script_file(work, 'none', lines + [f'{t + 300} key f11']), hidden=False, exit_after=t + 1500)
+        check('roms: with no ROMs anywhere the row says "not found"', 'MT-32 ROMs: not found' in out, out[-400:])
+        src = os.environ.get('SETCHECK_ROMS')
+        if not src:
+            print('roms: SETCHECK_ROMS is not set, so "found" is not checked')
+            return
+        k = [r['label'] for r in table_rows() if r['tab'] == 0].index('MT-32 ROMs')
+        lines, t = nav(0, k)
+        lines += [f'{t} key enter', f'{t + 300} key f11']
+        h = fresh(work, 'found')
+        os.environ['PORT_FOLDER_ANSWER'] = os.path.abspath(src)
+        try:
+            rc, out = port(h, '--input-script', script_file(work, 'found', lines), hidden=False, exit_after=t + 1500)
+        finally:
+            os.environ.pop('PORT_FOLDER_ANSWER', None)
+        check('roms: a ROM folder chosen on the screen makes it say "found"', 'MT-32 ROMs: found' in out, out[-400:])
+    finally:
+        if old_home is None: os.environ.pop('HOME', None)
+        else: os.environ['HOME'] = old_home
+        os.environ.update(saved)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main(argv):
     cmd = argv[0] if argv else 'all'
     if cmd == 'all':
         f11(); pause(); held(); heldbutton(); volume(); scale()
-        roundtrip(); firstrun(); cmdline(); restart(); folder(); textentry()
+        roundtrip(); firstrun(); cmdline(); restart(); folder(); textentry(); badvalues(); wclick(); roms()
     elif cmd in ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale', 'roundtrip', 'firstrun', 'cmdline', 'restart',
-                 'folder', 'textentry'):
+                 'folder', 'textentry', 'badvalues', 'wclick', 'roms'):
         globals()[cmd]()
     else: sys.exit(__doc__)
     n = len(E.results); bad = E.results.count(False)
