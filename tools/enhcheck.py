@@ -12,6 +12,8 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
                                                             the holes a steep look leaves
     python3 tools/enhcheck.py [--config PATH] looking       --enhance mouse-look and invert-look turn
                                                             and pitch the view by the mouse
+    python3 tools/enhcheck.py [--config PATH] keys          --enhance modern-keys and rune-keys: each
+                                                            key does its job
     python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
                                                             enhanced/NAME (timing and gameplay)
@@ -510,6 +512,47 @@ def looking():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def keys():
+    """--enhance modern-keys and rune-keys: each key does its job, from the modern-keys session's
+    saved game, by screenshots against the same moment without the key (or without the flag)."""
+    if not os.path.isdir(enh_dir('modern-keys')): return
+    work = tempfile.mkdtemp(prefix='enhcheck-')
+    try:
+        stage = stage_of('modern-keys', work)
+        shots = {}
+        def shot(name, flags, lines, after=12000):
+            if name in shots: return shots[name]     # a name is one run: reused
+            h = os.path.join(work, name)
+            shutil.copytree(stage, h) if stage else os.makedirs(h)
+            sp = os.path.join(work, name + '.script')
+            open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ''.join(l + '\n' for l in lines))
+            png = os.path.join(work, name + '.png')
+            port(h, '--enhance', flags, '--sound', '0,0', '--input-script', sp, '--screenshot-after', str(after),
+                 '--screenshot', png, exit_after=after + 500)
+            shots[name] = open(png, 'rb').read() if os.path.exists(png) else b''
+            return shots[name]
+        mk = 'skip-intro,modern-keys'
+        still = shot('still', mk, [])
+        # each moved key must do what the original's key for that movement does: closer to it
+        # (held as long, without the flag) than to what the same key does without the flag
+        hold = lambda k: [f'9000 down {k}', f'10500 up {k}']
+        for key, orig, what in (('s', 'x', 'backs'), ('a', 'z', 'slides left'), ('d', 'c', 'slides right'),
+                                ('left', 'a', 'turns left'), ('x', 's', 'walks')):
+            got = shot('k-' + key, mk, hold(key))
+            same = shot('o-' + orig, 'skip-intro', hold(orig))
+            other = shot('o-' + key, 'skip-intro', hold(key))
+            check(f'modern-keys: {key} {what} (as the original {orig})', differ(got, same) < differ(got, other),
+                  f'from the original {orig} {differ(got, same):.3f}, from the original {key} {differ(got, other):.3f}')
+        # Shift and Ctrl are movement keys (fly up and down), as in UltimaHacks, so the original's
+        # Shift+letter step moves are gone (its steps are Ctrl+arrows): Shift+W is not the step
+        sw = shot('k-shift-w', mk, ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
+        osw = shot('o-shift-w', 'skip-intro', ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
+        check("modern-keys: Shift+W is no longer the original's step move", differ(sw, osw) > 0.15,
+              f'from the original Shift+W {differ(sw, osw):.3f}')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main(argv):
     cmd = argv[0] if argv else 'selftest'
     if cmd == 'selftest': selftest()
@@ -518,6 +561,7 @@ def main(argv):
     elif cmd == 'coverage': coverage()
     elif cmd == 'holes': holes()
     elif cmd == 'looking': looking()
+    elif cmd == 'keys': keys()
     elif cmd == 'presentation': presentation()
     elif cmd == 'baseline': baseline(argv[1:])
     elif cmd == 'all':
@@ -531,7 +575,7 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); script(); presentation(); coverage(); holes(); looking(); baseline(['check'])
+            selftest(); registry(); script(); presentation(); coverage(); holes(); looking(); keys(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
