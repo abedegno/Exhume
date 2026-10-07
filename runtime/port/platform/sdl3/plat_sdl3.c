@@ -13,11 +13,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include "plat.h"
+#include "ui/settings.h"
 #if defined(PLAT_ICON) && !defined(__APPLE__)
 #include PLAT_ICON
 #endif
 
+void port_pause(int on);               /* the runtime's sys/pit.c */
+
 static const PlatHooks *hooks;
+static PlatConfig live;                /* the options as they stand: plat_set_display and plat_set_mouse_lock change it */
+static SDL_Window *g_win;
+static int locked, captured, cursor_hidden;   /* the pointer lock option's capture, mouse-look's, the host's cursor hidden */
+static int was_open, rel_restore, scaled_up;   /* scaled_up: the window was doubled for the screen (scale 1) */
+static uint8_t held[256];              /* the keys the game saw go down (a set-1 code, +128 after E0) */
 static SDL_AtomicInt game_done;
 static SDL_AtomicInt capture_req;      /* plat_pointer_capture's request: 0 none, 1 capture, 2 release */
 
@@ -87,8 +95,85 @@ static void key(SDL_Scancode sc, int down)
         return;
     }
     if ((unsigned)sc >= SDL_SCANCODE_COUNT || !(c = set1[sc])) return;
+    held[(c & 0x7F) | ((c & 0x100) >> 1)] = down != 0;
     if (c & 0x100) hooks->key(0xE0);
     hooks->key((uint8_t)((c & 0x7F) | (down ? 0 : 0x80)));
+}
+
+/* ---- the settings screen's keys (ui/settings.h) ---- */
+
+static int set_key_of(SDL_Scancode sc)
+{
+    switch (sc) {
+    case SDL_SCANCODE_UP: return SET_KEY_UP;
+    case SDL_SCANCODE_DOWN: return SET_KEY_DOWN;
+    case SDL_SCANCODE_LEFT: return SET_KEY_LEFT;
+    case SDL_SCANCODE_RIGHT: return SET_KEY_RIGHT;
+    case SDL_SCANCODE_TAB: return SET_KEY_TAB;
+    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: case SDL_SCANCODE_SPACE: return SET_KEY_ENTER;
+    case SDL_SCANCODE_ESCAPE: return SET_KEY_ESC;
+    default: return -1;
+    }
+}
+
+/* The screen opened or closed since the last look (by F11, Escape or a click): the game's clock
+   stops or goes on, and a closing screen lets go of every key the game saw down before it (their
+   releases went to the screen) and gives back a pointer capture it took. */
+static void sync_open(void)
+{
+    int o = settings_open(), i;
+    if (o == was_open) return;
+    was_open = o;
+    if (o) {
+        port_pause(1);
+        if (g_win && (locked || captured)) {
+            SDL_SetWindowRelativeMouseMode(g_win, false);
+            rel_restore = 1;
+        }
+        if (g_win && cursor_hidden) { SDL_ShowCursor(); cursor_hidden = 0; }
+        /* the layer is 640 wide: at scale 1 its text is too small to read in a 320 wide picture,
+           so the window is doubled while the screen is open */
+        if (g_win && live.scale < 2 && !(SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN)) {
+            SDL_SetWindowSize(g_win, 640, live.aspect ? 480 : 400);
+            scaled_up = 1;
+        }
+    } else {
+        port_pause(0);
+        if (g_win && scaled_up) {
+            scaled_up = 0;
+            if (!(SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN))
+                SDL_SetWindowSize(g_win, 320 * live.scale, (live.aspect ? 240 : 200) * live.scale);
+        }
+        if (g_win && rel_restore) SDL_SetWindowRelativeMouseMode(g_win, true);
+        rel_restore = 0;
+        for (i = 0; i < 256; i++)
+            if (held[i] && hooks->key) {
+                if (i >= 128) hooks->key(0xE0);
+                hooks->key((uint8_t)((i & 0x7F) | 0x80));
+                held[i] = 0;
+            }
+    }
+}
+
+/* One key event of the window: F11 opens and closes the settings screen, which has every other
+   key while it is open; else the game's. */
+static void handle_key(SDL_Scancode sc, int down, int repeat)
+{
+    if (sc == SDL_SCANCODE_F11) {
+        if (down && !repeat) {
+            if (settings_open()) settings_key(SET_KEY_F11);
+            else settings_show(1);
+            sync_open();
+        }
+        return;
+    }
+    if (settings_open()) {
+        int k = set_key_of(sc);
+        if (down && k >= 0) settings_key(k);
+        sync_open();
+        return;
+    }
+    if (!repeat) key(sc, down);
 }
 
 static int game_thread(void *p)
@@ -123,6 +208,75 @@ int plat_thread_start(const char *name, int (*fn)(void *), void *arg)
     if (!t) return -1;
     SDL_DetachThread(t);
     return 0;
+}
+
+/* The settings screen's folder picker: the dialog's answer waits here for the loop to hand it on. */
+static SDL_AtomicInt pick_state;       /* 0 none, 1 a folder in pick_path, 2 cancelled */
+static char pick_path[1024];
+
+static void SDLCALL pick_cb(void *ud, const char *const *list, int filter)
+{
+    (void)ud; (void)filter;
+    if (list && list[0] && strlen(list[0]) < sizeof pick_path) {
+        strcpy(pick_path, list[0]);
+        SDL_SetAtomicInt(&pick_state, 1);
+    } else
+        SDL_SetAtomicInt(&pick_state, 2);
+}
+
+static int start_pick(void)
+{
+    if (!g_win) return -1;
+    SDL_SetAtomicInt(&pick_state, 0);
+    SDL_ShowOpenFolderDialog(pick_cb, NULL, g_win, NULL, false);
+    return 0;
+}
+
+void plat_key_byte(uint8_t b)
+{
+    static int e0;
+    int c, sc;
+    if (b == 0xE0) { e0 = 1; return; }
+    c = (b & 0x7F) | (e0 ? 0x100 : 0);
+    e0 = 0;
+    for (sc = 0; sc < SDL_SCANCODE_COUNT; sc++)
+        if (set1[sc] == c) break;
+    if (sc == SDL_SCANCODE_COUNT || !hooks) {
+        if (hooks && hooks->key) {          /* no such key of the window's: as it came */
+            if (c & 0x100) hooks->key(0xE0);
+            hooks->key(b);
+        }
+        return;
+    }
+    handle_key((SDL_Scancode)sc, !(b & 0x80), 0);
+}
+
+void plat_set_display(int fullscreen, int scale, int aspect, int integer_scale)
+{
+    live.fullscreen = fullscreen;
+    live.scale = scale > 0 ? scale : 1;
+    live.aspect = aspect;
+    live.integer_scale = integer_scale;
+    if (!g_win) return;
+    SDL_SetWindowFullscreen(g_win, fullscreen != 0);
+    if (!fullscreen) SDL_SetWindowSize(g_win, 320 * live.scale, (aspect ? 240 : 200) * live.scale);
+}
+
+static void mouse_title(SDL_Window *w, const PlatConfig *cfg, int locked);
+
+void plat_set_mouse_lock(int on)
+{
+    live.mouse_lock = on != 0;
+    if (!g_win) return;
+    if (!on && locked) {
+        SDL_SetWindowRelativeMouseMode(g_win, false);
+        locked = 0;
+    }
+    if (on) {
+        SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "1");
+        mouse_title(g_win, &live, locked);
+    } else
+        SDL_SetWindowTitle(g_win, live.title ? live.title : PLAT_TITLE);
 }
 
 static void (*audio_fill)(int16_t *, int);
@@ -196,7 +350,7 @@ static void mouse_title(SDL_Window *w, const PlatConfig *cfg, int locked)
     SDL_SetWindowTitle(w, t);
 }
 
-int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), void *arg)
+int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), void *arg)
 {
     static uint8_t pix[640 * 480];
     static uint32_t rgb[640 * 480];
@@ -204,10 +358,12 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     uint32_t lut[256];
     SDL_Window *win = NULL;
     SDL_Renderer *ren = NULL;
-    SDL_Texture *tex = NULL;
-    int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg->scale > 0 ? cfg->scale : 3;
+    SDL_Texture *tex = NULL, *ltex = NULL;
+    static uint32_t layer[SET_W * SET_H];
+    const PlatConfig *cfg = &live;
+    int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg0->scale > 0 ? cfg0->scale : 3;
     unsigned buttons = 0, swallow = 0;
-    int locked = 0, captured = 0, cursor_hidden = 0, hidden_win = 0, vsync = 0;
+    int hidden_win = 0, vsync = 0, left_down = 0;
     Uint64 frame_ns = 0, last_present = 0, pace_from = 0;
     unsigned presents = 0, paced = 0, hidden_passes = 0;
     void *targ[2];
@@ -217,6 +373,8 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     SDL_Thread *gt;
 
     hooks = h;
+    live = *cfg0;
+    settings_pick_folder = start_pick;
     if (cfg->hidden) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     /* a captured pointer moves the game's cursor as fast as it moved the host's */
     if (cfg->mouse_lock) SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "1");
@@ -226,11 +384,17 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     }
     if (!cfg->hidden) {
         win = SDL_CreateWindow(cfg->title ? cfg->title : PLAT_TITLE, 320 * scale,
-                               (cfg->aspect ? 240 : 200) * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+                               (cfg->aspect ? 240 : 200) * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (cfg->fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (win) ren = SDL_CreateRenderer(win, NULL);
         if (!win || !ren) {
             fprintf(stderr, PLAT_NAME ": no window: %s\n", SDL_GetError());
             return 1;
+        }
+        g_win = win;
+        ltex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, SET_W, SET_H);
+        if (ltex) {
+            SDL_SetTextureScaleMode(ltex, SDL_SCALEMODE_LINEAR);
+            SDL_SetTextureBlendMode(ltex, SDL_BLENDMODE_BLEND);
         }
         vsync = SDL_SetRenderVSync(ren, 1);
         {
@@ -292,12 +456,23 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                     }
                     break;
                 }
-                if (!e.key.repeat) key(e.key.scancode, e.type == SDL_EVENT_KEY_DOWN);
+                handle_key(e.key.scancode, e.type == SDL_EVENT_KEY_DOWN, e.key.repeat);
                 break;
             case SDL_EVENT_MOUSE_MOTION:
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP:
                 if (e.motion.which == SDL_TOUCH_MOUSEID || !hooks->pointer || !ren || dst.w <= 0) break;
+                if (settings_open()) {
+                    /* the screen has the pointer: its position in the layer's pixels */
+                    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                        if (e.button.button == SDL_BUTTON_LEFT) left_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+                        SDL_RenderCoordinatesFromWindow(ren, e.button.x, e.button.y, &x, &y);
+                    } else
+                        SDL_RenderCoordinatesFromWindow(ren, e.motion.x, e.motion.y, &x, &y);
+                    settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h), left_down);
+                    sync_open();
+                    break;
+                }
                 if (cfg->mouse_lock && !locked) {
                     /* the pointer lock option: a click captures the pointer and goes no further,
                        nor does its release; the pointer moves nothing until then */
@@ -353,6 +528,12 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                 if (!hooks->pointer || !ren || dst.w <= 0) break;
                 SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
                 x = e.tfinger.x * (float)ow; y = e.tfinger.y * (float)oh;
+                if (settings_open()) {
+                    settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h),
+                                     e.type != SDL_EVENT_FINGER_UP);
+                    sync_open();
+                    break;
+                }
                 p.id = (int)(e.tfinger.fingerID & 0x7FFFFFFF) + 1;
                 p.type = e.type == SDL_EVENT_FINGER_DOWN ? PLAT_POINTER_DOWN
                        : e.type == SDL_EVENT_FINGER_UP ? PLAT_POINTER_UP : PLAT_POINTER_MOVE;
@@ -387,6 +568,14 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
             }
         }
         if (hooks->tick) hooks->tick();     /* an input script's events (inscript.c) */
+        sync_open();
+        {
+            int ps = SDL_GetAtomicInt(&pick_state);
+            if (ps) {                       /* the folder picker answered (or was cancelled) */
+                SDL_SetAtomicInt(&pick_state, 0);
+                settings_folder_chosen(ps == 1 ? pick_path : NULL);
+            }
+        }
         hooks->scanout(pix, &w, &hgt, pal);
         if (!shot && cfg->screenshot_after_ms > 0 && SDL_GetTicks() - start >= (Uint64)cfg->screenshot_after_ms) {
             shot = 1;
@@ -418,6 +607,14 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
             SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             SDL_RenderClear(ren);
             SDL_RenderTexture(ren, tex, NULL, &dst);
+            if (ltex && settings_draw(layer)) {
+                /* the settings screen: the picture dimmed, the layer over it */
+                SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(ren, 0, 0, 0, 160);
+                SDL_RenderFillRect(ren, &dst);
+                SDL_UpdateTexture(ltex, NULL, layer, SET_W * 4);
+                SDL_RenderTexture(ren, ltex, NULL, &dst);
+            }
             if (shot == 1 && cfg->window_shot_path) {
                 /* the window's contents as scaled, for checking the presentation */
                 SDL_Surface *s = SDL_RenderReadPixels(ren, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGB24) : NULL;
@@ -462,6 +659,7 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     }
     if (ren) fprintf(stderr, PLAT_NAME ": %u presents, %u paced, %u passes with the window hidden\n", presents, paced, hidden_passes);
     if (tex) SDL_DestroyTexture(tex);
+    if (ltex) SDL_DestroyTexture(ltex);
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
     SDL_Quit();

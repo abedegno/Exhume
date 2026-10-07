@@ -97,6 +97,7 @@ typedef struct PlatConfig {
     long exit_after_ms;         /* > 0: quit this long after start */
     int mouse_lock;             /* capture the pointer on a click, as DOSBox does (Ctrl+F10
                                    releases it); default: the game's cursor follows the host's */
+    int fullscreen;             /* open the window full screen (default 0) */
 } PlatConfig;
 
 /* Runs the program: opens the window, starts game(arg) on a thread of its own and runs the
@@ -116,6 +117,18 @@ void plat_game_park(void) __attribute__((noreturn));
    and pointer events carry only motion (absolute 0). The event loop applies it; the pointer lock
    option's capture (mouse_lock) is apart from it. */
 void plat_pointer_capture(int on);
+
+/* The settings screen's live options (ui/settings.h), from the main thread, so from inside the
+   backend's own loop: the window's display (fullscreen; the scale of the window when not full
+   screen; the 4:3 stretch; whole multiples only) and the pointer lock option (mouse_lock). */
+void plat_set_display(int fullscreen, int scale, int aspect, int integer_scale);
+void plat_set_mouse_lock(int on);
+
+/* A byte from the keyboard controller that did not come from the host's keyboard (an input
+   script, inscript.c): handled as the key of the window it stands for, so that the settings
+   screen's key (F11) and its keys see it, and the game gets it as through PlatHooks.key.
+   Main thread, from PlatHooks.tick. */
+void plat_key_byte(uint8_t scancode);
 
 /* Time: a monotonic high-resolution counter and its rate, and a precise sleep. */
 uint64_t plat_counter(void);

@@ -1016,6 +1016,13 @@ uint32 far rp_time(void)
     static uint32 idle_t;
     static int idle_n;
 #define IDLE_READS 64
+#endif
+#if !defined(__TURBOC__) && defined(RP_PORT_PAUSE)
+    /* the port, playing: while the settings screen is open the game waits here, so that its clock
+       (and with it a recording) holds no time that passed behind the screen. A replay never waits. */
+    if (rp_mode != RP_REPLAY) RP_PORT_PAUSE();
+#endif
+#if !defined(__TURBOC__) && defined(RP_PORT_IDLE)
     if (rp_mode != RP_REPLAY && idle_n >= IDLE_READS) {
         RP_PORT_IDLE();
         idle_n = 0;

@@ -57,6 +57,13 @@ static int mt_ok;
 #define RING 32768                      /* frames, about 0.74 s */
 #define PREBUFFER 2048
 static int16_t ring[RING * 2];
+static _Atomic int volume = 100;        /* percent: the settings screen's slider (audio_set_volume) */
+static FILE *tap;                       /* PORT_AUDIO_TAP=FILE: what the device is given (after the volume), raw */
+
+void audio_set_volume(int percent)
+{
+    atomic_store(&volume, percent < 0 ? 0 : percent > 100 ? 100 : percent);
+}
 static _Atomic uint32_t ring_head, ring_tail;   /* written by the renderer, read by the stream */
 static int priming = 1;
 
@@ -93,6 +100,12 @@ static void fill(int16_t *out, int frames)
         t++;
     }
     atomic_store(&ring_tail, t);
+    {
+        int v = atomic_load(&volume);
+        if (v != 100)
+            for (i = 0; i < frames * 2; i++) out[i] = (int16_t)(out[i] * v / 100);
+    }
+    if (tap) fwrite(out, 4, (size_t)frames, tap);
 }
 
 /* ---- the WAV file --------------------------------------------------------------------- */
@@ -145,6 +158,7 @@ static void at_exit(void)
     int i;
     for (i = 0; i < NLOGS; i++)
         if (logs[i]) fflush(logs[i]);
+    if (tap) fflush(tap);
     if (wav) {
         audio_flush();
         fclose(wav);
@@ -171,6 +185,7 @@ void audio_start(void)
             wav_header();
         }
     }
+    if (use_device && getenv("PORT_AUDIO_TAP")) tap = fopen(getenv("PORT_AUDIO_TAP"), "wb");     /* a test switch */
     if (use_device && plat_audio_open(AUDIO_RATE, fill)) port_log("audio: no audio device; running silent\n");
 }
 

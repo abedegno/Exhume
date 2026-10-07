@@ -161,6 +161,10 @@ void mouse_event(const struct PlatPointer *ev);
 /* An enhancement's mouse-look (the game's mousedrv.c): its motion passed through, scaled by a
    percentage, with the pointer captured */
 void port_idle(void);                   /* sys/pit.c: rest while the game waits on the clock */
+void port_pause(int on);                /* sys/pit.c: the settings screen open (1) or closed (0): the game's clock stands still */
+void port_pause_wait(void);             /* sys/pit.c: the game's thread, at a clock read: wait while paused */
+uint32_t pit_paused_ms(void);           /* sys/pit.c: milliseconds spent paused so far (main thread) */
+void audio_set_volume(int percent);     /* sound/audio.c: 0..100, applied to every sample played after the call */
 void mouse_look_mode(int on);
 void mouse_look_speed(int pct);
 int mouse_int33(uint16_t *ax, uint16_t *bx, uint16_t *cx, uint16_t *dx);

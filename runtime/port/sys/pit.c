@@ -14,6 +14,8 @@
 
 static _Atomic uint32_t bios_ticks;
 static uint64_t hz, start;
+static _Atomic int paused;                  /* the settings screen is open */
+static uint64_t pause_t0, pause_total;      /* the main thread's: when it opened, and the time spent open */
 
 uint32_t pit_bios_ticks(void)
 {
@@ -29,6 +31,14 @@ static int pit_thread(void *arg)
     for (;;) {
         plat_sleep_ns(500000);
         now = plat_counter();
+        if (atomic_load(&paused)) {
+            /* the game's clock stands still: no AIL ticks, no BIOS ticks, no key repeat, and the
+               BIOS tick's schedule moves on by the time spent paused */
+            bios_next += now - prev;
+            prev = now;
+            last = now;
+            continue;
+        }
         ail_pit_advance((now - prev) * 1000000000u / hz);
         prev = now;
         while (now >= bios_next) {
@@ -53,4 +63,31 @@ void pit_start(void)
 void port_idle(void)
 {
     plat_sleep_ns(500000);
+}
+
+/* The settings screen opened or closed (main thread). While paused the PIT thread gives the
+   game no time, and the game's thread waits at its next clock read (port_pause_wait). */
+void port_pause(int on)
+{
+    uint64_t now = plat_counter();
+    if (on && !atomic_load(&paused)) {
+        pause_t0 = now;
+        atomic_store(&paused, 1);
+    } else if (!on && atomic_load(&paused)) {
+        pause_total += now - pause_t0;
+        atomic_store(&paused, 0);
+    }
+}
+
+void port_pause_wait(void)
+{
+    while (atomic_load(&paused)) plat_sleep_ns(10000000);
+}
+
+/* Milliseconds spent paused so far (main thread): an input script's clock is the BIOS clock plus
+   this, so that its events go on being sent while the clock stands still. */
+uint32_t pit_paused_ms(void)
+{
+    uint64_t t = pause_total + (atomic_load(&paused) ? plat_counter() - pause_t0 : 0);
+    return (uint32_t)(t * 1000 / (hz ? hz : 1));
 }

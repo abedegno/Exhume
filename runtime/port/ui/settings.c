@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "settings.h"
-#include "enhance.h"
+#include "sys/enhance.h"
 
 int port_config_get(const char *home, const char *key, char *out, size_t outsz);
 int port_config_set(const char *home, const char *key, const char *value);

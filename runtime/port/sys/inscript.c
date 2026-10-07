@@ -8,7 +8,8 @@
                          DY down in host pixels, -1000..1000
    '#' starts a comment. Keys go in as PC set-1 scan codes through the hook real keys use, and
    the pointer through the one the mouse uses, so the game, the recorder and the black box see
-   a player's input. */
+   a player's input. The time is the BIOS clock's plus the time the settings screen has been open,
+   which stops that clock. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #define PORT_NAME "port"
 #endif
 uint32_t pit_bios_ticks(void);
+uint32_t pit_paused_ms(void);
 
 enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK };
 struct ev { uint32_t ms; int kind, code, x, y, button; };
@@ -147,7 +149,8 @@ static void send_look(const struct ev *e)
 void inscript_tick(void)
 {
     /* 18.2065 ticks a second: 182 ticks are 9996 ms */
-    uint32_t now = (uint32_t)((uint64_t)pit_bios_ticks() * 10000000u / 182065u);
+    /* plus the time the settings screen has stood open, when the BIOS clock stood still */
+    uint32_t now = (uint32_t)((uint64_t)pit_bios_ticks() * 10000000u / 182065u) + pit_paused_ms();
     while (next < nev && evs[next].ms <= now) {
         const struct ev *e = &evs[next++];
         switch (e->kind) {

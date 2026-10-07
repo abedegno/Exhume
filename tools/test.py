@@ -36,7 +36,8 @@ DEFAULT = {
              ['port build', T + 'portbuild.py' + C],
              ['fuzzing, quick', T + 'fuzzasm.py' + C, 'port build'],
              ['sessions against the goldens', T + 'replay.py' + C + ' verify all', 'port build'],
-             ['enhancements', T + 'enhcheck.py' + C + ' all', 'port build']],
+             ['enhancements', T + 'enhcheck.py' + C + ' all', 'port build'],
+             ['settings screen', T + 'setcheck.py' + C + ' all', 'port build']],
     'full': [['the gate', T + 'gate.py' + C + ' check'],
              ['port build', T + 'portbuild.py' + C],
              ['port-debug build', T + 'portbuild.py' + C + ' --debug'],
@@ -46,6 +47,7 @@ DEFAULT = {
              ['sound drivers', T + 'replay.py' + C + ' drivers', 'port build'],
              ['fuzzing, deep', T + 'fuzzasm.py' + C + ' --deep', 'port build'],
              ['enhancements', T + 'enhcheck.py' + C + ' all', 'port build'],
+             ['settings screen', T + 'setcheck.py' + C + ' all', 'port build'],
              ['coverage report', T + 'coverage.py' + C, 'port build']],
 }
 
