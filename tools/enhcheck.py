@@ -6,14 +6,18 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
                                                             recordings' enhancements
     python3 tools/enhcheck.py [--config PATH] presentation  each presentation enhancement leaves
                                                             every session's game state as DOS's
-    python3 tools/enhcheck.py [--config PATH] baseline check|make [NAME ...]
+    python3 tools/enhcheck.py [--config PATH] coverage      --enhance perspective covers the
+                                                            original mappers' pixels exactly
+    python3 tools/enhcheck.py [--config PATH] holes         --enhance wide-pitch's back pass fills
+                                                            the holes a steep look leaves
+    python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
                                                             enhanced/NAME (timing and gameplay)
-    python3 tools/enhcheck.py [--config PATH] all           selftest, registry, presentation and
-                                                            baseline check
+    python3 tools/enhcheck.py [--config PATH] all           all of these but baseline make and
+                                                            record
 
 Exit status 0 when every check passes."""
-import os, sys, json, struct, hashlib, tempfile, shutil, subprocess
+import os, re, sys, json, struct, hashlib, tempfile, shutil, subprocess
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 import replay as R
 
@@ -391,12 +395,78 @@ def coverage():
           len(a) == len(b) and a and not bad, f'{len(a)} and {len(b)} checkpoints; differ at {bad[:8]}')
 
 
+# the colour the hole probe clears the frame buffer to, one the project's 3D view never draws
+# ([replay] hole_mark; UW1 42, UW2 173, found by counting every colour in the sessions' frames);
+# holes checks it stays unused
+HOLE_MARK = int(R.CFG.raw.get('replay', {}).get('hole_mark', 42))
+
+
+def holes():
+    """--enhance wide-pitch draws what is behind the player, so a steep look fills holes the view
+    ahead leaves: the wide-pitch baseline session replayed with the project's hole probe
+    (<PORT>_HOLE_PROBE: the frame buffer cleared to HOLE_MARK before each frame, and after it a
+    'hole-probe: pitch P holes N' line on stderr), once as it is and once with the back pass left
+    out (<PORT>_NO_BACK_PASS). The original game itself leaves pixels uncovered in every frame (the
+    buffer's undrawn columns at least, and in some frames gaps of its own at the original pitches),
+    so the test is not zero but, over the frames beyond the original's pitch: none with more holes
+    than without the back pass, and a tenth or fewer with any. With the probe off, no report, and
+    the mark drawn nowhere."""
+    rec = os.path.join(enh_dir('wide-pitch'), 'session.rec')
+    if not os.path.exists(rec): return
+    name = R.RC.port_name.upper()
+    probe, no_back = name + '_HOLE_PROBE', name + '_NO_BACK_PASS'
+    frames, unused = {}, []
+    top = tempfile.mkdtemp(prefix='enhcheck-')
+    stage = stage_of('wide-pitch', top)     # once, for all three runs
+    for run, env in (('unprobed', {'UWRPFB': '1'}), ('without', {probe: str(HOLE_MARK), no_back: '1'}),
+                     ('with', {probe: str(HOLE_MARK)})):
+        old = {k: os.environ.get(k) for k in (probe, no_back, 'UWRPFB')}
+        for k in (probe, no_back, 'UWRPFB'):
+            if k in env: os.environ[k] = env[k]
+            else: os.environ.pop(k, None)
+        work = tempfile.mkdtemp(prefix='enhcheck-')
+        try:
+            d = os.path.join(work, 'run'); os.makedirs(d)
+            R.run_port(rec, d, [], stage=stage, quiet=True)
+            log = open(os.path.join(d, 'port.log'), errors='replace').read()
+            frames[run] = [(int(p), int(n)) for p, n in re.findall(r'hole-probe: pitch (-?\d+) holes (\d+)', log)]
+            if run == 'unprobed':           # the mark in the frames as drawn (UWRPFB's checkpoints)
+                unused = [ck['secs']['FBUF'][2:].count(bytes([HOLE_MARK])) for ck in R.read_dump(d) if 'FBUF' in ck['secs']]
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            for k, v in old.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+    shutil.rmtree(top, ignore_errors=True)
+    wo, w = frames['without'], frames['with']
+    check('the hole probe reports nothing when off', not frames['unprobed'], f'{len(frames["unprobed"])} reports')
+    check(f'the hole mark ({HOLE_MARK}) is a colour the session never draws', unused and max(unused) == 0,
+          f'{len(unused)} frames; up to {max(unused or [0])} pixels of it')
+    steep = [i for i, (p, _) in enumerate(w) if abs(p) > 0x1000]
+    same = len(w) == len(wo) and all(a[0] == b[0] for a, b in zip(w, wo))
+    check('wide-pitch: the session looks beyond the original pitch, the same frames with and without the back pass',
+          steep and same, f'{len(steep)} steep frames of {len(w)}; {len(wo)} without')
+    if not (steep and same): return
+    worse = [w[i] for i in steep if w[i][1] > wo[i][1]]
+    check('wide-pitch: the back pass leaves no steep frame with more holes than without it', not worse,
+          f'worse at {worse[:6]}')
+    # a frame "has holes" when it has more than the session's usual count (the buffer's undrawn
+    # columns: UW1 112, UW2 466)
+    floor = max(set(n for _, n in wo), key=[n for _, n in wo].count)
+    hw, hwo = sum(1 for i in steep if w[i][1] > floor), sum(1 for i in steep if wo[i][1] > floor)
+    check('wide-pitch: the back pass fills the holes (steep frames with any, a tenth or fewer of those without it)',
+          hwo and hw * 10 <= hwo,
+          f'{hw} steep frames of {len(steep)} with holes with it, {hwo} without; most in a frame '
+          f'{max(w[i][1] for i in steep) - floor} with, {max(wo[i][1] for i in steep) - floor} without')
+
+
 def main(argv):
     cmd = argv[0] if argv else 'selftest'
     if cmd == 'selftest': selftest()
     elif cmd == 'registry': registry()
     elif cmd == 'script': script()
     elif cmd == 'coverage': coverage()
+    elif cmd == 'holes': holes()
     elif cmd == 'presentation': presentation()
     elif cmd == 'baseline': baseline(argv[1:])
     elif cmd == 'all':
@@ -410,7 +480,7 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); script(); presentation(); coverage(); baseline(['check'])
+            selftest(); registry(); script(); presentation(); coverage(); holes(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
