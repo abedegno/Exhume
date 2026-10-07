@@ -45,7 +45,7 @@ DEFAULT = {
              ['sessions in the UBSan build', T + 'replay.py' + C + ' verify all --debug', 'port-debug build'],
              ['sound drivers', T + 'replay.py' + C + ' drivers', 'port build'],
              ['fuzzing, deep', T + 'fuzzasm.py' + C + ' --deep', 'port build'],
-             ['enhancements', T + 'enhcheck.py' + C + ' all full', 'port build'],
+             ['enhancements', T + 'enhcheck.py' + C + ' all', 'port build'],
              ['coverage report', T + 'coverage.py' + C, 'port build']],
 }
 

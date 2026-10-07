@@ -160,6 +160,7 @@ struct PlatPointer;
 void mouse_event(const struct PlatPointer *ev);
 /* An enhancement's mouse-look (the game's mousedrv.c): its motion passed through, scaled by a
    percentage, with the pointer captured */
+void port_idle(void);                   /* sys/pit.c: rest while the game waits on the clock */
 void mouse_look_mode(int on);
 void mouse_look_speed(int pct);
 int mouse_int33(uint16_t *ax, uint16_t *bx, uint16_t *cx, uint16_t *dx);

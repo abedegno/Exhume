@@ -32,7 +32,8 @@
                          and the common ones with dump_rand() (RAND), dump_null() (NULL),
                          dump_counts() (CNTS) and, in a full dump, dump_screen() (PAL, CRTC,
                          VGA: the VGA's DAC, CRT controller and four planes)
-   and for the port, optionally: RP_PORT_CLOCK_READ(t) (UW2: port_clock_read, AIL's ticks
+   and for the port, optionally: RP_PORT_IDLE() (rest a moment while the game waits on the clock),
+   RP_PORT_CLOCK_READ(t) (UW2: port_clock_read, AIL's ticks
    under replay) and RP_PORT_SOUND, which makes the SOUND stream ask the port's own drivers
    (port_sound_read and port_sound_moment). UW2's is UW2Decomp's src/include/rpgame.h.
 
@@ -1006,6 +1007,20 @@ static void slave_ticks(uint32 t)
 uint32 far rp_time(void)
 {
     uint32 t;
+#if !defined(__TURBOC__) && defined(RP_PORT_IDLE)
+    /* the port, playing (not replaying): a game that reads the same clock value again and again
+       is waiting for it to move on, so after IDLE_READS such reads the port rests a moment
+       (RP_PORT_IDLE) instead of spinning a core. The clock moves on at its own rate meanwhile,
+       so play is unchanged; a recording holds that many fewer reads, which makes its replay
+       quicker. A replay reads its recorded values and never rests. */
+    static uint32 idle_t;
+    static int idle_n;
+#define IDLE_READS 64
+    if (rp_mode != RP_REPLAY && idle_n >= IDLE_READS) {
+        RP_PORT_IDLE();
+        idle_n = 0;
+    }
+#endif
     if (!begin())
         t = RP_CLOCK;
     else {
@@ -1024,6 +1039,14 @@ uint32 far rp_time(void)
     }
 #if !defined(__TURBOC__) && defined(RP_PORT_CLOCK_READ)
     RP_PORT_CLOCK_READ(t);
+#endif
+#if !defined(__TURBOC__) && defined(RP_PORT_IDLE)
+    if (t == idle_t)
+        idle_n++;
+    else {
+        idle_t = t;
+        idle_n = 0;
+    }
 #endif
     slave_ticks(t);
     return t;

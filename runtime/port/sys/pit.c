@@ -47,3 +47,10 @@ void pit_start(void)
     start = plat_counter();
     if (plat_thread_start("pit", pit_thread, 0)) port_fatal("cannot start the timer thread");
 }
+
+/* The game is waiting on the clock (runtime/replay/replay.c's rp_time saw it read the same value
+   many times over): rest half a millisecond, an eighth of the game clock's 3.9 ms tick. */
+void port_idle(void)
+{
+    plat_sleep_ns(500000);
+}

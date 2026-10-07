@@ -17,9 +17,10 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
     python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
                                                             enhanced/NAME (timing and gameplay)
-    python3 tools/enhcheck.py [--config PATH] all [full]    all of these but baseline make and
-                                                            record, and keys only with full (the
-                                                            full test tier: it takes long)
+    python3 tools/enhcheck.py [--config PATH] all           all of these but baseline make and
+                                                            record, and checks record
+    python3 tools/enhcheck.py [--config PATH] checks record  record looking's and keys' scripted
+                                                            screens again (tests/replay/checks)
 
 Exit status 0 when every check passes."""
 import os, re, sys, json, struct, hashlib, tempfile, shutil, subprocess
@@ -207,24 +208,34 @@ def presentation():
     # a session replayed from the saved game another writes ([replay] stage_from) runs after it,
     # with that saved game staged, as verify does
     order = [n for n in sessions if n not in G.STAGE_FROM] + [n for n in sessions if n in G.STAGE_FROM]
-    for flag in flags:
-        work = tempfile.mkdtemp(prefix='enhcheck-')
-        try:
-            for name in order:
-                g = G.load_golden(name)
-                if not g: continue
-                d = os.path.join(work, name); os.makedirs(d)
-                stage = None
-                if name in G.STAGE_FROM:
-                    sd = os.path.join(work, G.STAGE_FROM[name])
-                    stage = os.path.join(work, name + '-stage'); os.makedirs(stage)
-                    for x in G.stage_dirs(sd): shutil.copytree(os.path.join(sd, x), os.path.join(stage, x))
-                R.run_port(G.rec_of(name), d, ['--enhance', flag], stage=stage, quiet=True)
-                got = [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
-                diff = state_diff(g['checkpoints'], got)
-                check(f"{flag}: {name} keeps DOS's game state", not diff, diff[:3])
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
+    # every presentation enhancement at once: each session replayed once with all of them, and
+    # only a session that then differs from DOS replayed again with each alone, to name the one
+    # (they change different things, so one undoing another's change is not a worry)
+    work = tempfile.mkdtemp(prefix='enhcheck-')
+    try:
+        def replay(name, flag, sub):
+            d = os.path.join(work, sub, name); os.makedirs(d)
+            stage = None
+            if name in G.STAGE_FROM:
+                sd = os.path.join(work, 'all', G.STAGE_FROM[name])
+                stage = os.path.join(work, sub, name + '-stage'); os.makedirs(stage)
+                for x in G.stage_dirs(sd): shutil.copytree(os.path.join(sd, x), os.path.join(stage, x))
+            R.run_port(G.rec_of(name), d, ['--enhance', flag], stage=stage, quiet=True)
+            return [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
+        every = ','.join(flags)
+        for name in order:
+            g = G.load_golden(name)
+            if not g: continue
+            diff = state_diff(g['checkpoints'], replay(name, every, 'all'))
+            if not diff:
+                check(f"{every}: {name} keeps DOS's game state", True, '')
+                continue
+            for flag in flags:
+                one = state_diff(g['checkpoints'], replay(name, flag, flag))
+                check(f"{flag}: {name} keeps DOS's game state", not one, one[:3])
+            check(f"{every} together: {name} keeps DOS's game state", False, diff[:3])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def enh_dir(name): return os.path.join(R.RC.sessions, 'enhanced', name)
@@ -323,7 +334,7 @@ def png_pixels(data):
 
 def differ(a, b):
     """The fraction of two screenshots' image bytes that differ (1.0 when either is missing)."""
-    a, b = png_pixels(a), png_pixels(b)
+    a, b = (png_pixels(x) if x[:4] == b'\x89PNG' else x for x in (a, b))
     if not a or len(a) != len(b): return 1.0
     return sum(1 for x, y in zip(a, b) if x != y) / len(a)
 
@@ -473,6 +484,46 @@ def holes():
           f'{max(w[i][1] for i in steep) - floor} with, {max(wo[i][1] for i in steep) - floor} without')
 
 
+# The scripted screens of looking and keys: each a recording under tests/replay/checks, made once
+# by `checks record` (the script played live from the staged saved game, ending `after` ms from the
+# start, with the flags, the environment and any settings lines) and committed; the checks replay
+# it, which is quick and exact, and compare the screen of its end checkpoint (the VGA memory
+# through the palette, as replay.py show draws it).
+CHECKS = os.path.join(R.RC.sessions, 'checks')
+RECORDING = False
+
+
+def shot_run(work, stage, name, flags, lines, after, settings=None):
+    rec = os.path.join(CHECKS, name + '.rec')
+    if RECORDING:
+        h = os.path.join(work, 'rec-' + name)
+        shutil.rmtree(h, ignore_errors=True)
+        shutil.copytree(stage, h) if stage else os.makedirs(h)
+        if settings:
+            open(os.path.join(h, R.RC.port_name + '.cfg'), 'a').write(settings)
+        sp = os.path.join(work, name + '.script')
+        open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ''.join(l + '\n' for l in lines))
+        env = R.port_env(); env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+        cmd = [R.port_exe(), R.RC.port_data_flag, R.port_data(work), R.RC.port_home_flag, h, '--hidden',
+               '--no-recording', '--record', '--sound', '0,0', '--input-script', sp, '--exit-after', str(after),
+               '--enhance', flags]
+        subprocess.run(cmd, capture_output=True, env=env, timeout=300)
+        os.makedirs(CHECKS, exist_ok=True)
+        if os.path.exists(os.path.join(h, 'RECORD.OUT')):
+            shutil.copy(os.path.join(h, 'RECORD.OUT'), rec)
+            cfg = os.path.join(h, *R.RC.cfg_path.replace('\\', '/').split('/'))
+            if os.path.exists(cfg): shutil.copy(cfg, os.path.join(CHECKS, name + '.cfg'))
+    if not os.path.exists(rec): return b''
+    d = os.path.join(work, 'replay-' + name)
+    shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+    R.run_port(rec, d, [], stage=stage, quiet=True)
+    full = [ck for ck in R.read_dump(d) if 'VGA ' in ck['secs']] if os.path.exists(os.path.join(d, 'STATE.OUT')) else []
+    if not full: return b''
+    pix, _ = R.scanout(full[-1]['secs'])
+    pal = full[-1]['secs']['PAL ']
+    return b''.join(pal[3 * p:3 * p + 3] for p in pix)
+
+
 def looking():
     """--enhance mouse-look and invert-look: from the mouse-look session's saved game, the ` key and
     then mouse motion (the input script's look) turn the view, where without the key the same
@@ -489,17 +540,9 @@ def looking():
                                            ('speed0', 'skip-intro,mouse-look', 1, '0'), ('speed10', 'skip-intro,mouse-look', 1, '10'),
                                            ('speedhuge', 'skip-intro,mouse-look', 1, '100000'),
                                            ('speed400', 'skip-intro,mouse-look', 1, '400')):
-            h = os.path.join(work, name)
-            shutil.copytree(stage, h) if stage else os.makedirs(h)
-            if speed is not None:
-                open(os.path.join(h, R.RC.port_name + '.cfg'), 'a').write(f'look-speed={speed}\n')
-            sp = os.path.join(work, name + '.script')
-            open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ('9000 key grave\n' if toggle else '') +
-                                '9500 look 200 0\n10000 look 0 -40\n')
-            png = os.path.join(work, name + '.png')
-            port(h, '--enhance', flags, '--sound', '0,0', '--input-script', sp, '--screenshot-after', '12000',
-                 '--screenshot', png, exit_after=12500)
-            shots[name] = open(png, 'rb').read() if os.path.exists(png) else b''
+            shots[name] = shot_run(work, stage, 'look-' + name, flags,
+                                   (['9000 key grave'] if toggle else []) + ['9500 look 200 0', '10000 look 0 -40'], 12000,
+                                   f'look-speed={speed}\n' if speed is not None else None)
         # the 3D view is about a quarter of the screen, so a turned view differs by about that
         check('mouse-look: after the ` key the mouse turns the view (unlike the same motion without it)',
               differ(shots['on'], shots['untoggled']) > 0.15, f'differs by {differ(shots["on"], shots["untoggled"]):.3f}')
@@ -522,15 +565,8 @@ def keys():
         stage = stage_of('modern-keys', work)
         shots = {}
         def shot(name, flags, lines, after=12000):
-            if name in shots: return shots[name]     # a name is one run: reused
-            h = os.path.join(work, name)
-            shutil.copytree(stage, h) if stage else os.makedirs(h)
-            sp = os.path.join(work, name + '.script')
-            open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ''.join(l + '\n' for l in lines))
-            png = os.path.join(work, name + '.png')
-            port(h, '--enhance', flags, '--sound', '0,0', '--input-script', sp, '--screenshot-after', str(after),
-                 '--screenshot', png, exit_after=after + 500)
-            shots[name] = open(png, 'rb').read() if os.path.exists(png) else b''
+            if name not in shots:                   # a name is one recording: reused
+                shots[name] = shot_run(work, stage, 'keys-' + name, flags, lines, after)
             return shots[name]
         mk = 'skip-intro,modern-keys'
         still = shot('still', mk, [])
@@ -594,8 +630,10 @@ def keys():
         fk = {'uw2port': 'f1'}.get(R.RC.port_name, 'f5')
         fight = lambda k: [f'9000 key {fk}'] + ([f'9500 down {k}', f'10500 up {k}'] if k else [])
         sp, semi, f5 = shot('f-space', mk, fight('space'), 11000), shot('f-semi', mk, fight(';'), 11000), shot('f-none', mk, fight(None), 11000)
-        check('modern-keys: Space swings as ; does (slash, the first time)', differ(sp, f5) > 0.002 and differ(sp, semi) < differ(sp, f5),
-              f'from fight mode alone {differ(sp, f5):.4f}, from ; {differ(sp, semi):.4f}')
+        # each against fight mode alone (Space and ; are separate recordings, so their swings are
+        # caught at frames that need not match): both swing
+        check('modern-keys: Space swings, as ; does', differ(sp, f5) > 0.002 and differ(semi, f5) > 0.002,
+              f'Space from fight mode alone {differ(sp, f5):.4f}, ; from it {differ(semi, f5):.4f}')
         # rune-keys: the staged player has no runes (both games), so every rune key is refused and
         # leaves the screen as it was; that a rune the player has goes on the shelf was shown once by
         # hand with the runes granted (the commit says so). Ctrl and Alt together hold movement.
@@ -642,6 +680,10 @@ def main(argv):
     elif cmd == 'holes': holes()
     elif cmd == 'looking': looking()
     elif cmd == 'keys': keys()
+    elif cmd == 'checks' and argv[1:2] == ['record']:
+        global RECORDING
+        RECORDING = True
+        looking(); keys()
     elif cmd == 'presentation': presentation()
     elif cmd == 'baseline': baseline(argv[1:])
     elif cmd == 'all':
@@ -656,9 +698,7 @@ def main(argv):
                   False, f'exit {rc}: {out[-300:]}')
         else:
             selftest(); registry(); script(); presentation(); coverage(); holes(); looking()
-            # keys (about sixty screenshot runs in real time) only in the full tier: `all full`
-            if 'full' in argv[1:]: keys()
-            baseline(['check'])
+            keys(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
