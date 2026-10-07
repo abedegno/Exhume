@@ -4,6 +4,8 @@
        T down NAME       press          T up NAME     release
        T move X Y        the pointer to X, Y of the game's 320 by 200 screen
        T click X Y left|right
+       T look DX DY      relative motion, as a captured mouse gives (mouse-look), DX right and
+                         DY down in host pixels, -1000..1000
    '#' starts a comment. Keys go in as PC set-1 scan codes through the hook real keys use, and
    the pointer through the one the mouse uses, so the game, the recorder and the black box see
    a player's input. */
@@ -18,7 +20,7 @@
 #endif
 uint32_t pit_bios_ticks(void);
 
-enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK };
+enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK };
 struct ev { uint32_t ms; int kind, code, x, y, button; };
 static struct ev *evs;
 static int nev, next;
@@ -35,7 +37,7 @@ static const struct { const char *name; uint16_t code; } keys[] = {
     {"l", 0x26}, {"shift", 0x2A}, {"z", 0x2C}, {"x", 0x2D}, {"c", 0x2E}, {"v", 0x2F},
     {"b", 0x30}, {"n", 0x31}, {"m", 0x32}, {"alt", 0x38}, {"space", 0x39}, {"f1", 0x3B},
     {"f2", 0x3C}, {"f3", 0x3D}, {"f4", 0x3E}, {"f5", 0x3F}, {"f6", 0x40}, {"f7", 0x41},
-    {"f8", 0x42}, {"f9", 0x43}, {"f10", 0x44}, {"f11", 0x57}, {"f12", 0x58},
+    {"grave", 0x29}, {"`", 0x29}, {"f8", 0x42}, {"f9", 0x43}, {"f10", 0x44}, {"f11", 0x57}, {"f12", 0x58},
     {"up", 0x148}, {"left", 0x14B}, {"right", 0x14D}, {"down", 0x150}, {"home", 0x147},
     {"end", 0x14F}, {"pgup", 0x149}, {"pgdn", 0x151}, {"insert", 0x152}, {"delete", 0x153},
 };
@@ -94,8 +96,13 @@ int inscript_load(const char *path, void (*key)(uint8_t), void (*pointer)(const 
                 || (e.kind == EV_CLICK && strcmp(btn, "left") && strcmp(btn, "right")))
                 return bad(f, path, line, "a position 0..319 0..199 (and for a click, left or right)");
             e.button = !strcmp(btn, "right") ? PLAT_BUTTON_RIGHT : PLAT_BUTTON_LEFT;
+        } else if (!strcmp(word, "look")) {
+            e.kind = EV_LOOK;
+            if (sscanf(buf, "%lu %31s %d %d", &ms, word, &e.x, &e.y) < 4
+                || e.x < -1000 || e.x > 1000 || e.y < -1000 || e.y > 1000)
+                return bad(f, path, line, "a motion -1000..1000 -1000..1000");
         } else
-            return bad(f, path, line, "an event: key, down, up, move or click");
+            return bad(f, path, line, "an event: key, down, up, move, click or look");
         if (nev && e.ms < evs[nev - 1].ms) return bad(f, path, line, "times must not go back");
         if (nev == cap) {
             struct ev *m = realloc(evs, (size_t)(cap = cap ? cap * 2 : 32) * sizeof *evs);
@@ -127,6 +134,16 @@ static void send_ptr(int type, const struct ev *e, unsigned held)
     ptr_fn(&p);
 }
 
+static void send_look(const struct ev *e)
+{
+    PlatPointer p;
+    memset(&p, 0, sizeof p);
+    p.type = PLAT_POINTER_MOVE;
+    p.dx = (float)e->x;
+    p.dy = (float)e->y;
+    ptr_fn(&p);                     /* absolute 0: only the motion means anything */
+}
+
 void inscript_tick(void)
 {
     /* 18.2065 ticks a second: 182 ticks are 9996 ms */
@@ -138,6 +155,7 @@ void inscript_tick(void)
         case EV_DOWN: send_key(e->code, 1); break;
         case EV_UP: send_key(e->code, 0); break;
         case EV_MOVE: send_ptr(PLAT_POINTER_MOVE, e, 0); break;
+        case EV_LOOK: send_look(e); break;
         case EV_CLICK:
             send_ptr(PLAT_POINTER_MOVE, e, 0);
             send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button);

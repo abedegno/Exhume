@@ -158,6 +158,10 @@ void kbd_tick_ms(uint32_t ms);                 /* the typematic repeat, from the
 /* The mouse driver (sys/mousedrv.c): int 33h's state, fed by pointer events. */
 struct PlatPointer;
 void mouse_event(const struct PlatPointer *ev);
+/* An enhancement's mouse-look (the game's mousedrv.c): its motion passed through, scaled by a
+   percentage, with the pointer captured */
+void mouse_look_mode(int on);
+void mouse_look_speed(int pct);
 int mouse_int33(uint16_t *ax, uint16_t *bx, uint16_t *cx, uint16_t *dx);
 
 /* The divide trap (sys/int0trap.c): the handler the game installed for int 0, called on a

@@ -10,6 +10,8 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
                                                             original mappers' pixels exactly
     python3 tools/enhcheck.py [--config PATH] holes         --enhance wide-pitch's back pass fills
                                                             the holes a steep look leaves
+    python3 tools/enhcheck.py [--config PATH] looking       --enhance mouse-look and invert-look turn
+                                                            and pitch the view by the mouse
     python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
                                                             enhanced/NAME (timing and gameplay)
@@ -364,6 +366,14 @@ def script():
               f'differs from end by {differ(shots[0], shots[2]):.3f}, from no flag by {differ(shots[0], shots[1]):.3f}')
         check('a scripted key reaches the game (the recording holds it)',
               any(v & 0xFF == 0x20 or (v >> 8) == 0x39 for v in keys), [hex(v) for v in keys[:12]])
+        # look DX DY: relative motion, as a captured mouse gives (mouse-look), not a position
+        lk = os.path.join(d, 'look.script'); open(lk, 'w').write('500 look 10 0\n')
+        r = os.path.join(d, 'lrec'); os.makedirs(r)
+        rc, out = port(r, '--record', '--input-script', lk)
+        rec = os.path.join(r, 'RECORD.OUT')
+        mouse = R.read_log(rec)[0].get('MOUSE', []) if os.path.exists(rec) else []
+        check('a scripted look reaches the game as mouse motion (the recording holds 10, 0)',
+              rc == 0 and (10, 0) in [v for _, v in mouse], f'exit {rc}; MOUSE {mouse[:6]}; {out[-200:]}')
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -460,6 +470,35 @@ def holes():
           f'{max(w[i][1] for i in steep) - floor} with, {max(wo[i][1] for i in steep) - floor} without')
 
 
+def looking():
+    """--enhance mouse-look and invert-look: from the mouse-look session's saved game, the ` key and
+    then mouse motion (the input script's look) turn the view, where without the key the same
+    motion only moves the pointer; invert-look pitches it the other way."""
+    if not os.path.isdir(enh_dir('mouse-look')): return
+    work = tempfile.mkdtemp(prefix='enhcheck-')
+    try:
+        stage = stage_of('mouse-look', work)
+        shots = {}
+        for name, flags, toggle in (('on', 'skip-intro,mouse-look', 1), ('untoggled', 'skip-intro,mouse-look', 0),
+                                    ('inverted', 'skip-intro,mouse-look,invert-look', 1)):
+            h = os.path.join(work, name)
+            shutil.copytree(stage, h) if stage else os.makedirs(h)
+            sp = os.path.join(work, name + '.script')
+            open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ('9000 key grave\n' if toggle else '') +
+                                '9500 look 200 0\n10000 look 0 -40\n')
+            png = os.path.join(work, name + '.png')
+            port(h, '--enhance', flags, '--sound', '0,0', '--input-script', sp, '--screenshot-after', '12000',
+                 '--screenshot', png, exit_after=12500)
+            shots[name] = open(png, 'rb').read() if os.path.exists(png) else b''
+        # the 3D view is about a quarter of the screen, so a turned view differs by about that
+        check('mouse-look: after the ` key the mouse turns the view (unlike the same motion without it)',
+              differ(shots['on'], shots['untoggled']) > 0.15, f'differs by {differ(shots["on"], shots["untoggled"]):.3f}')
+        check('invert-look: the same motion pitches the view the other way',
+              differ(shots['on'], shots['inverted']) > 0.15, f'differs by {differ(shots["on"], shots["inverted"]):.3f}')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main(argv):
     cmd = argv[0] if argv else 'selftest'
     if cmd == 'selftest': selftest()
@@ -467,6 +506,7 @@ def main(argv):
     elif cmd == 'script': script()
     elif cmd == 'coverage': coverage()
     elif cmd == 'holes': holes()
+    elif cmd == 'looking': looking()
     elif cmd == 'presentation': presentation()
     elif cmd == 'baseline': baseline(argv[1:])
     elif cmd == 'all':
@@ -480,7 +520,7 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); script(); presentation(); coverage(); holes(); baseline(['check'])
+            selftest(); registry(); script(); presentation(); coverage(); holes(); looking(); baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')

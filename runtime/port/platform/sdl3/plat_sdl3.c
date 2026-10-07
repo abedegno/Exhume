@@ -19,6 +19,12 @@
 
 static const PlatHooks *hooks;
 static SDL_AtomicInt game_done;
+static SDL_AtomicInt capture_req;      /* plat_pointer_capture's request: 0 none, 1 capture, 2 release */
+
+void plat_pointer_capture(int on)
+{
+    SDL_SetAtomicInt(&capture_req, on ? 1 : 2);
+}
 static int game_status;
 
 /* SDL scan codes (USB HID usages) to PC set-1 make codes. 0 means no key; a value with bit 8
@@ -201,7 +207,7 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
     SDL_Texture *tex = NULL;
     int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg->scale > 0 ? cfg->scale : 3;
     unsigned buttons = 0, swallow = 0;
-    int locked = 0, cursor_hidden = 0, hidden_win = 0, vsync = 0;
+    int locked = 0, captured = 0, cursor_hidden = 0, hidden_win = 0, vsync = 0;
     Uint64 frame_ns = 0, last_present = 0, pace_from = 0;
     unsigned presents = 0, paced = 0, hidden_passes = 0;
     void *targ[2];
@@ -256,6 +262,13 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
         return 1;
     }
     while (!quit) {
+        {
+            int c = SDL_SetAtomicInt(&capture_req, 0);
+            if (c && win && !locked) {      /* the pointer lock's own capture stands */
+                captured = c == 1;
+                SDL_SetWindowRelativeMouseMode(win, captured);
+            }
+        }
         while (SDL_PollEvent(&e)) {
             PlatPointer p;
             float x, y;
@@ -319,8 +332,8 @@ int plat_run(const PlatConfig *cfg, const PlatHooks *h, int (*game)(void *), voi
                 p.x = (x - dst.x) * (float)w / dst.w;
                 p.y = (y - dst.y) * (float)hgt / dst.h;
                 p.buttons = buttons;
-                p.absolute = !locked;
-                if (!locked) {
+                p.absolute = !locked && !captured;
+                if (!locked && !captured) {
                     /* the game's cursor stands in for the host's over the picture */
                     int over = x >= dst.x && x < dst.x + dst.w && y >= dst.y && y < dst.y + dst.h;
                     if (over != cursor_hidden) {

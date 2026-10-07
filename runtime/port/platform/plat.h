@@ -111,6 +111,12 @@ void plat_game_exit(int status) __attribute__((noreturn));
    visible (a stub the port reached, docs/port.md). Does not return. */
 void plat_game_park(void) __attribute__((noreturn));
 
+/* Captures the pointer (1) or lets it go (0), from the game's thread, for a mode that turns the
+   view by the mouse (an enhancement's mouse-look): while captured the host's cursor is hidden
+   and pointer events carry only motion (absolute 0). The event loop applies it; the pointer lock
+   option's capture (mouse_lock) is apart from it. */
+void plat_pointer_capture(int on);
+
 /* Time: a monotonic high-resolution counter and its rate, and a precise sleep. */
 uint64_t plat_counter(void);
 uint64_t plat_counter_hz(void);
