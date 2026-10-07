@@ -17,8 +17,9 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
     python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
                                                             enhanced/NAME (timing and gameplay)
-    python3 tools/enhcheck.py [--config PATH] all           all of these but baseline make and
-                                                            record
+    python3 tools/enhcheck.py [--config PATH] all [full]    all of these but baseline make and
+                                                            record, and keys only with full (the
+                                                            full test tier: it takes long)
 
 Exit status 0 when every check passes."""
 import os, re, sys, json, struct, hashlib, tempfile, shutil, subprocess
@@ -543,12 +544,24 @@ def keys():
             other = shot('o-' + key, 'skip-intro', hold(key))
             check(f'modern-keys: {key} {what} (as the original {orig})', differ(got, same) < differ(got, other),
                   f'from the original {orig} {differ(got, same):.3f}, from the original {key} {differ(got, other):.3f}')
-        # Shift and Ctrl are movement keys (fly up and down), as in UltimaHacks, so the original's
-        # Shift+letter step moves are gone (its steps are Ctrl+arrows): Shift+W is not the step
+        # Shift and Ctrl are the fly keys, which do nothing on the ground (UltimaHacks' interpretScancode),
+        # so Shift+W runs as W does
         sw = shot('k-shift-w', mk, ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
-        osw = shot('o-shift-w', 'skip-intro', ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
-        check("modern-keys: Shift+W is no longer the original's step move", differ(sw, osw) > 0.15,
-              f'from the original Shift+W {differ(sw, osw):.3f}')
+        w = shot('k-w', mk, hold('w'))
+        check('modern-keys: Shift+W runs as W does (Shift flies only when flying)', differ(sw, w) < differ(sw, still),
+              f'from W {differ(sw, w):.3f}, from standing {differ(sw, still):.3f}')
+        # a lone Shift (held a moment, as a press is) jumps, as the original's J: the jump shows for a
+        # moment only, so several moments are taken; at one where J is in the air, Shift is too
+        seen = []
+        for t in (9100, 9200, 9300, 9400):
+            js = shot(f'k-shift{t}', mk, ['9000 down shift', '9300 up shift'], t)
+            jj = shot(f'o-j{t}', 'skip-intro', ['9000 key j'], t)
+            j0 = shot(f'still-{t}', mk, [], t)
+            if differ(jj, j0) > 0:
+                seen.append((t, differ(js, jj), differ(js, j0)))
+        # (the two jumps can start a frame apart, so at one moment one may have landed: any moment)
+        check('modern-keys: Shift jumps (as the original J)', seen and any(a < b for _, a, b in seen),
+              f'moments J was in the air, (from J, from standing): {seen}')
         # the new actions: each changes the screen where the same key without the flag does not
         # (the map most of it, a panel a tenth, a few lines of text in the scroll 0.4% to 2%;
         # the same script twice gives the same screen here, measured)
@@ -594,8 +607,28 @@ def keys():
         got = shot('r-lack', rk, chord(['a', 'b', 'c']))
         check('rune-keys: runes the player lacks are refused (the screen as it was)', differ(got, base) <= differ(base, base2),
               f'{differ(got, base):.4f}, a repeat {differ(base, base2):.4f}')
-        got = shot('r-ctrlaltw', rk, ['9000 down ctrl', '9050 down alt', '9100 down w', '10500 up w', '10600 up alt', '10650 up ctrl'])
-        check('rune-keys: Ctrl+Alt+W does not move', differ(got, base) <= max(differ(base, base2), 0.01), f'{differ(got, base):.4f}')
+        both = 'skip-intro,modern-keys,rune-keys'
+        got = shot('r-ctrlaltw', both, ['9000 down ctrl', '9050 down alt', '9100 down w', '10500 up w', '10600 up alt', '10650 up ctrl'])
+        b0 = shot('r-none-both', both, chord([]))
+        check('rune-keys: Ctrl+Alt+W does not move (with modern-keys, where Ctrl alone would not stop it)',
+              differ(got, b0) <= max(differ(base, base2), 0.01), f'{differ(got, b0):.4f}')
+        # the runes the player has: the test switch <PORT>_GRANT_RUNES gives every rune at the first
+        # rune key (the staged player has none)
+        grant = R.RC.port_name.upper() + '_GRANT_RUNES'
+        os.environ[grant] = '1'
+        try:
+            g0 = shot('g-none', rk, chord(['f12']))
+            g1 = shot('g-a', rk, chord(['a']))
+            g4 = shot('g-abcd', rk, chord(['a', 'b', 'c', 'd']))
+            g3 = shot('g-bcd', rk, chord(['b', 'c', 'd']))
+            gc = shot('g-a-bs', rk, chord(['a', 'backspace']))
+        finally:
+            os.environ.pop(grant, None)
+        check('rune-keys: a rune the player has goes on the shelf', differ(g1, g0) > max(differ(base, base2), 0.0005),
+              f'{differ(g1, g0):.4f}')
+        check('rune-keys: a fourth rune pushes the oldest off (as the last three)', differ(g4, g3) <= differ(base, base2),
+              f'{differ(g4, g3):.4f}')
+        check('rune-keys: Backspace clears the shelf', differ(gc, g0) <= differ(base, base2), f'{differ(gc, g0):.4f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -622,7 +655,10 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); script(); presentation(); coverage(); holes(); looking(); keys(); baseline(['check'])
+            selftest(); registry(); script(); presentation(); coverage(); holes(); looking()
+            # keys (about sixty screenshot runs in real time) only in the full tier: `all full`
+            if 'full' in argv[1:]: keys()
+            baseline(['check'])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')
