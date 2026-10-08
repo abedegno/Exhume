@@ -26,6 +26,7 @@ static SDL_Window *g_win;
 static int locked, captured, cursor_hidden;   /* the pointer lock option's capture, mouse-look's, the host's cursor hidden */
 static unsigned buttons;                       /* the buttons the game saw go down */
 static float last_x, last_y;                   /* where the game's pointer last was */
+static int left_down;   /* the left button as the settings screen last saw it; cleared when the screen opens */
 static int was_open, rel_restore, scaled_up;   /* scaled_up: the window was doubled for the screen (scale 1) */
 static uint8_t held[256];              /* the keys the game saw go down (a set-1 code, +128 after E0) */
 static SDL_AtomicInt game_done;
@@ -128,6 +129,7 @@ static void sync_open(void)
     was_open = o;
     if (o) {
         port_pause(1);
+        left_down = 0;      /* a button released while it was closed (F11 with it held) never reached the screen */
         if (g_win && (locked || captured)) {
             SDL_SetWindowRelativeMouseMode(g_win, false);
             rel_restore = 1;
@@ -419,7 +421,7 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
     const PlatConfig *cfg = &live;
     int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg0->scale > 0 ? cfg0->scale : 3;
     unsigned swallow = 0;
-    int hidden_win = 0, vsync = 0, left_down = 0;
+    int hidden_win = 0, vsync = 0;
     Uint64 frame_ns = 0, last_present = 0, pace_from = 0;
     unsigned presents = 0, paced = 0, hidden_passes = 0;
     void *targ[2];
@@ -509,6 +511,7 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
                     if (e.type == SDL_EVENT_KEY_DOWN && locked) {
                         SDL_SetWindowRelativeMouseMode(win, false);
                         locked = 0;
+                        if (!captured) rel_restore = 0;     /* as plat_set_mouse_lock(0): no lock to hold it by */
                         mouse_title(win, cfg, 0);
                     }
                     break;

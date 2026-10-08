@@ -58,7 +58,9 @@ static const char *mark[MAX_ROWS];        /* the note column's text when not cha
 static int enh_bit[MAX_ROWS];             /* the enhancement flag of a row, else -1 */
 static int value[MAX_ROWS];
 static char path[MAX_ROWS][PATH_MAX_LEN]; /* SET_FOLDER rows' text */
-static char changed[MAX_ROWS];            /* a restart row that was changed this run */
+static char changed[MAX_ROWS];            /* a restart row whose value now differs from the one the run started with */
+static int start_value[MAX_ROWS];         /* each row's value when the run started */
+static char start_path[MAX_ROWS][PATH_MAX_LEN];   /* and a folder row's text */
 static int nrows;
 static uint32_t pending_enh;
 static int cur_tab;
@@ -167,7 +169,7 @@ static void commit(int r)
     }
     save(r);
     if (rows[r].apply) rows[r].apply(value[r]);
-    if (rows[r].restart) changed[r] = 1;
+    if (rows[r].restart) changed[r] = value[r] != start_value[r] || strcmp(path[r], start_path[r]) != 0;
 }
 
 static void change(int r, int dir)
@@ -248,6 +250,8 @@ void settings_init(const char *home, const struct setting *table, int n, const c
         enh_bit[nrows++] = i;
     }
     for (i = 0; i < nrows; i++) value[i] = load_value(i);
+    memcpy(start_value, value, sizeof start_value);
+    memcpy(start_path, path, sizeof start_path);
     notice[0] = 0;
     cur_tab = SET_TAB_SOUND;
     sel = 0;

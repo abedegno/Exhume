@@ -72,6 +72,10 @@ int main(void)
     /* the enhancement rows follow the table's two: a gameplay one has its mark and its credit */
     CHECK(settings_note(3) && !strcmp(settings_note(3), "changes play"), "a gameplay enhancement's row is marked \"changes play\"");
     CHECK(settings_note(2) && !strcmp(settings_note(2), "Restart to apply"), "a changed restart row says \"Restart to apply\"");
+    settings_key(SET_KEY_ENTER);                                 /* back to the value the run started with */
+    CHECK(settings_note(2) == NULL, "a restart row changed back to its starting value has no note");
+    settings_key(SET_KEY_ENTER);
+    CHECK(settings_note(2) && !strcmp(settings_note(2), "Restart to apply"), "and changed again, it has it once more");
     CHECK(settings_help(3) && strstr(settings_help(3), "(from UltimaHacks)"), "an enhancement's help line gives its credit");
     CHECK(settings_help(2) && !strstr(settings_help(2), "(from"), "and one of the project's own has none");
     settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* back to Sound: Volume is row 1 */

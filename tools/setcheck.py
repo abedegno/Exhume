@@ -17,10 +17,11 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] badvalues   volume=abc and scale=99 in the file start the run as the screen reads them
     python3 tools/setcheck.py [--config PATH] wclick      a click in window coordinates hits the row drawn there after a scale change
     python3 tools/setcheck.py [--config PATH] roms        the MT-32 ROMs row says "not found" or "found" (SETCHECK_ROMS=DIR for found)
-    python3 tools/setcheck.py [--config PATH] all      all of these
+    python3 tools/setcheck.py [--config PATH] all      all of these: the independent ones side by side (SETCHECK_JOBS, default 4),
+                                                       then the timing-sensitive ones alone; `all --serial` runs them one by one
 
 Exit status 0 when every check passes."""
-import os, sys, struct, hashlib, tempfile, shutil, subprocess, zlib, math
+import os, sys, struct, hashlib, tempfile, shutil, subprocess, zlib, math, time
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 import enhcheck as E
 from enhcheck import check, port, stage_of, differ, settings
@@ -80,19 +81,29 @@ def fresh(work, name, text='', start=False):
 def f11():
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        sp = script_file(work, 'f11', ['3000 key f11'])
+        sp = script_file(work, 'f11', ['1500 key f11'])
         sp0 = script_file(work, 'none', ['# no events'])
         res = {}
         for name, s in (('open', sp), ('closed', sp0)):
             h = fresh(work, name)
             w = os.path.join(work, name + '.png')
-            rc, out = port(h, '--input-script', s, '--screenshot-after', '5000', '--screenshot', os.path.join(work, name + '-s.png'),
-                           '--window-shot', w, hidden=False, exit_after=7000)
+            rc, out = port(h, '--input-script', s, '--screenshot-after', '3000', '--screenshot', os.path.join(work, name + '-s.png'),
+                           '--window-shot', w, hidden=False, exit_after=3700)
             res[name] = (gold_pixels(w) if os.path.exists(w) else -1, rc, out[-300:])
         check('F11: the layer shows (its title\'s gold pixels are in the window)', res['open'][0] >= 20, res['open'])
         check('no F11: no gold pixels in the window', res['closed'][0] == 0, res['closed'])
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def use_stage(work):
+    """The mouse-look session's saved game for stage_run. `all` makes it once, before the timing-sensitive
+    checks, and names it in SETCHECK_STAGE (read only: each run copies it into its own home)."""
+    shared = os.environ.get('SETCHECK_STAGE')
+    if shared and os.path.isdir(shared): stage_run.stage = shared
+    else:
+        stage_of('mouse-look', work)
+        stage_run.stage = os.path.join(work, 'stage')
 
 
 def stage_run(work, name, lines, after, extra=(), text=''):
@@ -113,15 +124,14 @@ def stage_run(work, name, lines, after, extra=(), text=''):
 def shot_of(work, name, lines, after):
     png = os.path.join(work, name + '.png')
     if os.path.exists(png): os.remove(png)
-    stage_run(work, name, lines, after + 2500, ['--screenshot-after', str(after), '--screenshot', png])
+    stage_run(work, name, lines, after + 1000, ['--screenshot-after', str(after), '--screenshot', png])
     return open(png, 'rb').read() if os.path.exists(png) else b''
 
 
 def pause():
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        stage_of('mouse-look', work)
-        stage_run.stage = os.path.join(work, 'stage')
+        use_stage(work)
         h, out = stage_run(work, 'pause', ['9000 key f11', '13000 key f11'], 17000, ['--record'])
         rec = os.path.join(h, 'RECORD.OUT')
         if not os.path.exists(rec):
@@ -158,8 +168,7 @@ def pause():
 def held():
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        stage_of('mouse-look', work)
-        stage_run.stage = os.path.join(work, 'stage')
+        use_stage(work)
         T = 13000
         # S walks forward in the original's keys (W is not bound)
         walked = shot_of(work, 'walk', ['9000 down s', '9500 up s'], T)
@@ -179,13 +188,12 @@ def heldbutton():
     the last value it read is 0, and the hold did reach it (a read of 2, the right button)."""
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        stage_of('mouse-look', work)
-        stage_run.stage = os.path.join(work, 'stage')
+        use_stage(work)
         at = '160 60 right'
         res = {}
         for name, lines in (('through', [f'9000 mdown {at}', '9500 key f11', f'10000 mup {at}', '10500 key f11']),
                             ('plain', [f'9000 mdown {at}', f'9500 mup {at}'])):
-            h, out = stage_run(work, 'b-' + name, lines, 14000, ['--record'])
+            h, out = stage_run(work, 'b-' + name, lines, 12500, ['--record'])
             rec = os.path.join(h, 'RECORD.OUT')
             res[name] = [v for _, v in R.read_log(rec)[0].get('BUTTONS', [])] if os.path.exists(rec) else []
         for name, vals in res.items():
@@ -195,10 +203,11 @@ def heldbutton():
         shutil.rmtree(work, ignore_errors=True)
 
 
-def rms(path, limit=100000):
+def rms(path, limit=50000):
     """The RMS of the first LIMIT samples of a raw 16-bit file. Only the start is the same in two
     runs: the replay runs faster than the device plays, so once the ring is full what is dropped
-    depends on timing."""
+    depends on timing. Measured over 20 pairs of runs per game, the first 50000 samples give the same
+    ratio every time (0.5 for volume=50); by 100000 it already wanders from 0.38 to 0.65 (UW2)."""
     d = open(path, 'rb').read() if os.path.exists(path) else b''
     n = min(len(d) // 2, limit)
     if not n: return 0.0
@@ -222,7 +231,7 @@ def volume():
             tap = os.path.join(work, name + '.raw')
             os.environ['PORT_AUDIO_TAP'] = tap
             try:
-                rc, o = port(h, R.RC.port_replay_flag, os.path.abspath(rec), hidden=False, exit_after=9000)
+                rc, o = port(h, R.RC.port_replay_flag, os.path.abspath(rec), hidden=False, exit_after=5000)
             finally:
                 os.environ.pop('PORT_AUDIO_TAP', None)
             out[name] = rms(tap)
@@ -237,7 +246,7 @@ def window_size(work, name, text, *args):
     h = fresh(work, name, text)
     w = os.path.join(work, name + '.png')
     port(h, '--screenshot-after', '1500', '--screenshot', os.path.join(work, name + '-s.png'), '--window-shot', w, *args,
-         hidden=False, exit_after=3000)
+         hidden=False, exit_after=2200)
     return (png_rgb(w)[:2] if os.path.exists(w) else None), open(cfg_path(h)).read() if os.path.exists(cfg_path(h)) else ''
 
 
@@ -249,13 +258,13 @@ def scale():
         size, _ = window_size(work, 'a-on', 'scale=2\n')
         check('scale: scale=2 with aspect on makes the window 640x480', size == (640, 480), size)
         # at scale 1 the layer's text is too small: the window doubles while the screen is open
-        # (the window's size is read in the shot, so the screen is open at 1500 and the shot at 1500)
+        # (the window's size is read in the shot, taken 1100 ms after the screen closes)
         h = fresh(work, 'a-one', 'scale=1\n')
         for name, lines in (('open', ['500 key f11']), ('closed', ['500 key f11', '900 key f11'])):
             sp = script_file(work, 'one-' + name, lines)
             w = os.path.join(work, 'one-' + name + '.png')
-            port(h, '--input-script', sp, '--screenshot-after', '2500', '--screenshot', os.path.join(work, 'one-s.png'),
-                 '--window-shot', w, hidden=False, exit_after=4000)
+            port(h, '--input-script', sp, '--screenshot-after', '2000', '--screenshot', os.path.join(work, 'one-s.png'),
+                 '--window-shot', w, hidden=False, exit_after=2700)
             size = png_rgb(w)[:2] if os.path.exists(w) else None
             want = (640, 480) if name == 'open' else (320, 240)
             check(f'scale: at scale 1 the window is {want[0]} wide with the screen {name}', size == want, size)
@@ -304,13 +313,15 @@ def card_cfg(home, music, speech):
     open(p, 'w', newline='').write(f'{music} -1 -1 -1 sound\r\n{speech} -1 -1 -1 speech\r\n0 cuts\r\n')
 
 
-def roundtrip():
+def roundtrip(part=0, parts=1):
+    """PART of PARTS: the rows are dealt out in turn, so that `all` can run the slices side by side."""
     rows = table_rows()
-    check('the table lists rows in all of the tabs but the generated one', {r['tab'] for r in rows} >= {0, 1, 2, 4}, [r['label'] for r in rows])
-    # a row that resizes the window must not be a slider: dragging it would move the row under the pointer
-    sc = [r for r in rows if r['key'] == 'scale']
-    check('the Window scale row is a cycle, 1x to 8x (no drag resizes the window)',
-          sc and sc[0]['kind'] == CYCLE and sc[0]['names'] == [f'{i}x' for i in range(1, 9)], sc)
+    if part == 0:       # once, not in every slice
+        check('the table lists rows in all of the tabs but the generated one', {r['tab'] for r in rows} >= {0, 1, 2, 4}, [r['label'] for r in rows])
+        # a row that resizes the window must not be a slider: dragging it would move the row under the pointer
+        sc = [r for r in rows if r['key'] == 'scale']
+        check('the Window scale row is a cycle, 1x to 8x (no drag resizes the window)',
+              sc and sc[0]['kind'] == CYCLE and sc[0]['names'] == [f'{i}x' for i in range(1, 9)], sc)
     cards = [r for r in rows if r['key'] == '-']
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
@@ -319,10 +330,13 @@ def roundtrip():
             if cards: card_cfg(h, *[c['stored'][c['d']] for c in cards[:2]])
             return h
         seen = {}
-        seen_noise = False
+        seen_noise = part != 0      # the control for the check below is made once, by the first slice
+        done = -1
         for r in rows:
             k = seen.get(r['tab'], 0); seen[r['tab']] = k + 1      # its place in its tab, folder rows counted
             if r['kind'] == FOLDER: continue
+            done += 1
+            if done % parts != part: continue
             label = r['label']
             if r['key'] == 'settings-at-start': r['d'] = 0      # start_home's file turns it off, so that is where it starts
             lines, t = nav(r['tab'], k)
@@ -336,7 +350,7 @@ def roundtrip():
                 lines.append(f'{t} key enter')
             lines.append(f'{t + 200} key f11')
             h = start_home('rt-' + label.replace(' ', '_'))
-            rc, out = port(h, '--input-script', script_file(work, 'rt', lines), hidden=False, exit_after=t + 1800)
+            rc, out = port(h, '--input-script', script_file(work, 'rt', lines), hidden=False, exit_after=t + 900)
             if r['key'] == '-':
                 which = cards.index(r)
                 text = open(cfg_file(h)).read().splitlines() if os.path.exists(cfg_file(h)) else []
@@ -358,7 +372,7 @@ def roundtrip():
                 w = os.path.join(work, f'rt-{name}.png')
                 if os.path.exists(w): os.remove(w)
                 port(home, '--input-script', script_file(work, 'rt2', lines2), '--screenshot-after', str(t2 + 800),
-                     '--screenshot', os.path.join(work, 'rt-s.png'), '--window-shot', w, hidden=False, exit_after=t2 + 2000)
+                     '--screenshot', os.path.join(work, 'rt-s.png'), '--window-shot', w, hidden=False, exit_after=t2 + 1400)
                 shots[name] = open(w, 'rb').read() if os.path.exists(w) else b''
             if 'again' in shots:
                 check('roundtrip: the check can tell (two shots of the same state are identical)', shots['again'] and differ(shots['again'], shots['default']) == 0,
@@ -369,39 +383,49 @@ def roundtrip():
         shutil.rmtree(work, ignore_errors=True)
 
 
-def firstrun():
+def firstrun(part=None):
+    """PART 'gold': the screen at start (counts of its gold pixels, which a busy machine does not move);
+    'resume': the game running on after Esc (a picture 5 s into the run); None: both."""
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        for name, start, want in (('first', True, True), ('off', False, False)):
-            h = fresh(work, name, start=start)
-            w = os.path.join(work, name + '.png')
-            port(h, '--screenshot-after', '1500', '--screenshot', os.path.join(work, name + '-s.png'), '--window-shot', w,
-                 hidden=False, exit_after=3000)
-            n = gold_pixels(w) if os.path.exists(w) else -1
-            check(f'first run: {"a fresh home shows the screen with no key pressed" if want else "settings-at-start=0 does not"}',
-                  n >= 20 if want else n == 0, n)
-        # a player turns it off in the screen, and the next start does not show it
-        h = fresh(work, 'toggle', start=True)
-        lines, t = nav(4, 2, t0=1000)       # Game tab, "Show this at start": the screen is open already, so F11 would close it
-        lines = lines[1:]                    # no F11 first
-        lines.append(f'{t} key enter'); lines.append(f'{t + 200} key f11')
-        port(h, '--input-script', script_file(work, 'toggle', lines), hidden=False, exit_after=t + 1500)
-        check('first run: turning "Show this at start" off in the screen is kept', 'settings-at-start=0' in settings(h), settings(h))
-        # Esc closes the first-run screen and the game starts: its own picture moves on from the
-        # paused first frame (the run kept open shows that frame throughout)
-        res = {}
-        for name, lines in (('kept', ['# no events']), ('closed', ['1500 key esc'])):
-            h = fresh(work, 'fr-' + name, start=True)
-            s, w = os.path.join(work, f'fr-{name}-s.png'), os.path.join(work, f'fr-{name}.png')
-            port(h, '--input-script', script_file(work, 'fr-' + name, lines), '--screenshot-after', '9000', '--screenshot', s,
-                 '--window-shot', w, hidden=False, exit_after=10500)
-            res[name] = (open(s, 'rb').read() if os.path.exists(s) else b'', gold_pixels(w) if os.path.exists(w) else -1)
-        d = differ(res['closed'][0], res['kept'][0]) if res['closed'][0] and res['kept'][0] else 0
-        check('first run: Esc closes the screen (no gold in the window afterwards)', res['closed'][1] == 0 and res['kept'][1] >= 20,
-              (res['closed'][1], res['kept'][1]))
-        check('first run: and the game resumes (its picture differs from the paused first frame)', d > 0.01, f'{d:.4f}')
+        if part != 'resume': firstrun_gold(work)
+        if part != 'gold': firstrun_resume(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def firstrun_gold(work):
+    for name, start, want in (('first', True, True), ('off', False, False)):
+        h = fresh(work, name, start=start)
+        w = os.path.join(work, name + '.png')
+        port(h, '--screenshot-after', '1500', '--screenshot', os.path.join(work, name + '-s.png'), '--window-shot', w,
+             hidden=False, exit_after=2200)
+        n = gold_pixels(w) if os.path.exists(w) else -1
+        check(f'first run: {"a fresh home shows the screen with no key pressed" if want else "settings-at-start=0 does not"}',
+              n >= 20 if want else n == 0, n)
+    # a player turns it off in the screen, and the next start does not show it
+    h = fresh(work, 'toggle', start=True)
+    lines, t = nav(4, 2, t0=1000)       # Game tab, "Show this at start": the screen is open already, so F11 would close it
+    lines = lines[1:]                    # no F11 first
+    lines.append(f'{t} key enter'); lines.append(f'{t + 200} key f11')
+    port(h, '--input-script', script_file(work, 'toggle', lines), hidden=False, exit_after=t + 900)
+    check('first run: turning "Show this at start" off in the screen is kept', 'settings-at-start=0' in settings(h), settings(h))
+
+
+def firstrun_resume(work):
+    # Esc closes the first-run screen and the game starts: its own picture moves on from the
+    # paused first frame (the run kept open shows that frame throughout)
+    res = {}
+    for name, lines in (('kept', ['# no events']), ('closed', ['1500 key esc'])):
+        h = fresh(work, 'fr-' + name, start=True)
+        s, w = os.path.join(work, f'fr-{name}-s.png'), os.path.join(work, f'fr-{name}.png')
+        port(h, '--input-script', script_file(work, 'fr-' + name, lines), '--screenshot-after', '5000', '--screenshot', s,
+             '--window-shot', w, hidden=False, exit_after=5700)
+        res[name] = (open(s, 'rb').read() if os.path.exists(s) else b'', gold_pixels(w) if os.path.exists(w) else -1)
+    d = differ(res['closed'][0], res['kept'][0]) if res['closed'][0] and res['kept'][0] else 0
+    check('first run: Esc closes the screen (no gold in the window afterwards)', res['closed'][1] == 0 and res['kept'][1] >= 20,
+          (res['closed'][1], res['kept'][1]))
+    check('first run: and the game resumes (its picture differs from the paused first frame)', d > 0.01, f'{d:.4f}')
 
 
 def cmdline():
@@ -424,7 +448,7 @@ def cmdline():
         h = fresh(work, 'cl3', 'scale=2\n')
         w = os.path.join(work, 'cl3.png')
         port(h, '--scale', '4', '--input-script', script_file(work, 'cl3', lines), '--screenshot-after', str(t + 1200),
-             '--screenshot', os.path.join(work, 'cl3-s.png'), '--window-shot', w, hidden=False, exit_after=t + 2500)
+             '--screenshot', os.path.join(work, 'cl3-s.png'), '--window-shot', w, hidden=False, exit_after=t + 1700)
         size = png_rgb(w)[:2] if os.path.exists(w) else None
         check('cmdline: --scale 4 over scale=2 stays at scale 4 after the screen toggles aspect (1280x800)', size == (1280, 800), size)
         text = settings(h).splitlines()
@@ -450,7 +474,7 @@ def restart():
         lines, t = nav(3, k)
         lines += [f'{t} key enter', f'{t + 200} key f11']
         h = fresh(work, 'rs')
-        rc, out = port(h, '--input-script', script_file(work, 'rs', lines), hidden=False, exit_after=t + 1800)
+        rc, out = port(h, '--input-script', script_file(work, 'rs', lines), hidden=False, exit_after=t + 900)
         check('restart: skip-intro turned on in the screen does not apply in that run (no enhance: line)', 'enhance:' not in out, out[-300:])
         check('restart: and the file says enhance=skip-intro', 'enhance=skip-intro' in settings(h), settings(h))
         rc, out = port(h, hidden=False)
@@ -474,7 +498,7 @@ def folder():
             try:
                 # the control never presses Enter on the row (without an answer set it would open the real dialog)
                 rc, out = port(h, '--input-script', script_file(work, 'folder', lines if ans else lines[:-1]), '--screenshot-after', str(t + 800),
-                               '--screenshot', os.path.join(work, 'f-s.png'), '--window-shot', w, hidden=False, exit_after=t + 2000)
+                               '--screenshot', os.path.join(work, 'f-s.png'), '--window-shot', w, hidden=False, exit_after=t + 1300)
             finally:
                 os.environ.pop('PORT_FOLDER_ANSWER', None)
             res[name] = (settings(h), out, open(w, 'rb').read() if os.path.exists(w) else b'')
@@ -495,12 +519,11 @@ def textentry():
     if R.RC.port_name != 'uw1port': return
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        stage_of('mouse-look', work)
-        stage_run.stage = os.path.join(work, 'stage')
+        use_stage(work)
         # Ctrl+S opens the save dialog, Enter takes the first slot and asks for the description
         head = ['9000 down ctrl', '9100 key s', '9200 up ctrl', '10000 key enter']
         for name, mid in (('through', ['11000 key f11', '11200 key z', '11300 key z', '11500 key f11']), ('plain', [])):
-            h, out = stage_run(work, 'te-' + name, head + mid + ['12000 key a', '12200 key b', '12500 key enter'], 15000)
+            h, out = stage_run(work, 'te-' + name, head + mid + ['12000 key a', '12200 key b', '12500 key enter'], 14000)
             p = os.path.join(h, 'SAVE1', 'DESC')
             d = open(p, 'rb').read()[:40] if os.path.exists(p) else None
             check(f'textentry ({name}): the save\'s description is ab', d is not None and d.startswith(b'ab') and not d.startswith(b'abz') and b'z' not in d, (d, out[-200:]))
@@ -525,7 +548,7 @@ def badvalues():
         os.environ['PORT_AUDIO_TAP'] = tap
         try:
             rc, out = port(h, R.RC.port_replay_flag, os.path.abspath(rec), '--screenshot-after', '3000',
-                           '--screenshot', os.path.join(work, 'bad-s.png'), '--window-shot', w, hidden=False, exit_after=9000)
+                           '--screenshot', os.path.join(work, 'bad-s.png'), '--window-shot', w, hidden=False, exit_after=5000)
         finally:
             os.environ.pop('PORT_AUDIO_TAP', None)
         size = png_rgb(w)[:2] if os.path.exists(w) else None
@@ -555,7 +578,7 @@ def wclick():
             y = (72 + 20 * k_int + 10) * 3 // 2       # the row's middle in the layer, at 1.5 window pixels a layer pixel
             lines += [f'{t + 600} wclick 450 {y}', f'{t + 900} key f11']
             h = fresh(work, 'wc-' + name, 'scale=2\naspect=0\n')
-            rc, out = port(h, '--input-script', script_file(work, 'wc-' + name, lines), hidden=False, exit_after=t + 2200)
+            rc, out = port(h, '--input-script', script_file(work, 'wc-' + name, lines), hidden=False, exit_after=t + 1500)
             res[name] = (settings(h).splitlines(), out[-300:])
         check('wclick: after Right on Window scale the file says scale=3', 'scale=3' in res['scaled'][0], res['scaled'])
         check('wclick: a click at the row\'s new place in the window turns Whole-number scaling off', 'integer=0' in res['scaled'][0], res['scaled'])
@@ -598,14 +621,83 @@ def roms():
         shutil.rmtree(work, ignore_errors=True)
 
 
+CHECKS = ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale', 'roundtrip', 'firstrun', 'cmdline',
+          'restart', 'folder', 'textentry', 'badvalues', 'wclick', 'roms')
+# What `all` runs side by side (each in its own process and temp home): checks whose answer does not
+# depend on when the game gets its events or frames. ROUNDTRIP is dealt out in slices, longest jobs first.
+POOL = ('roundtrip:0/3', 'roundtrip:1/3', 'roundtrip:2/3', 'scale', 'stage', 'f11', 'firstrun:gold', 'folder', 'cmdline', 'wclick', 'restart', 'roms')
+# What `all` runs alone, one at a time, after the pool: these read the game clock, the recorded input,
+# the audio or a picture at a wall-clock moment, or press keys at fixed times in a loaded game, so a busy
+# machine would move what they measure. (firstrun's second half compares a picture 5 s into the run; badvalues the
+# audio and a picture; textentry types at fixed times; the others as the names say.)
+ALONE = ('pause', 'held', 'heldbutton', 'volume', 'textentry', 'firstrun:resume', 'badvalues')
+
+
+def timed(name):
+    t = time.time()
+    if name == 'stage':                # `all`'s one copy of the saved game the stage runs start from
+        d = os.environ['SETCHECK_STAGE_DIR']; stage_of('mouse-look', d)
+    elif ':' in name:
+        base, part = name.split(':')
+        globals()[base](*(int(x) for x in part.split('/'))) if '/' in part else globals()[base](part)
+    else: globals()[name]()
+    print(f'setcheck: {name} took {time.time() - t:.1f} s', flush=True)
+
+
+def job(name, env):
+    """One check as a process of its own: (name, seconds, return code, output)."""
+    cfg = ['--config', os.environ['EXHUME_CONFIG']] if os.environ.get('EXHUME_CONFIG') else []
+    t = time.time()
+    try:
+        r = subprocess.run([sys.executable, os.path.abspath(__file__)] + cfg + [name], capture_output=True, text=True,
+                           errors='replace', env=env, timeout=1200)
+        return name, time.time() - t, r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired as e:
+        return name, time.time() - t, 99, f'FAIL {name}: timed out\n{e.stdout or ""}'
+
+
+def run_all(workers):
+    """The pool, then the checks that must be alone. The totals are the sum of the processes'."""
+    from concurrent.futures import ThreadPoolExecutor
+    t0 = time.time()
+    stage_dir = tempfile.mkdtemp(prefix='setcheck-stage-')
+    env = dict(os.environ, SETCHECK_STAGE_DIR=stage_dir)
+    tally = [0, 0]      # checks run, checks failed
+    bad_jobs = []
+    times = {}
+
+    def report(r, label):
+        name, secs, rc, out = r
+        times[name] = secs
+        print(f'--- {name} ({label}, {secs:.1f} s)')
+        print(out.rstrip(), flush=True)
+        for l in out.splitlines():
+            if l.startswith('ok  '): tally[0] += 1
+            elif l.startswith('FAIL'): tally[0] += 1; tally[1] += 1
+        if rc != 0 and 'FAIL' not in out: tally[0] += 1; tally[1] += 1
+        if rc != 0: bad_jobs.append(name)
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for r in ex.map(lambda n: job(n, env), POOL): report(r, 'pool')
+        t1 = time.time()
+        env['SETCHECK_STAGE'] = os.path.join(stage_dir, 'stage')
+        for n in ALONE: report(job(n, env), 'alone')
+        print(f'setcheck: the pool took {t1 - t0:.1f} s, the checks run alone {time.time() - t1:.1f} s')
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+    print(f'setcheck: {tally[0] - tally[1]} of {tally[0]} checks pass in {time.time() - t0:.1f} s')
+    return 1 if tally[1] or bad_jobs else 0
+
+
 def main(argv):
     cmd = argv[0] if argv else 'all'
+    if cmd == 'all' and '--serial' not in argv:
+        return run_all(int(os.environ.get('SETCHECK_JOBS', '4')))
     if cmd == 'all':
-        f11(); pause(); held(); heldbutton(); volume(); scale()
-        roundtrip(); firstrun(); cmdline(); restart(); folder(); textentry(); badvalues(); wclick(); roms()
-    elif cmd in ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale', 'roundtrip', 'firstrun', 'cmdline', 'restart',
-                 'folder', 'textentry', 'badvalues', 'wclick', 'roms'):
-        globals()[cmd]()
+        for name in CHECKS: timed(name)
+    elif cmd in CHECKS or cmd == 'stage' or cmd.split(':')[0] in ('roundtrip', 'firstrun') and ':' in cmd:
+        timed(cmd)
     else: sys.exit(__doc__)
     n = len(E.results); bad = E.results.count(False)
     print(f'setcheck: {n - bad} of {n} checks pass')
