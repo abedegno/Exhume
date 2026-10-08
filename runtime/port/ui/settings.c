@@ -396,6 +396,8 @@ void settings_pointer(int x, int y, int down)
             drag_row = r;
             set_slider_from_x(r, x);
         }
+    } else if (rows[r].kind == SET_CYCLE && x >= VALUE_X - 4 && x < VALUE_X + GLYPH_W + 2) {
+        change(r, -1);                      /* the < of "< 3x >": back a step */
     } else {
         change(r, 1);
     }

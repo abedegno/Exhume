@@ -32,6 +32,7 @@ static const struct setting S[] = {
 #define ROW_Y 72
 #define ROW_H 20
 #define VALUE_X 248
+#define LABEL_X 24
 static int fails;
 #define CHECK(c, m) do { if (!(c)) { printf("FAIL %s\n", m); fails++; } else printf("ok   %s\n", m); } while (0)
 static int get_bad(void) { return -1; }
@@ -147,6 +148,18 @@ int main(void)
     CHECK(px[(ROW_Y + ROW_H + 10) * SET_W + VALUE_X + 7] == 0xFFB5D9E8u, "a folder row has a folder icon where its value starts");
     settings_key(SET_KEY_DOWN);
     CHECK(settings_help(1) && strstr(settings_help(1), "choose a folder"), "a folder row's help says Enter or a click chooses a folder");
+    /* a cycle's < arrow steps it back and its > (or elsewhere on the row) forward (a Mac player found
+       both arrows stepping Window scale up) */
+    port_config_set("h", "scale", "3");
+    settings_init("h", S, 1, "Test");                            /* Window scale, 3x */
+    settings_show(1);
+    settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* its tab, Display */
+    settings_pointer(VALUE_X + 3, ROW_Y + 8, 1); settings_pointer(VALUE_X + 3, ROW_Y + 8, 0);
+    CHECK(settings_value(0) == 1, "a click on < steps a cycle back (3x to 2x)");
+    settings_pointer(VALUE_X + 5 * 8 + 3, ROW_Y + 8, 1); settings_pointer(VALUE_X + 5 * 8 + 3, ROW_Y + 8, 0);
+    CHECK(settings_value(0) == 2, "a click on > steps it forward (2x to 3x)");
+    settings_pointer(LABEL_X + 8, ROW_Y + 8, 1); settings_pointer(LABEL_X + 8, ROW_Y + 8, 0);
+    CHECK(settings_value(0) == 3, "a click on the label steps it forward, as before");
     printf("%d failed\n", fails);
     return fails != 0;
 }
