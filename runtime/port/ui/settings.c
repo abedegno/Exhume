@@ -41,9 +41,10 @@ int (*settings_pick_folder)(void);
 #define HELP_CHARS 72                   /* a line of help: clear of the scroll marker at x 612 */
 #define FOOT_Y 368
 
-/* macOS may give F11 to the desktop (Show Desktop), so the backend takes Cmd+, there too */
+/* macOS gives F11 to the desktop (Show Desktop) unless that shortcut is turned off, so the backend
+   takes Cmd+, there too, and that is the key the footer names */
 #ifdef __APPLE__
-#define FOOTER "F11 or Cmd+, opens this at any time \xC2\xB7 Esc closes"
+#define FOOTER "Cmd+, opens this at any time \xC2\xB7 Esc closes"
 #else
 #define FOOTER "F11 opens this at any time \xC2\xB7 Esc closes"
 #endif
