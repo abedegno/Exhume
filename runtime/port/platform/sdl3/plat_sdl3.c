@@ -241,11 +241,23 @@ static void SDLCALL pick_cb(void *ud, const char *const *list, int filter)
         SDL_SetAtomicInt(&pick_state, 2);
 }
 
-static int start_pick(void)
+static int start_pick(const char *start)
 {
+    static char from[1024];             /* the dialog's start, kept while it is open */
+    SDL_PathInfo info;
     if (!g_win) return -1;
     SDL_SetAtomicInt(&pick_state, 0);
-    SDL_ShowOpenFolderDialog(pick_cb, NULL, g_win, NULL, false);
+    from[0] = 0;
+    if (start && strlen(start) < sizeof from) {
+        /* the row's folder; a file (a ROM given by itself) starts in the folder it is in */
+        strcpy(from, start);
+        if (SDL_GetPathInfo(from, &info) && info.type == SDL_PATHTYPE_FILE) {
+            char *cut = strrchr(from, '/'), *bs = strrchr(from, '\\');
+            if (bs > cut) cut = bs;
+            if (cut) *cut = 0;
+        }
+    }
+    SDL_ShowOpenFolderDialog(pick_cb, NULL, g_win, from[0] ? from : NULL, false);
     return 0;
 }
 

@@ -55,6 +55,8 @@ static const struct setting P[] = {
     { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
 static int three(void) { return 3; }
+static char picked_from[256] = "unset";
+static int capture_pick(const char *start) { snprintf(picked_from, sizeof picked_from, "%s", start ? start : "(none)"); return 0; }
 static const struct setting L[] = {
     { SET_TAB_DISPLAY, "Window scale", SET_CYCLE, "scale", scale_names, scale_stored, 0, 0, 0, 2, 0, NULL, NULL, NULL, NULL, NULL, NULL, three },
 };
@@ -176,6 +178,24 @@ int main(void)
     CHECK(port_config_get("h", "scale", v, sizeof v) == 0 && !strcmp(v, "1"), "Right from past the limit wraps to the first (3x is the last offered)");
     settings_key(SET_KEY_LEFT);
     CHECK(port_config_get("h", "scale", v, sizeof v) == 0 && !strcmp(v, "3"), "Left from the first goes to the last offered, 3x, not 8x");
+    /* the folder picker starts in the row's folder (a Mac player expected the ROMs' folder, and got
+       Documents): the file's, or one the port found itself and the game seeded with settings_set_path */
+    port_config_set("h", "folder-test", "/some/where");
+    settings_init("h", P, 2, "Test");
+    settings_pick_folder = capture_pick;
+    settings_show(1);
+    settings_key(SET_KEY_DOWN);
+    settings_key(SET_KEY_ENTER);
+    CHECK(!strcmp(picked_from, "/some/where"), "the picker starts in the folder the row holds");
+    port_config_set("h", "folder-test", "");
+    settings_init("h", P, 2, "Test");
+    settings_set_path(1, "/found/by/search");
+    settings_show(1);
+    settings_key(SET_KEY_DOWN);
+    settings_key(SET_KEY_ENTER);
+    CHECK(!strcmp(picked_from, "/found/by/search"), "and in a folder the game seeded the row with");
+    CHECK(settings_note(1) == NULL, "seeding the row is not a change (no \"Restart to apply\")");
+    settings_pick_folder = NULL;
     printf("%d failed\n", fails);
     return fails != 0;
 }

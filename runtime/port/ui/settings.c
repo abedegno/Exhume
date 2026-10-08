@@ -9,7 +9,7 @@ int port_config_get(const char *home, const char *key, char *out, size_t outsz);
 int port_config_set(const char *home, const char *key, const char *value);
 extern const unsigned char settings_font[256][16];   /* font.c */
 
-int (*settings_pick_folder)(void);
+int (*settings_pick_folder)(const char *start);
 
 #define MAX_ROWS 64
 #define PATH_MAX_LEN 256
@@ -213,11 +213,18 @@ static void change(int r, int dir)
             settings_folder_chosen(getenv("PORT_FOLDER_ANSWER"));
         } else if (settings_pick_folder) {
             pick_row = r;
-            settings_pick_folder();
+            settings_pick_folder(path[r][0] ? path[r] : NULL);
         }
         return;
     }
     commit(r);
+}
+
+void settings_set_path(int row, const char *p)
+{
+    if (row < 0 || row >= nrows || rows[row].kind != SET_FOLDER || !p) return;
+    snprintf(path[row], sizeof path[row], "%s", p);
+    snprintf(start_path[row], sizeof start_path[row], "%s", p);
 }
 
 void settings_folder_chosen(const char *p)

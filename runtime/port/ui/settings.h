@@ -47,7 +47,11 @@ void settings_set_value(int row, int value);   /* the row's current value only: 
 const char *settings_note(int row); /* what the row's note column says ("Restart to apply", "changes play"), or NULL */
 const char *settings_help(int row); /* the help line under the rows when the row is selected, or NULL */
 void settings_folder_chosen(const char *path);   /* the async folder picker's answer */
-extern int (*settings_pick_folder)(void);        /* set by the backend: start the picker */
+extern int (*settings_pick_folder)(const char *start);   /* set by the backend: start the picker, in START
+                                                           (the row's folder) when not NULL */
+void settings_set_path(int row, const char *path);  /* a folder row's folder when the file has none (one the
+                                                       port found itself): shown, and where the picker
+                                                       starts; nothing is written, and it is no change */
 #define SET_W 640
 #define SET_H 400
 #endif
