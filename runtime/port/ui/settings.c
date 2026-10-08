@@ -88,6 +88,20 @@ static int count_names(const struct setting *s)
     return n;
 }
 
+/* How many of a cycle's values are offered now: all, or the first limit() (at least one). */
+static int offered(const struct setting *s)
+{
+    int n = count_names(s), m = s->limit ? s->limit() : n;
+    return m >= 1 && m < n ? m : n;
+}
+
+/* A cycle's value as shown and stepped: one past the offered ones is the last offered. */
+static int shown_value(int r)
+{
+    int n = offered(&rows[r]);
+    return value[r] < n ? value[r] : n - 1;
+}
+
 static int clamp(int v, int lo, int hi)
 {
     return v < lo ? lo : v > hi ? hi : v;
@@ -180,9 +194,9 @@ static void change(int r, int dir)
     int n, step;
     switch (s->kind) {
     case SET_CYCLE:
-        n = count_names(s);
+        n = offered(s);
         if (n < 1) return;
-        value[r] = ((value[r] + dir) % n + n) % n;
+        value[r] = ((shown_value(r) + dir) % n + n) % n;
         break;
     case SET_BOOL:
         value[r] = !value[r];
@@ -462,7 +476,7 @@ static void value_text(const struct setting *s, int r, char *out, size_t n)
     size_t len;
     switch (s->kind) {
     case SET_CYCLE:
-        snprintf(out, n, "< %s >", value[r] < count_names(s) ? s->names[value[r]] : "?");
+        snprintf(out, n, "< %s >", value[r] < count_names(s) ? s->names[shown_value(r)] : "?");
         break;
     case SET_BOOL:
         snprintf(out, n, "%s", value[r] ? "[x]" : "[ ]");

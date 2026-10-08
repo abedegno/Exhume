@@ -15,8 +15,8 @@ static void apply_vol(int v) { applied = v; applies++; }
 static const char *const cards[] = { "None", "Sound Blaster", "MT-32", NULL };
 static const char *const cards_stored[] = { "0", "3", "6", NULL };
 static const struct setting T[] = {
-    { SET_TAB_SOUND, "Music", SET_CYCLE, "music-test", cards, cards_stored, 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Volume", SET_SLIDER, "volume", NULL, NULL, 0, 100, 10, 100, 0, apply_vol, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Music", SET_CYCLE, "music-test", cards, cards_stored, 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Volume", SET_SLIDER, "volume", NULL, NULL, 0, 100, 10, 100, 0, apply_vol, NULL, NULL, NULL, NULL, NULL, NULL },
 };
 static const struct enhance_flag F[] = {
     { "skip-intro", "Starts at the main menu", ENH_TIMING, NULL, NULL },
@@ -26,7 +26,7 @@ static const struct enhance_flag F[] = {
 static const char *const scale_names[] = { "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", NULL };
 static const char *const scale_stored[] = { "1", "2", "3", "4", "5", "6", "7", "8", NULL };
 static const struct setting S[] = {
-    { SET_TAB_DISPLAY, "Window scale", SET_CYCLE, "scale", scale_names, scale_stored, 0, 0, 0, 2, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_DISPLAY, "Window scale", SET_CYCLE, "scale", scale_names, scale_stored, 0, 0, 0, 2, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
 /* settings.c's layout: the rows start at y 72, 20 high; a slider's track starts at x 248, 160 wide */
 #define ROW_Y 72
@@ -39,20 +39,24 @@ static int get_bad(void) { return -1; }
 static int get_big(void) { return 150; }
 static int get_two(void) { return 2; }
 static const struct setting G[] = {
-    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Card", SET_CYCLE, NULL, cards, NULL, 0, 0, 0, 1, 0, NULL, get_bad, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL, NULL, NULL, NULL },
 };
 /* a row on each of the first three tabs, for walking the tab bar */
 static const struct setting K[] = {
-    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
-    { SET_TAB_CONTROLS, "B", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
-    { SET_TAB_DISPLAY, "C", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_CONTROLS, "B", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_DISPLAY, "C", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
 /* a folder row under a bool, both on Sound: the folder row unselected (row 1) */
 static const struct setting P[] = {
-    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
-    { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+};
+static int three(void) { return 3; }
+static const struct setting L[] = {
+    { SET_TAB_DISPLAY, "Window scale", SET_CYCLE, "scale", scale_names, scale_stored, 0, 0, 0, 2, 0, NULL, NULL, NULL, NULL, NULL, NULL, three },
 };
 int main(void)
 {
@@ -160,6 +164,18 @@ int main(void)
     CHECK(settings_value(0) == 2, "a click on > steps it forward (2x to 3x)");
     settings_pointer(LABEL_X + 8, ROW_Y + 8, 1); settings_pointer(LABEL_X + 8, ROW_Y + 8, 0);
     CHECK(settings_value(0) == 3, "a click on the label steps it forward, as before");
+    /* a cycle with a limit (Window scale on a small display): a saved value past it shows as the last
+       offered and steps from there, wrapping within the offered ones; the file keeps it until a change */
+    port_config_set("h", "scale", "6");
+    settings_init("h", L, 1, "Test");
+    settings_show(1);
+    settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* Display */
+    settings_draw(px);
+    CHECK(port_config_get("h", "scale", v, sizeof v) == 0 && !strcmp(v, "6"), "a limited cycle leaves a saved value past the limit in the file");
+    settings_key(SET_KEY_RIGHT);                                 /* 6x shows as 3x: Right wraps to 1x */
+    CHECK(port_config_get("h", "scale", v, sizeof v) == 0 && !strcmp(v, "1"), "Right from past the limit wraps to the first (3x is the last offered)");
+    settings_key(SET_KEY_LEFT);
+    CHECK(port_config_get("h", "scale", v, sizeof v) == 0 && !strcmp(v, "3"), "Left from the first goes to the last offered, 3x, not 8x");
     printf("%d failed\n", fails);
     return fails != 0;
 }

@@ -122,6 +122,10 @@ void plat_pointer_capture(int on);
    backend's own loop: the window's display (fullscreen; the scale of the window when not full
    screen; the 4:3 stretch; whole multiples only) and the pointer lock option (mouse_lock). */
 void plat_set_display(int fullscreen, int scale, int aspect, int integer_scale);
+/* The largest window scale (1 to 8) whose window fits the display it is on (the primary one before
+   it opens), title bar and all, with the 4:3 stretch or without; 8 before the backend starts. A
+   scale above it opens and resizes the window at it instead. */
+int plat_max_scale(int aspect);
 void plat_set_mouse_lock(int on);
 
 /* A byte from the keyboard controller that did not come from the host's keyboard (an input

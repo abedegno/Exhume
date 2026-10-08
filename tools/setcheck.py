@@ -276,9 +276,17 @@ def scale():
             size = png_rgb(w)[:2] if os.path.exists(w) else None
             want = (640, 480) if name == 'open' else (320, 240)
             check(f'scale: at scale 1 the window is {want[0]} wide with the screen {name}', size == want, size)
-        size, text = window_size(work, 'a-cmd', 'scale=2\n', '--scale', '4')
-        check('scale: --scale 4 beats the file\'s 2 (1280 wide)', size and size[0] == 1280, size)
+        size, text = window_size(work, 'a-cmd', 'scale=2\n', '--scale', '3')
+        check('scale: --scale 3 beats the file\'s 2 (960 wide)', size and size[0] == 960, size)
         check('scale: and the file still says scale=2', 'scale=2' in text, text)
+        # the test display (SDL's dummy driver) is 1024x768: 3x is the largest window that fits it, and
+        # a larger scale opens at that rather than past the screen (macOS clamps such a window, and the
+        # settings screen's steps above it looked alike); the file keeps the larger one for a larger display
+        size, text = window_size(work, 'a-big', 'scale=8\n')
+        check('scale: scale=8 on a 1024x768 display opens the largest that fits, 960x720', size == (960, 720), size)
+        check('scale: and the file still says scale=8', 'scale=8' in text, text)
+        size, text = window_size(work, 'a-bigcmd', '', '--scale', '6')
+        check('scale: so does --scale 6', size == (960, 720), size)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -334,7 +342,7 @@ def roundtrip(part=0, parts=1):
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
         def start_home(name):
-            h = fresh(work, name)
+            h = fresh(work, name, 'scale=2\n')
             if cards: card_cfg(h, *[c['stored'][c['d']] for c in cards[:2]])
             return h
         seen = {}
@@ -347,6 +355,7 @@ def roundtrip(part=0, parts=1):
             if done % parts != part: continue
             label = r['label']
             if r['key'] == 'settings-at-start': r['d'] = 0      # start_home's file turns it off, so that is where it starts
+            if r['key'] == 'scale': r['d'] = 1                  # start_home's file says 2x: 3x is the largest the test display offers
             lines, t = nav(r['tab'], k)
             if r['kind'] == SLIDER:
                 up = r['d'] + r['step'] <= r['hi']
@@ -447,7 +456,7 @@ def cmdline():
         h = fresh(work, 'cl2', 'mouse=lock\n')
         rc, out = port(h, hidden=False)
         check('cmdline: mouse=lock in the file locks a run', 'mouse: lock' in out, out[-300:])
-        # --scale 4 beats scale=2 in the file for the run, also once the screen is used: toggling the
+        # --scale 3 beats scale=2 in the file for the run, also once the screen is used: toggling the
         # 4:3 row (the Display tab's third) applies the effective values, not the file's
         rows = table_rows()
         k = [r['key'] for r in rows if r['tab'] == 2].index('aspect')
@@ -455,10 +464,10 @@ def cmdline():
         lines += [f'{t} key enter', f'{t + 200} key f11']
         h = fresh(work, 'cl3', 'scale=2\n')
         w = os.path.join(work, 'cl3.png')
-        port(h, '--scale', '4', '--input-script', script_file(work, 'cl3', lines), '--screenshot-after', str(t + 1200),
+        port(h, '--scale', '3', '--input-script', script_file(work, 'cl3', lines), '--screenshot-after', str(t + 1200),
              '--screenshot', os.path.join(work, 'cl3-s.png'), '--window-shot', w, hidden=False, exit_after=t + 1700)
         size = png_rgb(w)[:2] if os.path.exists(w) else None
-        check('cmdline: --scale 4 over scale=2 stays at scale 4 after the screen toggles aspect (1280x800)', size == (1280, 800), size)
+        check('cmdline: --scale 3 over scale=2 stays at scale 3 after the screen toggles aspect (960x600)', size == (960, 600), size)
         text = settings(h).splitlines()
         check('cmdline: and the file still says scale=2 (aspect=0 written)', 'scale=2' in text and 'aspect=0' in text, text)
     finally:

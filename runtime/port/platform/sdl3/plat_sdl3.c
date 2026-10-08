@@ -305,10 +305,29 @@ void plat_window_click(float x, float y)
     }
 }
 
+/* A title bar's height where the backend cannot read it (SDL_GetWindowBordersSize fails on macOS:
+   measured there, a window asked for more than fits is given the usable height less 32) */
+#define TITLE_ALLOW 40
+
+int plat_max_scale(int aspect)
+{
+    SDL_DisplayID d;
+    SDL_Rect r;
+    int s, top = 0, left = 0, bottom = 0, right = 0;
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) return 8;
+    d = g_win ? SDL_GetDisplayForWindow(g_win) : SDL_GetPrimaryDisplay();
+    if (!d || !SDL_GetDisplayUsableBounds(d, &r)) return 8;
+    if (!g_win || !SDL_GetWindowBordersSize(g_win, &top, &left, &bottom, &right) || top <= 0) top = TITLE_ALLOW;
+    for (s = 8; s > 1; s--)
+        if (320 * s + left + right <= r.w && (aspect ? 240 : 200) * s + top + bottom <= r.h) break;
+    return s;
+}
+
 void plat_set_display(int fullscreen, int scale, int aspect, int integer_scale)
 {
+    int most = plat_max_scale(aspect);
     live.fullscreen = fullscreen;
-    live.scale = scale > 0 ? scale : 1;
+    live.scale = scale < 1 ? 1 : scale > most ? most : scale;
     live.aspect = aspect;
     live.integer_scale = integer_scale;
     if (!g_win) return;
@@ -442,6 +461,10 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
         return 1;
     }
     if (!cfg->hidden) {
+        /* never past the display: macOS clamps such a window, and the scales above the largest that
+           fits all looked alike (the settings file keeps the larger scale for a larger display) */
+        if (scale > plat_max_scale(cfg->aspect)) scale = plat_max_scale(cfg->aspect);
+        live.scale = scale;
         win = SDL_CreateWindow(cfg->title ? cfg->title : PLAT_TITLE, 320 * scale,
                                (cfg->aspect ? 240 : 200) * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (cfg->fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (win) ren = SDL_CreateRenderer(win, NULL);
