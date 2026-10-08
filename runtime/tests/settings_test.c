@@ -1,11 +1,13 @@
 /* A host test of the settings screen's model, drawing and input (runtime/port/ui/settings.c), not
    part of any build:
-   cc -std=c99 -Wall -Wextra -I runtime/tests -I runtime/port -I runtime/port/sys -I runtime/port/ui runtime/tests/settings_test.c \
+   cc -std=c99 -D_DEFAULT_SOURCE -Wall -Wextra -I runtime/tests -I runtime/port -I runtime/port/sys -I runtime/port/ui runtime/tests/settings_test.c \
       runtime/port/ui/settings.c runtime/port/ui/font.c runtime/port/sys/enhance.c runtime/tests/config_stub.c \
       -o /tmp/set && /tmp/set */
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "settings.h"
 #include "enhance.h"
 int port_config_get(const char *home, const char *key, char *out, size_t n);
@@ -55,6 +57,11 @@ static const struct setting P[] = {
     { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
 static int three(void) { return 3; }
+/* P's folder row as a restart one, as the games' folder rows are */
+static const struct setting R2[] = {
+    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+};
 static char picked_from[256] = "unset";
 static int capture_pick(const char *start) { snprintf(picked_from, sizeof picked_from, "%s", start ? start : "(none)"); return 0; }
 static const struct setting L[] = {
@@ -195,7 +202,34 @@ int main(void)
     settings_key(SET_KEY_ENTER);
     CHECK(!strcmp(picked_from, "/found/by/search"), "and in a folder the game seeded the row with");
     CHECK(settings_note(1) == NULL, "seeding the row is not a change (no \"Restart to apply\")");
-    settings_pick_folder = NULL;
+    /* choosing the folder the row already has, spelt another way (a trailing slash, or through a
+       symbolic link, as a Mac's folder dialog gives it), is no change: no "Restart to apply", and the
+       file keeps its own spelling (a Mac player chose the game's folder again and was told to restart) */
+    {
+        char real[128], link[160], slash[160];
+        snprintf(real, sizeof real, "/tmp/settings_test_%d", (int)getpid());
+        snprintf(link, sizeof link, "%s-link", real);
+        snprintf(slash, sizeof slash, "%s/", real);
+        mkdir(real, 0700); unlink(link);
+        if (symlink(real, link) != 0) printf("FAIL no symlink\n");
+        port_config_set("h", "folder-test", real);
+        settings_init("h", R2, 2, "Test");
+        settings_pick_folder = capture_pick;
+        settings_show(1);
+        settings_key(SET_KEY_DOWN);
+        settings_key(SET_KEY_ENTER);
+        settings_folder_chosen(slash);
+        CHECK(settings_note(1) == NULL, "the same folder with a trailing slash is no change");
+        settings_key(SET_KEY_ENTER);
+        settings_folder_chosen(link);
+        CHECK(settings_note(1) == NULL, "the same folder through a symbolic link is no change");
+        CHECK(port_config_get("h", "folder-test", v, sizeof v) == 0 && !strcmp(v, real), "and the file keeps its spelling");
+        settings_key(SET_KEY_ENTER);
+        settings_folder_chosen("/tmp");
+        CHECK(settings_note(1) && !strcmp(settings_note(1), "Restart to apply"), "the check can tell (another folder is a change)");
+        settings_pick_folder = NULL;
+        unlink(link); rmdir(real);
+    }
     printf("%d failed\n", fails);
     return fails != 0;
 }

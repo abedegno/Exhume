@@ -11,6 +11,32 @@ extern const unsigned char settings_font[256][16];   /* font.c */
 
 int (*settings_pick_folder)(const char *start);
 
+#ifndef _WIN32
+char *realpath(const char *path, char *resolved);    /* POSIX; the port builds as plain C99 */
+#endif
+
+/* Whether two folder paths name one folder: the same text, or the same once resolved (a trailing
+   separator, a symbolic link, "..": a folder dialog may give the folder the file names another way). */
+static int same_folder(const char *a, const char *b)
+{
+    static char ra[4096], rb[4096];
+    size_t la = strlen(a), lb = strlen(b);
+    if (!strcmp(a, b)) return 1;
+#ifdef _WIN32
+    if (_fullpath(ra, a, sizeof ra) && _fullpath(rb, b, sizeof rb)) {
+#else
+    if (realpath(a, ra) && realpath(b, rb)) {
+#endif
+        la = strlen(ra); lb = strlen(rb);
+        while (la > 1 && (ra[la - 1] == '/' || ra[la - 1] == '\\')) ra[--la] = 0;
+        while (lb > 1 && (rb[lb - 1] == '/' || rb[lb - 1] == '\\')) rb[--lb] = 0;
+        return !strcmp(ra, rb);
+    }
+    while (la > 1 && (a[la - 1] == '/' || a[la - 1] == '\\')) la--;
+    while (lb > 1 && (b[lb - 1] == '/' || b[lb - 1] == '\\')) lb--;
+    return la == lb && !strncmp(a, b, la);
+}
+
 #define MAX_ROWS 64
 #define PATH_MAX_LEN 256
 #define GLYPH_W 8
@@ -239,7 +265,8 @@ void settings_folder_chosen(const char *p)
     }
     notice[0] = 0;
     fprintf(stderr, "settings: %s accepted: %s\n", rows[r].label, p);
-    snprintf(path[r], sizeof path[r], "%s", p);
+    /* the folder the run started with, however the dialog spells it: no change, in the file's words */
+    snprintf(path[r], sizeof path[r], "%s", start_path[r][0] && same_folder(p, start_path[r]) ? start_path[r] : p);
     commit(r);
 }
 
