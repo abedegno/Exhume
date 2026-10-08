@@ -35,6 +35,7 @@ int (*settings_pick_folder)(void);
 #define LABEL_X 24
 #define VALUE_X 248
 #define NOTE_X 496
+#define FOLDER_W 22                     /* a folder row's icon and the gap after it */
 #define SLIDER_W 160
 #define HELP_Y 316
 #define HELP_LINES 3
@@ -232,7 +233,8 @@ void settings_init(const char *home, const struct setting *table, int n, const c
     memset(path, 0, sizeof path);
     for (i = 0; i < n && nrows < MAX_ROWS; i++) {
         rows[nrows] = table[i];
-        help[nrows][0] = 0;
+        /* a folder row's value is a word ("found") or a path, which does not say it opens a picker */
+        snprintf(help[nrows], sizeof help[nrows], "%s", table[i].kind == SET_FOLDER ? "Enter or click to choose a folder" : "");
         mark[nrows] = NULL;
         enh_bit[nrows++] = -1;
     }
@@ -472,7 +474,7 @@ static void value_text(const struct setting *s, int r, char *out, size_t n)
             break;
         }
         len = strlen(path[r]);
-        snprintf(out, n, "%s", len > 30 ? path[r] + len - 30 : path[r]);
+        snprintf(out, n, "%s", len > 27 ? path[r] + len - 27 : path[r]);   /* clear of the note column after the icon */
     }
 }
 
@@ -524,7 +526,13 @@ int settings_draw(uint32_t *px)
             fill(px, VALUE_X + 1, y + 7, filled, 4, fg);
         }
         value_text(s, r, buf, sizeof buf);
-        text(px, s->kind == SET_SLIDER ? VALUE_X + SLIDER_W + GLYPH_W : VALUE_X, y + 1, fg, buf, -1);
+        if (s->kind == SET_FOLDER) {
+            /* a folder: its tab and its body, before the value, so the row says it opens a picker */
+            fill(px, VALUE_X, y + 3, 6, 2, fg);
+            fill(px, VALUE_X, y + 5, 14, 10, fg);
+        }
+        text(px, s->kind == SET_SLIDER ? VALUE_X + SLIDER_W + GLYPH_W : s->kind == SET_FOLDER ? VALUE_X + FOLDER_W : VALUE_X,
+             y + 1, fg, buf, -1);
         if (settings_note(r)) text(px, NOTE_X, y + 1, fg == rgb(C_BACK) ? fg : rgb(C_DIM), settings_note(r), 18);
         if (k == sel && help[r][0]) help_text(px, help[r]);
     }

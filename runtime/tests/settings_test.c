@@ -48,6 +48,11 @@ static const struct setting K[] = {
     { SET_TAB_CONTROLS, "B", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
     { SET_TAB_DISPLAY, "C", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
 };
+/* a folder row under a bool, both on Sound: the folder row unselected (row 1) */
+static const struct setting P[] = {
+    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+};
 int main(void)
 {
     static uint32_t px[SET_W * SET_H];
@@ -133,6 +138,15 @@ int main(void)
     settings_key(SET_KEY_TAB);                                   /* Tab: the next tab's first row, as before */
     settings_key(SET_KEY_ENTER);
     CHECK(settings_value(2) == 0, "Tab goes to the next tab's first row");
+    /* a folder row says it opens a picker: a folder icon before its value (an unselected row: drawn
+       in the text colour 0xE8D9B5, as ABGR), and a help line when selected */
+    port_config_set("h", "folder-test", "");
+    settings_init("h", P, 2, "Test");
+    settings_show(1);
+    settings_draw(px);
+    CHECK(px[(ROW_Y + ROW_H + 10) * SET_W + VALUE_X + 7] == 0xFFB5D9E8u, "a folder row has a folder icon where its value starts");
+    settings_key(SET_KEY_DOWN);
+    CHECK(settings_help(1) && strstr(settings_help(1), "choose a folder"), "a folder row's help says Enter or a click chooses a folder");
     printf("%d failed\n", fails);
     return fails != 0;
 }
