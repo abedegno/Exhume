@@ -306,10 +306,12 @@ static void scroll_to_sel(void)
     if (sel >= top + VISIBLE) top = sel - VISIBLE + 1;
 }
 
-static void set_tab(int t)
+/* To tab T; on its tab bar (sel -1) when BAR, else on its first row. Left and Right on the bar
+   keep to the bar, so that Right, Right walks the tabs instead of changing the first row found. */
+static void set_tab(int t, int bar)
 {
     cur_tab = (t % SET_TABS + SET_TABS) % SET_TABS;
-    sel = tab_count(cur_tab) ? 0 : -1;
+    sel = !bar && tab_count(cur_tab) ? 0 : -1;
     top = 0;
 }
 
@@ -329,15 +331,15 @@ void settings_key(int key)
         sel = sel + 1 >= n ? -1 : sel + 1;
         break;
     case SET_KEY_LEFT:
-        if (sel < 0) set_tab(cur_tab - 1);
+        if (sel < 0) set_tab(cur_tab - 1, 1);
         else change(r, -1);
         break;
     case SET_KEY_RIGHT:
-        if (sel < 0) set_tab(cur_tab + 1);
+        if (sel < 0) set_tab(cur_tab + 1, 1);
         else change(r, 1);
         break;
     case SET_KEY_TAB:
-        set_tab(cur_tab + 1);
+        set_tab(cur_tab + 1, 0);
         break;
     case SET_KEY_ENTER:
         if (r >= 0) change(r, 1);
@@ -379,7 +381,7 @@ void settings_pointer(int x, int y, int down)
         return;
     }
     if (y >= TAB_Y && y < TAB_Y + TAB_H && x >= TITLE_X && x < TITLE_X + TAB_W * SET_TABS) {
-        set_tab((x - TITLE_X) / TAB_W);
+        set_tab((x - TITLE_X) / TAB_W, 0);
         return;
     }
     if (y < ROW_Y || y >= ROW_Y + ROW_H * VISIBLE) return;

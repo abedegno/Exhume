@@ -42,6 +42,12 @@ static const struct setting G[] = {
     { SET_TAB_SOUND, "Level", SET_SLIDER, NULL, NULL, NULL, 0, 100, 10, 50, 0, NULL, get_big, NULL, NULL, NULL, NULL },
     { SET_TAB_SOUND, "Flag", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 1, 0, NULL, get_two, NULL, NULL, NULL, NULL },
 };
+/* a row on each of the first three tabs, for walking the tab bar */
+static const struct setting K[] = {
+    { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_CONTROLS, "B", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_DISPLAY, "C", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL },
+};
 int main(void)
 {
     static uint32_t px[SET_W * SET_H];
@@ -109,6 +115,24 @@ int main(void)
     port_config_set("h", "volume", "abc");
     settings_init("h", T, 2, "Test");
     CHECK(settings_value(1) == 100, "volume=abc reads as 100");
+    /* Left and Right on the tab bar walk the tabs and stay on the bar: Right, Right from Sound is
+       Display, with no row changed on the way (a Mac player found the second Right changing
+       Controls' first row); Down then enters Display's rows */
+    settings_init("h", K, 3, "Test");
+    settings_show(1);
+    settings_key(SET_KEY_UP);                                    /* the first row to the tab bar */
+    settings_key(SET_KEY_RIGHT);
+    settings_key(SET_KEY_RIGHT);
+    CHECK(settings_value(0) == 0 && settings_value(1) == 0 && settings_value(2) == 0, "Right, Right on the tab bar changes no row");
+    settings_key(SET_KEY_DOWN);
+    settings_key(SET_KEY_ENTER);
+    CHECK(settings_value(2) == 1 && settings_value(1) == 0, "and lands on Display: Down, Enter changes its row");
+    settings_key(SET_KEY_UP);
+    settings_key(SET_KEY_LEFT);
+    CHECK(settings_value(1) == 0, "Left on the tab bar goes back a tab without changing a row");
+    settings_key(SET_KEY_TAB);                                   /* Tab: the next tab's first row, as before */
+    settings_key(SET_KEY_ENTER);
+    CHECK(settings_value(2) == 0, "Tab goes to the next tab's first row");
     printf("%d failed\n", fails);
     return fails != 0;
 }
