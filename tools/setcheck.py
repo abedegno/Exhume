@@ -18,7 +18,7 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] wclick      a click in window coordinates hits the row drawn there after a scale change
     python3 tools/setcheck.py [--config PATH] roms        the MT-32 ROMs row says "not found" or "found" (SETCHECK_ROMS=DIR for found)
     python3 tools/setcheck.py [--config PATH] all      all of these: the independent ones side by side (SETCHECK_JOBS, default 4),
-                                                       then the timing-sensitive ones alone; `all --serial` runs them one by one
+                                                       then the timing-sensitive ones two at a time (SETCHECK_ALONE_JOBS); `all --serial` runs them one by one
 
 Exit status 0 when every check passes."""
 import os, sys, struct, hashlib, tempfile, shutil, subprocess, zlib, math, time
@@ -106,14 +106,21 @@ def use_stage(work):
         stage_run.stage = os.path.join(work, 'stage')
 
 
+# When a stage run's game is loaded and ready for the checks' keys: the menu's two Enters at 1 s and
+# 2.5 s load the saved game, which takes about 2 s (measured in both games, 2026-10-08: the menu takes
+# keys from 0.5 s, the view is still from 2 s after the second Enter), so 6 s leaves it half again.
+READY = 6000
+
+
 def stage_run(work, name, lines, after, extra=(), text=''):
-    """A hidden run from the mouse-look session's saved game (the menu's two Enters load it)."""
+    """A hidden run from the mouse-look session's saved game (the menu's two Enters load it; the
+    checks' own keys start at READY)."""
     stage = stage_of('mouse-look', work) if not hasattr(stage_run, 'stage') or not os.path.isdir(stage_run.stage) else stage_run.stage
     stage_run.stage = stage
     h = os.path.join(work, 'home-' + name)
     shutil.rmtree(h, ignore_errors=True); shutil.copytree(stage, h)
     if text: write_cfg(h, text)
-    sp = script_file(work, name, ['3000 key enter', '4500 key enter'] + lines)
+    sp = script_file(work, name, ['1000 key enter', '2500 key enter'] + lines)
     env = R.port_env(); env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
     cmd = [R.port_exe(), R.RC.port_data_flag, R.port_data(work), R.RC.port_home_flag, h, '--hidden', '--no-recording',
            '--sound', '0,0', '--enhance', 'skip-intro', '--input-script', sp, '--exit-after', str(after)] + list(extra)
@@ -132,14 +139,14 @@ def pause():
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
         use_stage(work)
-        h, out = stage_run(work, 'pause', ['9000 key f11', '13000 key f11'], 17000, ['--record'])
+        h, out = stage_run(work, 'pause', [f'{READY} key f11', f'{READY + 4000} key f11'], READY + 8000, ['--record'])
         rec = os.path.join(h, 'RECORD.OUT')
         if not os.path.exists(rec):
             check('pause: a recording was made', False, out[-300:]); return
         runs = R.read_log(rec)[0].get('TIME', [])
         t = [x[1] for x in runs]
         steps = [b - a for a, b in zip(t, t[1:])]
-        h0, _ = stage_run(work, 'nopause', [], 17000, ['--record'])
+        h0, _ = stage_run(work, 'nopause', [], READY + 8000, ['--record'])
         r0 = R.read_log(os.path.join(h0, 'RECORD.OUT'))[0].get('TIME', []) if os.path.exists(os.path.join(h0, 'RECORD.OUT')) else []
         t0 = [x[1] for x in r0]
         # the clock is 1/256 s: 100 ms is 25 ticks. A level loading is a big step too (UW2's first
@@ -169,13 +176,13 @@ def held():
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
         use_stage(work)
-        T = 13000
+        T, r = READY + 4000, READY
         # S walks forward in the original's keys (W is not bound)
-        walked = shot_of(work, 'walk', ['9000 down s', '9500 up s'], T)
-        through = shot_of(work, 'through', ['9000 down s', '9500 key f11', '10500 key f11', '11000 up s'], T)
-        stuck = shot_of(work, 'stuck', ['9000 down s'], T)
+        walked = shot_of(work, 'walk', [f'{r} down s', f'{r + 500} up s'], T)
+        through = shot_of(work, 'through', [f'{r} down s', f'{r + 500} key f11', f'{r + 1500} key f11', f'{r + 2000} up s'], T)
+        stuck = shot_of(work, 'stuck', [f'{r} down s'], T)
         d, s = differ(through, walked), differ(stuck, walked)
-        check('held: S held across the screen stops (closer to the let-go-at-9500 view than to the held-on view)',
+        check('held: S held across the screen stops (closer to the view let go after half a second than to the held-on view)',
               d < s, f'vs let go {d:.3f}, vs held on {s:.3f}')
         check('held: the check can tell (S held on to the end differs)', s > 0.15, f'{s:.3f}')
     finally:
@@ -191,9 +198,10 @@ def heldbutton():
         use_stage(work)
         at = '160 60 right'
         res = {}
-        for name, lines in (('through', [f'9000 mdown {at}', '9500 key f11', f'10000 mup {at}', '10500 key f11']),
-                            ('plain', [f'9000 mdown {at}', f'9500 mup {at}'])):
-            h, out = stage_run(work, 'b-' + name, lines, 12500, ['--record'])
+        r = READY
+        for name, lines in (('through', [f'{r} mdown {at}', f'{r + 500} key f11', f'{r + 1000} mup {at}', f'{r + 1500} key f11']),
+                            ('plain', [f'{r} mdown {at}', f'{r + 500} mup {at}'])):
+            h, out = stage_run(work, 'b-' + name, lines, r + 3500, ['--record'])
             rec = os.path.join(h, 'RECORD.OUT')
             res[name] = [v for _, v in R.read_log(rec)[0].get('BUTTONS', [])] if os.path.exists(rec) else []
         for name, vals in res.items():
@@ -521,9 +529,10 @@ def textentry():
     try:
         use_stage(work)
         # Ctrl+S opens the save dialog, Enter takes the first slot and asks for the description
-        head = ['9000 down ctrl', '9100 key s', '9200 up ctrl', '10000 key enter']
-        for name, mid in (('through', ['11000 key f11', '11200 key z', '11300 key z', '11500 key f11']), ('plain', [])):
-            h, out = stage_run(work, 'te-' + name, head + mid + ['12000 key a', '12200 key b', '12500 key enter'], 14000)
+        r = READY
+        head = [f'{r} down ctrl', f'{r + 100} key s', f'{r + 200} up ctrl', f'{r + 1000} key enter']
+        for name, mid in (('through', [f'{r + 2000} key f11', f'{r + 2200} key z', f'{r + 2300} key z', f'{r + 2500} key f11']), ('plain', [])):
+            h, out = stage_run(work, 'te-' + name, head + mid + [f'{r + 3000} key a', f'{r + 3200} key b', f'{r + 3500} key enter'], r + 5000)
             p = os.path.join(h, 'SAVE1', 'DESC')
             d = open(p, 'rb').read()[:40] if os.path.exists(p) else None
             check(f'textentry ({name}): the save\'s description is ab', d is not None and d.startswith(b'ab') and not d.startswith(b'abz') and b'z' not in d, (d, out[-200:]))
@@ -626,11 +635,13 @@ CHECKS = ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale', 'roundtrip', 
 # What `all` runs side by side (each in its own process and temp home): checks whose answer does not
 # depend on when the game gets its events or frames. ROUNDTRIP is dealt out in slices, longest jobs first.
 POOL = ('roundtrip:0/3', 'roundtrip:1/3', 'roundtrip:2/3', 'scale', 'stage', 'f11', 'firstrun:gold', 'folder', 'cmdline', 'wclick', 'restart', 'roms')
-# What `all` runs alone, one at a time, after the pool: these read the game clock, the recorded input,
-# the audio or a picture at a wall-clock moment, or press keys at fixed times in a loaded game, so a busy
-# machine would move what they measure. (firstrun's second half compares a picture 5 s into the run; badvalues the
+# What `all` runs after the pool, two at a time (SETCHECK_ALONE_JOBS): these read the game clock, the
+# recorded input, the audio or a picture at a wall-clock moment, or press keys at fixed times in a loaded
+# game, so a busy machine would move what they measure. A live run paced in real time uses little of a
+# core (the port rests while the game waits on its clock), so two side by side leave each its timing;
+# the pool's four would not. (firstrun's second half compares a picture 5 s into the run; badvalues the
 # audio and a picture; textentry types at fixed times; the others as the names say.)
-ALONE = ('pause', 'held', 'heldbutton', 'volume', 'textentry', 'firstrun:resume', 'badvalues')
+ALONE = ('held', 'pause', 'textentry', 'heldbutton', 'firstrun:resume', 'volume', 'badvalues')   # longest first
 
 
 def timed(name):
@@ -656,8 +667,8 @@ def job(name, env):
         return name, time.time() - t, 99, f'FAIL {name}: timed out\n{e.stdout or ""}'
 
 
-def run_all(workers):
-    """The pool, then the checks that must be alone. The totals are the sum of the processes'."""
+def run_all(workers, alone_workers=2):
+    """The pool, then the timed checks, fewer at a time. The totals are the sum of the processes'."""
     from concurrent.futures import ThreadPoolExecutor
     t0 = time.time()
     stage_dir = tempfile.mkdtemp(prefix='setcheck-stage-')
@@ -682,8 +693,9 @@ def run_all(workers):
             for r in ex.map(lambda n: job(n, env), POOL): report(r, 'pool')
         t1 = time.time()
         env['SETCHECK_STAGE'] = os.path.join(stage_dir, 'stage')
-        for n in ALONE: report(job(n, env), 'alone')
-        print(f'setcheck: the pool took {t1 - t0:.1f} s, the checks run alone {time.time() - t1:.1f} s')
+        with ThreadPoolExecutor(max_workers=alone_workers) as ex:
+            for r in ex.map(lambda n: job(n, env), ALONE): report(r, 'timed')
+        print(f'setcheck: the pool took {t1 - t0:.1f} s, the timed checks {time.time() - t1:.1f} s')
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
     print(f'setcheck: {tally[0] - tally[1]} of {tally[0]} checks pass in {time.time() - t0:.1f} s')
@@ -693,7 +705,7 @@ def run_all(workers):
 def main(argv):
     cmd = argv[0] if argv else 'all'
     if cmd == 'all' and '--serial' not in argv:
-        return run_all(int(os.environ.get('SETCHECK_JOBS', '4')))
+        return run_all(int(os.environ.get('SETCHECK_JOBS', '4')), int(os.environ.get('SETCHECK_ALONE_JOBS', '2')))
     if cmd == 'all':
         for name in CHECKS: timed(name)
     elif cmd in CHECKS or cmd == 'stage' or cmd.split(':')[0] in ('roundtrip', 'firstrun') and ':' in cmd:
