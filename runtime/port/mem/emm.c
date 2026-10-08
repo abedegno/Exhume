@@ -40,7 +40,12 @@ static void write_back(int s)
 /* Maps store page `page` (FFFFh: none) into a slot. */
 static int map_page(unsigned physical, unsigned logical)
 {
-    int q;
+    int q, shared = 0;
+    /* the slot's own page again, in no other slot: the frame already holds it as DOS's would, and
+       copying it out and back changes nothing (UW1's cutscene reader maps its page before every
+       read, some eighty million times in the intro: as copies, minutes on some machines) */
+    for (q = 0; q < 4; q++) shared |= q != (int)physical && slot[q] == (int)logical;
+    if (slot[physical] == (int)logical && logical != 0xFFFF && !shared) return 1;
     if (slot[physical] >= 0) write_back((int)physical);
     if (logical == 0xFFFF) { slot[physical] = -1; return 1; }
     for (q = 0; q < 4; q++)
