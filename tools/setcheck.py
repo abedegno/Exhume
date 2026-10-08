@@ -16,6 +16,7 @@ opened do not stick, the volume and the window's scale come from the settings fi
     python3 tools/setcheck.py [--config PATH] textentry   keys typed after the screen closes reach a text entry (UW1's save description)
     python3 tools/setcheck.py [--config PATH] badvalues   volume=abc and scale=99 in the file start the run as the screen reads them
     python3 tools/setcheck.py [--config PATH] wclick      a click in window coordinates hits the row drawn there after a scale change
+    python3 tools/setcheck.py [--config PATH] lostup      a click after a press whose release was lost still opens a folder row's picker
     python3 tools/setcheck.py [--config PATH] roms        the MT-32 ROMs row says "not found" or "found" (SETCHECK_ROMS=DIR for found)
     python3 tools/setcheck.py [--config PATH] all      all of these: the independent ones side by side (SETCHECK_JOBS, default 4),
                                                        then the timing-sensitive ones two at a time (SETCHECK_ALONE_JOBS); `all --serial` runs them one by one
@@ -529,6 +530,30 @@ def folder():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def lostup():
+    """A click after a press whose release never came (the host lost it: a macOS fullscreen switch
+    can) must still be a click: a Mac player had to click a folder row twice in fullscreen. Scale 2
+    with aspect off is the layer one to one: the Game tab's first row, Game folder, is at y 72..91;
+    the lost press is on the empty area below the rows."""
+    work = tempfile.mkdtemp(prefix='setcheck-')
+    try:
+        lines, t = nav(4, 0)
+        res = {}
+        for name, lost in (('lost', True), ('control', False)):
+            ls = lines + ([f'{t} wdown 320 300'] if lost else []) + [f'{t + 300} wclick 100 82', f'{t + 800} key f11']
+            h = fresh(work, 'lu-' + name, 'scale=2\naspect=0\n')
+            os.environ['PORT_FOLDER_ANSWER'] = os.path.abspath(R.DATA)
+            try:
+                rc, out = port(h, '--input-script', script_file(work, 'lu-' + name, ls), hidden=False, exit_after=t + 1400)
+            finally:
+                os.environ.pop('PORT_FOLDER_ANSWER', None)
+            res[name] = out
+        check('lostup: a click on a folder row after a lost release opens its picker at once', 'Game folder accepted' in res['lost'], res['lost'][-300:])
+        check('lostup: and with no lost release, as before', 'Game folder accepted' in res['control'], res['control'][-300:])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def textentry():
     """UW1 only (UW2's save dialog is not reached by these keys): the screen opened and closed again in
     the middle of a text entry leaves the typing where it was: keys typed while it is open do not reach
@@ -640,10 +665,10 @@ def roms():
 
 
 CHECKS = ('f11', 'pause', 'held', 'heldbutton', 'volume', 'scale', 'roundtrip', 'firstrun', 'cmdline',
-          'restart', 'folder', 'textentry', 'badvalues', 'wclick', 'roms')
+          'restart', 'folder', 'textentry', 'badvalues', 'wclick', 'lostup', 'roms')
 # What `all` runs side by side (each in its own process and temp home): checks whose answer does not
 # depend on when the game gets its events or frames. ROUNDTRIP is dealt out in slices, longest jobs first.
-POOL = ('roundtrip:0/3', 'roundtrip:1/3', 'roundtrip:2/3', 'scale', 'stage', 'f11', 'firstrun:gold', 'folder', 'cmdline', 'wclick', 'restart', 'roms')
+POOL = ('roundtrip:0/3', 'roundtrip:1/3', 'roundtrip:2/3', 'scale', 'stage', 'f11', 'firstrun:gold', 'folder', 'cmdline', 'wclick', 'lostup', 'restart', 'roms')
 # What `all` runs after the pool, two at a time (SETCHECK_ALONE_JOBS): these read the game clock, the
 # recorded input, the audio or a picture at a wall-clock moment, or press keys at fixed times in a loaded
 # game, so a busy machine would move what they measure. A live run paced in real time uses little of a

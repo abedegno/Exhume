@@ -298,12 +298,12 @@ void plat_pointer_event(const PlatPointer *ev)
     hooks->pointer(&p);
 }
 
-void plat_window_click(float x, float y)
+void plat_window_click(float x, float y, int release)
 {
     SDL_Event ev;
     int i;
     if (!g_win) return;
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < (release ? 2 : 1); i++) {
         memset(&ev, 0, sizeof ev);
         ev.type = i ? SDL_EVENT_MOUSE_BUTTON_UP : SDL_EVENT_MOUSE_BUTTON_DOWN;
         ev.button.windowID = SDL_GetWindowID(g_win);
@@ -576,6 +576,10 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
                         SDL_RenderCoordinatesFromWindow(ren, e.button.x, e.button.y, &x, &y);
                     } else
                         SDL_RenderCoordinatesFromWindow(ren, e.motion.x, e.motion.y, &x, &y);
+                    /* a left press is a press even when the screen still thinks the button down: the host
+                       can lose a release (a macOS fullscreen switch does), and the next click went for a drag */
+                    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT)
+                        settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h), 0);
                     settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h), left_down);
                     sync_open();
                     break;

@@ -142,8 +142,9 @@ void plat_pointer_event(const PlatPointer *ev);
 /* A left click at X, Y of the window, in the window's own coordinates (an input script's wclick):
    put on the backend's event queue as the host's pointer would, so that it goes through the same
    mapping as a player's click (the picture's place, the settings screen's layer). Main thread,
-   from PlatHooks.tick; nothing without a window. */
-void plat_window_click(float x, float y);
+   from PlatHooks.tick; nothing without a window. RELEASE 0 sends the press alone (an input script's
+   wdown: a release the host lost, as a macOS fullscreen switch can). */
+void plat_window_click(float x, float y, int release);
 
 /* Time: a monotonic high-resolution counter and its rate, and a precise sleep. */
 uint64_t plat_counter(void);

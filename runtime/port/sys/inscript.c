@@ -10,6 +10,8 @@
        T wclick X Y      a left click at X, Y of the window, in its own coordinates (0..10000),
                          put on the backend's event queue (plat_window_click), so that it is
                          mapped as a player's click is
+       T wdown X Y       the press of a wclick alone, its release lost (as a macOS fullscreen
+                         switch can lose one)
    '#' starts a comment. Keys go in as PC set-1 scan codes through the hook real keys use, and
    the pointer through the one the mouse uses, so the game, the recorder and the black box see
    a player's input. The time is the BIOS clock's plus the time the settings screen has been open,
@@ -26,7 +28,7 @@
 uint32_t pit_bios_ticks(void);
 uint32_t pit_paused_ms(void);
 
-enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP, EV_WCLICK };
+enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP, EV_WCLICK, EV_WDOWN };
 struct ev { uint32_t ms; int kind, code, x, y, button; };
 static struct ev *evs;
 static int nev, next;
@@ -102,8 +104,8 @@ int inscript_load(const char *path, void (*key)(uint8_t), void (*pointer)(const 
                 || (e.kind != EV_MOVE && strcmp(btn, "left") && strcmp(btn, "right")))
                 return bad(f, path, line, "a position 0..319 0..199 (and for a click, left or right)");
             e.button = !strcmp(btn, "right") ? PLAT_BUTTON_RIGHT : PLAT_BUTTON_LEFT;
-        } else if (!strcmp(word, "wclick")) {
-            e.kind = EV_WCLICK;
+        } else if (!strcmp(word, "wclick") || !strcmp(word, "wdown")) {
+            e.kind = !strcmp(word, "wclick") ? EV_WCLICK : EV_WDOWN;
             if (sscanf(buf, "%lu %31s %d %d", &ms, word, &e.x, &e.y) < 4
                 || e.x < 0 || e.x > 10000 || e.y < 0 || e.y > 10000)
                 return bad(f, path, line, "a window position 0..10000 0..10000");
@@ -113,7 +115,7 @@ int inscript_load(const char *path, void (*key)(uint8_t), void (*pointer)(const 
                 || e.x < -1000 || e.x > 1000 || e.y < -1000 || e.y > 1000)
                 return bad(f, path, line, "a motion -1000..1000 -1000..1000");
         } else
-            return bad(f, path, line, "an event: key, down, up, move, click, mdown, mup, look or wclick");
+            return bad(f, path, line, "an event: key, down, up, move, click, mdown, mup, look, wclick or wdown");
         if (nev && e.ms < evs[nev - 1].ms) return bad(f, path, line, "times must not go back");
         if (nev == cap) {
             struct ev *m = realloc(evs, (size_t)(cap = cap ? cap * 2 : 32) * sizeof *evs);
@@ -168,7 +170,8 @@ void inscript_tick(void)
         case EV_UP: send_key(e->code, 0); break;
         case EV_MOVE: send_ptr(PLAT_POINTER_MOVE, e, 0); break;
         case EV_LOOK: send_look(e); break;
-        case EV_WCLICK: plat_window_click((float)e->x, (float)e->y); break;
+        case EV_WCLICK: plat_window_click((float)e->x, (float)e->y, 1); break;
+        case EV_WDOWN: plat_window_click((float)e->x, (float)e->y, 0); break;
         case EV_MDOWN: send_ptr(PLAT_POINTER_MOVE, e, 0); send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button); break;
         case EV_MUP: send_ptr(PLAT_POINTER_UP, e, 0); break;
         case EV_CLICK:
