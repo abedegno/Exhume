@@ -118,6 +118,9 @@ void emm_free(int h);
 #endif
 unsigned char *port_frame_alloc(void);
 int port_ems_has(const void *p);
+/* port_ems_runs_past: whether n bytes from p, a pointer into the frame, run past its 64 KB (by
+   the linear address, not the segment's offset); 0 for a pointer outside the frame. */
+int port_ems_runs_past(const void *p, unsigned long n);
 
 /* Finding the game, and the settings file (sys/gamedir.c, sys/gogreg.c). port_find_game
    looks for the game's directory by itself; port_game_in looks in a folder the user chose;

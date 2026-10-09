@@ -53,7 +53,9 @@ matched decompilation (docs/port.md). Every path is relative to [project] root u
                      C and the desktop's calling conventions let a call with more or fewer
                      arguments, or another return type, through, and WebAssembly's linker makes
                      it a trap), to an adapter of the caller's type in the project's port C
-                     that calls the definition (UW1: src/port/sys/webcalls.c)
+                     that calls the definition (UW1: src/port/sys/webcalls.c); allow_mismatch
+                     {name = "why"}, the signature mismatches wasm-ld may report without failing
+                     the build (any other fails it: the linker makes the call a trap)
 
 [package] (tools/package.py, tools/icons.py; docs/port.md, "Packages for players")
     name         the packages' and the macOS app's name (default [project] name): NAME.app,
@@ -146,6 +148,7 @@ def port(cfg):
         audit=p.get('audit', {}),
         web_renames={_path(cfg, f): ['-D' + x for x in names]
                      for f, names in p.get('web', {}).get('renames', {}).items()},
+        web_allow=dict(p.get('web', {}).get('allow_mismatch', {})),
         # headers of the include directory the probes leave out: portable.h, and the bindings
         # for the runtime, which declare no records
         size_probe_skip=p.get('size_probe_skip', ['portable.h', 'hookgame.h', 'rpgame.h']),

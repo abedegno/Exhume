@@ -120,6 +120,11 @@ int port_ems_has(const void *p)
     return frame && a >= f && a < f + 0x10000;
 }
 
+int port_ems_runs_past(const void *p, unsigned long n)
+{
+    return port_ems_has(p) && (uintptr_t)p - (uintptr_t)frame + n > 0x10000;
+}
+
 /* EMS_ADD(p, n): p + n with the offset wrapping at 64 KB, for p in the frame; else p + n. */
 void *port_ems_add(const void *p, long n)
 {

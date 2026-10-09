@@ -77,6 +77,20 @@ int main(void)
         CHECK(port_ems_wrap(below) == below);
     }
 
+    /* port_ems_runs_past: a transfer of n bytes from p in the frame runs past its 64 KB (judged by
+       the linear address, as port_mk_fp gives it, not by the segment's offset: DS a paragraph
+       0x800 into the frame, DX 7000h, CX 2000h is frame + F000h for 2000h bytes, which runs past
+       although DX + CX does not reach 10000h) */
+    CHECK(!port_ems_runs_past(frame_mem, 0x10000));
+    CHECK(!port_ems_runs_past(frame_mem + 0xF000, 0x1000));
+    CHECK(port_ems_runs_past(frame_mem + 0xF000, 0x1001));
+    CHECK(port_ems_runs_past(frame_mem + 0x8000 + 0x7000, 0x2000));
+    CHECK(port_ems_runs_past(frame_mem + 0xFFFF, 2));
+    CHECK(!port_ems_runs_past(frame_mem + 0xFFFF, 1));
+    CHECK(!port_ems_runs_past(frame_mem + 0x10000, 0x10));     /* not in the frame */
+    CHECK(!port_ems_runs_past((const unsigned char *)((uintptr_t)frame_mem - 0x10), 0x100));
+    CHECK(!port_ems_runs_past(frame_mem + 0x100, 0));
+
     emm_close();
     if (fails) { printf("emm_test: %d failed\n", fails); return 1; }
     printf("emm_test: all passed\n");

@@ -51,6 +51,75 @@ static unsigned char fd_text[MAXFD];
 static unsigned char fd_eof[MAXFD];
 static char *fd_cow[MAXFD];             /* the DOS path of a file to copy on its first write */
 
+/* Write-behind for files opened write-only (the web build): under Emscripten every file call
+   from the game's thread is proxied to the main thread, some 1.5 ms each under Node.js, and the
+   replays' state dumps (runtime/replay/replay.c, STATE.OUT) write a word at a time: UW1's talk
+   session made 379470 writes, 530 s of its 580. A write-only file's writes are kept in a buffer
+   of 64 KB and written when it fills, before anything else is done with the handle (lseek, tell,
+   filelength, eof, fstat, close) and at exit. Nothing can read a write-only handle, so
+   only a crash loses what is held. */
+#if defined(__EMSCRIPTEN__) && !defined(PORT_WRITE_BEHIND)
+#define PORT_WRITE_BEHIND 1
+#endif
+#ifdef PORT_WRITE_BEHIND
+#define WB_SIZE 0x10000u
+static unsigned char *wb_buf[MAXFD];
+static unsigned wb_len[MAXFD];
+
+static int wb_flush(int fd)
+{
+    unsigned done = 0;
+    ssize_t r;
+    if (fd < 0 || fd >= MAXFD || !wb_buf[fd]) return 0;
+    while (done < wb_len[fd]) {
+        r = write(fd, wb_buf[fd] + done, wb_len[fd] - done);
+        if (r <= 0) { wb_len[fd] = 0; return -1; }
+        done += (unsigned)r;
+    }
+    wb_len[fd] = 0;
+    return 0;
+}
+
+static void wb_flush_all(void)
+{
+    int fd;
+    for (fd = 0; fd < MAXFD; fd++) wb_flush(fd);
+}
+
+static void wb_start(int fd)
+{
+    static int registered;
+    if (!registered) { registered = 1; atexit(wb_flush_all); }
+    if (!wb_buf[fd]) wb_buf[fd] = malloc(WB_SIZE);
+    wb_len[fd] = 0;
+}
+
+static void wb_stop(int fd)
+{
+    if (fd < 0 || fd >= MAXFD || !wb_buf[fd]) return;
+    wb_flush(fd);
+    free(wb_buf[fd]);
+    wb_buf[fd] = NULL;
+}
+
+/* write(), through the buffer when the handle has one */
+static ssize_t raw_write(int fd, const void *buf, size_t n)
+{
+    if (fd < 0 || fd >= MAXFD || !wb_buf[fd]) return write(fd, buf, n);
+    if (wb_len[fd] + n > WB_SIZE) {
+        if (wb_flush(fd)) return -1;
+        if (n > WB_SIZE) return write(fd, buf, n);
+    }
+    memcpy(wb_buf[fd] + wb_len[fd], buf, n);
+    wb_len[fd] += (unsigned)n;
+    return (ssize_t)n;
+}
+#define WB_FLUSH(fd) wb_flush(fd)
+#else
+#define raw_write write
+#define WB_FLUSH(fd) 0
+#endif
+
 /* The register file of Turbo C's pseudo-registers (compat.h). */
 union port_reg16 { uint16_t x; struct { uint8_t l, h; } b; };
 union port_reg16 port_ax, port_bx, port_cx, port_dx;
@@ -100,6 +169,10 @@ int bc_open(const char *path, int access, ...)
         fd_eof[fd] = 0;
         free(fd_cow[fd]);
         fd_cow[fd] = NULL;
+#ifdef PORT_WRITE_BEHIND
+        wb_stop(fd);                    /* a handle number used before */
+        if ((fl & (O_RDWR | O_WRONLY)) == O_WRONLY) wb_start(fd);
+#endif
     }
     return fd;
 }
@@ -170,41 +243,49 @@ int bc_write(int fd, const void *buf, unsigned n)
     const unsigned char *b = buf;
     unsigned i, start = 0;
     if (cow_write(fd)) return -1;
-    if (fd < 0 || fd >= MAXFD || !fd_text[fd]) return (int)write(fd, buf, n);
+    if (fd < 0 || fd >= MAXFD || !fd_text[fd]) return (int)raw_write(fd, buf, n);
     for (i = 0; i < n; i++) {
         if (b[i] == '\n') {
-            if (i > start && write(fd, b + start, i - start) != (ssize_t)(i - start)) return -1;
-            if (write(fd, "\r\n", 2) != 2) return -1;
+            if (i > start && raw_write(fd, b + start, i - start) != (ssize_t)(i - start)) return -1;
+            if (raw_write(fd, "\r\n", 2) != 2) return -1;
             start = i + 1;
         }
     }
-    if (n > start && write(fd, b + start, n - start) != (ssize_t)(n - start)) return -1;
+    if (n > start && raw_write(fd, b + start, n - start) != (ssize_t)(n - start)) return -1;
     return (int)n;
 }
 
 int bc_close(int fd)
 {
+    int r = 0;
+#ifdef PORT_WRITE_BEHIND
+    r = wb_flush(fd);
+    wb_stop(fd);
+#endif
     if (fd >= 0 && fd < MAXFD) { free(fd_cow[fd]); fd_cow[fd] = NULL; }
-    return close(fd);
+    return close(fd) || r ? -1 : 0;
 }
 
 long bc_lseek(int fd, long off, int whence)
 {
     if (fd >= 0 && fd < MAXFD) fd_eof[fd] = 0;
+    if (WB_FLUSH(fd)) return -1L;
     return (long)lseek(fd, (off_t)off, whence);
 }
 
 long filelength(int fd)
 {
     struct stat st;
+    if (WB_FLUSH(fd)) return -1L;
     return fstat(fd, &st) ? -1L : (long)st.st_size;
 }
 
-long tell(int fd) { return (long)lseek(fd, 0, SEEK_CUR); }
+long tell(int fd) { if (WB_FLUSH(fd)) return -1L; return (long)lseek(fd, 0, SEEK_CUR); }
 
 int eof(int fd)
 {
     struct stat st;
+    if (WB_FLUSH(fd)) return -1;
     if (fd >= 0 && fd < MAXFD && fd_eof[fd]) return 1;
     if (fstat(fd, &st)) return -1;
     return lseek(fd, 0, SEEK_CUR) >= st.st_size;
@@ -266,7 +347,7 @@ int bc_stat(const char *path, struct stat *st)
     return stat(host, st);
 }
 
-int bc_fstat(int fd, struct stat *st) { return fstat(fd, st); }
+int bc_fstat(int fd, struct stat *st) { if (WB_FLUSH(fd)) return -1; return fstat(fd, st); }
 
 FILE *bc_fopen(const char *path, const char *mode)
 {
@@ -538,8 +619,10 @@ int intdosx(union REGS *in, union REGS *out, struct SREGS *s)
     if (ah == 0x3F || ah == 0x40) {
         void *buf = port_mk_fp(s->ds, in->x.dx);
         if (!buf && in->x.cx) { out->x.cflag = 1; out->x.ax = 6; return out->x.ax; }
-        if ((unsigned long)in->x.dx + in->x.cx > 0x10000UL && port_ems_has(buf)) {
-            /* no replayed session does this: the frame mapped twice would wrap it to the frame's
+        if (port_ems_has(buf) && ((unsigned long)in->x.dx + in->x.cx > 0x10000UL || port_ems_runs_past(buf, in->x.cx))) {
+            /* no replayed session does this: a transfer into the frame that wraps its segment's
+               offset, or runs past the frame's end by its linear address (DS inside the frame,
+               DX + CX short of 10000h). The frame mapped twice would wrap it to the frame's
                start, the frame mapped once (the web build) would not, and what DOS itself does
                there has not been measured. Mapped once, the transfer would run on past the
                frame's 64 KB into whatever follows it (on the web, the heap): stop instead. */

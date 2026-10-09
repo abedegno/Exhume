@@ -276,6 +276,23 @@ def web_out(name):
     return os.path.join(os.path.dirname(P.out), name)
 
 
+def web_mismatches(stderr, allow):
+    """wasm-ld's signature mismatches in a link's messages: a direct call whose declaration
+    differs from the definition is linked as a trap, with only a warning, so each is a failure
+    unless ALLOW ({name: why}; [port.web.allow_mismatch]) names it. True when one is not."""
+    blocks = re.split(r'\n(?=wasm-ld: )', stderr)
+    bad = []
+    for b in blocks:
+        m = re.match(r'wasm-ld: warning: function signature mismatch: (\S+)', b)
+        if not m: continue
+        if m.group(1) in allow: print(f'portbuild.py: signature mismatch {m.group(1)} allowed: {allow[m.group(1)]}')
+        else: bad.append(b.strip())
+    if bad:
+        print('portbuild.py: the link makes these calls traps (a declaration differs from the definition; '
+              '[port.web.renames] and an adapter, or [port.web.allow_mismatch] with the reason):\n' + '\n'.join(bad))
+    return bool(bad)
+
+
 def link_web(cc, objs, libs):
     """--web's link, twice from the same objects: the page's program (EXE, <exe>.js and .wasm
     in <build>/web: a module the page starts itself, with the file system's IDBFS for the saved
@@ -286,11 +303,11 @@ def link_web(cc, objs, libs):
     # Turbo C's and the desktop's calling conventions let through and WebAssembly's call_indirect
     # traps on ("function signature mismatch")
     common = ['-pthread', '-O2', '-sPTHREAD_POOL_SIZE=4', '-sALLOW_MEMORY_GROWTH=1', '-sINITIAL_MEMORY=128MB',
-              '-sSTACK_SIZE=1MB', '-sDEFAULT_PTHREAD_STACK_SIZE=1MB', '-sEXIT_RUNTIME=1', '-lidbfs.js',
+              '-sSTACK_SIZE=1MB', '-sDEFAULT_PTHREAD_STACK_SIZE=1MB', '-sEXIT_RUNTIME=1',
               '-sEMULATE_FUNCTION_POINTER_CASTS=1']
     name = os.path.basename(EXE)
     stem = re.sub(r'\.exe$', '', P.exe)
-    page = [cc, '-o', EXE] + objs + libs + common + ['-sENVIRONMENT=web,worker', '-sMODULARIZE=1',
+    page = [cc, '-o', EXE] + objs + libs + common + ['-lidbfs.js', '-sENVIRONMENT=web,worker', '-sMODULARIZE=1',
             f'-sEXPORT_NAME={stem}', '-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain',
             '-sINVOKE_RUN=0', '-sEXPORTED_FUNCTIONS=_main']
     nodeout = web_out('web-node'); os.makedirs(nodeout, exist_ok=True)
@@ -300,6 +317,7 @@ def link_web(cc, objs, libs):
         if r.returncode:
             print(f'link failed ({os.path.relpath(cmd[2], root)})\n' + r.stderr[-3000:])
             return 1
+        if web_mismatches(r.stderr, P.web_allow): return 1
     # Emscripten's output is CommonJS, which node reads as an ES module under a package.json
     # that says "type": "module" (UW2's, for its tools' .mjs): this directory says otherwise
     with open(os.path.join(nodeout, 'package.json'), 'w') as f: f.write('{"type": "commonjs"}\n')
