@@ -1,5 +1,6 @@
 /* A host test of the EMS emulation (runtime/port/mem/emm.c), not part of any build:
    cc -std=c99 -O2 -Wall -Wextra -I runtime/tests -I runtime/port runtime/tests/emm_test.c runtime/port/mem/emm.c -o /tmp/emm && /tmp/emm
+   (and again with -DPORT_FRAME_SINGLE, the web build's frame)
    What a page holds survives mapping it again, into its own slot or another, and a page in two
    slots stays one page; and mapping a slot's own page again costs nothing (UW1's cutscene reader
    does it some eighty million times in the intro, each once a 32 KB copy). */
@@ -16,6 +17,7 @@ void pm_add(const char *name, void *p, size_t n, unsigned seg) { (void)name; (vo
 void pm_remove(void *p) { (void)p; }
 void port_log(const char *fmt, ...) { (void)fmt; }
 void port_fatal(const char *fmt, ...) { fprintf(stderr, "fatal: %s\n", fmt); exit(1); }
+const void *port_ems_wrap(const void *p);     /* portable.h's EMS_WRAP */
 
 static int fails;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
@@ -58,6 +60,22 @@ int main(void)
     secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
     CHECK(secs < 0.05);         /* a no-op loop takes about a millisecond */
     printf("a million maps of the same page: %.3f s\n", secs);
+
+    /* EMS_WRAP: a pointer into the frame or its second mapping comes back at its offset in the
+       frame; one past the frame's two mappings (frame + 0x20000 and on) is not the frame's and
+       comes back as it is, as one below the frame does. The pointers outside frame_mem are
+       only compared, never read. */
+    {
+        const unsigned char *past = (const unsigned char *)((uintptr_t)frame_mem + 0x20000);
+        const unsigned char *far_past = (const unsigned char *)((uintptr_t)frame_mem + 0x30010);
+        const unsigned char *below = (const unsigned char *)((uintptr_t)frame_mem - 1);
+        CHECK(port_ems_wrap(frame_mem) == frame_mem);
+        frame_mem[0x10] = 0x5A;     /* the frame mapped once (-DPORT_FRAME_SINGLE) returns a copy */
+        CHECK(*(const unsigned char *)port_ems_wrap(frame_mem + 0x10010) == 0x5A);
+        CHECK(port_ems_wrap(past) == past);
+        CHECK(port_ems_wrap(far_past) == far_past);
+        CHECK(port_ems_wrap(below) == below);
+    }
 
     emm_close();
     if (fails) { printf("emm_test: %d failed\n", fails); return 1; }

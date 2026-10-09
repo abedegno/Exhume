@@ -538,12 +538,20 @@ int intdosx(union REGS *in, union REGS *out, struct SREGS *s)
     if (ah == 0x3F || ah == 0x40) {
         void *buf = port_mk_fp(s->ds, in->x.dx);
         if (!buf && in->x.cx) { out->x.cflag = 1; out->x.ax = 6; return out->x.ax; }
-        if ((unsigned long)in->x.dx + in->x.cx > 0x10000UL && port_ems_has(buf))
+        if ((unsigned long)in->x.dx + in->x.cx > 0x10000UL && port_ems_has(buf)) {
             /* no replayed session does this: the frame mapped twice would wrap it to the frame's
                start, the frame mapped once (the web build) would not, and what DOS itself does
-               there has not been measured */
+               there has not been measured. Mapped once, the transfer would run on past the
+               frame's 64 KB into whatever follows it (on the web, the heap): stop instead. */
+#ifdef PORT_FRAME_SINGLE
+            port_fatal("intdosx: DOS function %02Xh (%s) at %04X:%04X for %u bytes runs past the EMS frame's end,"
+                       " which the frame mapped once cannot hold",
+                       ah, ah == 0x3F ? "read" : "write", s->ds, in->x.dx, in->x.cx);
+#else
             port_log("intdosx: DOS function %02Xh at %04X:%04X for %u bytes runs past the EMS frame's end\n",
                      ah, s->ds, in->x.dx, in->x.cx);
+#endif
+        }
         r = ah == 0x3F ? bc_read(in->x.bx, buf, in->x.cx) : bc_write(in->x.bx, buf, in->x.cx);
         if (r < 0) { out->x.cflag = 1; out->x.ax = 5; }
         else out->x.ax = (unsigned short)r;

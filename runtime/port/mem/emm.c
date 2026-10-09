@@ -133,12 +133,13 @@ void *port_ems_add(const void *p, long n)
    the frame from p's offset to its end and then from its start, twice over (an index from p can
    pass FFFFh too), copied to a buffer of the port's, which holds what the game reads through p
    until the next call or the next change to the frame. Only for reading. A pointer below the
-   frame is returned as it is. */
+   frame, or at or past the end of its two mappings (frame + 20000h: no longer the frame's, as
+   the web build's heap goes on after its one), is returned as it is. */
 const void *port_ems_wrap(const void *p)
 {
     uintptr_t a = (uintptr_t)p, f = (uintptr_t)frame;
     size_t off;
-    if (!frame || a < f) return p;
+    if (!frame || a < f || a - f >= 0x20000) return p;
     off = (size_t)(a - f) & 0xFFFF;
 #ifdef PORT_FRAME_SINGLE
     if (off) {

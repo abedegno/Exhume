@@ -1,8 +1,9 @@
 /* records.c: replaces nothing; FILE_RECORDS (runtime/include/portable.h) on the host. A struct the
    original lays over file data but which holds pointers has the host's layout, so the file's
    records are copied into host structs field by field: each field is aligned to its own size
-   (8 for a pointer), as clang lays out a struct between HOST_LAYOUT_BEGIN and _END, and the
-   pointer fields start null. Each conversion is remembered by its result, so that
+   (a host pointer's for a pointer: 8 on the desktop's 64-bit hosts, 4 on WebAssembly's 32-bit
+   one) and the struct to a pointer's, as clang lays out a struct between HOST_LAYOUT_BEGIN and
+   _END, and the pointer fields start null. Each conversion is remembered by its result, so that
    FILE_RECORDS_END can give the file's bytes after the records. FARNULLREC's null records are
    made the same way, from the vector table. */
 #include <stdint.h>
@@ -19,8 +20,8 @@ static unsigned field_size(char c, int host)
 {
     switch (c) {
     case 'w': return 2;
-    case 'n': return host ? 8 : 2;
-    case 'f': return host ? 8 : 4;
+    case 'n': return host ? (unsigned)sizeof(void *) : 2;
+    case 'f': return host ? (unsigned)sizeof(void *) : 4;
     default: port_fatal("FILE_RECORDS: unknown field letter %c", c);
     }
 }
@@ -28,7 +29,7 @@ static unsigned field_size(char c, int host)
 void *port_file_records(void *p, int n, const char *layout, unsigned host_size)
 {
     unsigned char *file = p, *out;
-    unsigned dos_size = 0, off, hoff, sz;
+    unsigned dos_size = 0, off, hoff, sz, ptr = (unsigned)sizeof(void *);
     const char *c;
     int i, k;
     for (c = layout; *c; c++) dos_size += field_size(*c, 0);
@@ -44,7 +45,8 @@ void *port_file_records(void *p, int n, const char *layout, unsigned host_size)
             off += field_size(*c, 0);
             hoff += sz;
         }
-        if (((hoff + 7) & ~7u) != host_size) port_fatal("FILE_RECORDS: layout %s gives %u bytes, the struct %u", layout, (hoff + 7) & ~7u, host_size);
+        hoff = (hoff + ptr - 1) & ~(ptr - 1);
+        if (hoff != host_size) port_fatal("FILE_RECORDS: layout %s gives %u bytes, the struct %u", layout, hoff, host_size);
     }
     k = nconv < MAXCONV ? nconv++ : MAXCONV - 1;
     conv[k].host = out;

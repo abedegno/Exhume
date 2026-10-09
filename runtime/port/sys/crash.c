@@ -1,7 +1,10 @@
 /* crash.c: replaces nothing. A host fault (a bad pointer the port has not caught) prints the
    game thread's call stack before the program ends, so the port's first runs say where they
    stopped, and the black box (blackbox.c, with PORT_BLACKBOX) writes out the session's
-   recording, so that a replay of it runs into the fault. */
+   recording, so that a replay of it runs into the fault. Under Emscripten (the web build) there
+   are no signals to catch and no backtrace(): a trap in the WebAssembly ends the program with
+   the JavaScript engine's own report, and port_backtrace says it has none. */
+#ifndef __EMSCRIPTEN__
 #undef _POSIX_C_SOURCE
 #define _DARWIN_C_SOURCE
 #include <signal.h>
@@ -56,3 +59,15 @@ void port_backtrace(void)
     int n = backtrace(frames, 32);
     backtrace_symbols_fd(frames, n, 2);
 }
+
+#else   /* __EMSCRIPTEN__ */
+#include <unistd.h>
+
+void port_crash_handlers(void) {}
+
+void port_backtrace(void)
+{
+    static const char msg[] = "(no call stack on this host)\n";
+    if (write(2, msg, sizeof msg - 1) < 0) { }
+}
+#endif

@@ -135,12 +135,13 @@ def layout_flags(cc):
     return _layout[cc]
 
 
-def compile_one(cc, path):
+def compile_one(cc, path, extra=()):
+    """Compile game source PATH with FLAGS and EXTRA (portbuild.py --web: [port.web] renames)."""
     stem = sources.stem(path)
     obj = os.path.join(OUT, stem + '.o')
     os.makedirs(OUT, exist_ok=True)
     if os.path.exists(obj): os.remove(obj)
-    r = subprocess.run([cc] + FLAGS + layout_flags(cc) + ['-c', '-o', obj, path], capture_output=True, text=True,
+    r = subprocess.run([cc] + FLAGS + layout_flags(cc) + list(extra) + ['-c', '-o', obj, path], capture_output=True, text=True,
                        cwd=root)
     return path, r.returncode, r.stderr, obj if r.returncode == 0 and os.path.exists(obj) else None
 

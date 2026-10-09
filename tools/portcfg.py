@@ -47,6 +47,13 @@ matched decompilation (docs/port.md). Every path is relative to [project] root u
                      label, hint
     [port.layout]    tools/layoutcheck.py: file_records {tag = why}, probe (the DOS compile line)
     [port.audit]     tools/intaudit.py: width_types {name = [dos type, host type]}
+    [port.web]       the web build (portbuild.py --web): renames {source = ["name=other", ...]},
+                     calls in a game source to rename there (-D) when its declaration of the
+                     function differs from the definition's (as the original's own may: Turbo
+                     C and the desktop's calling conventions let a call with more or fewer
+                     arguments, or another return type, through, and WebAssembly's linker makes
+                     it a trap), to an adapter of the caller's type in the project's port C
+                     that calls the definition (UW1: src/port/sys/webcalls.c)
 
 [package] (tools/package.py, tools/icons.py; docs/port.md, "Packages for players")
     name         the packages' and the macOS app's name (default [project] name): NAME.app,
@@ -137,6 +144,8 @@ def port(cfg):
         pkg=list(p.get('pkg', [])),
         layout=p.get('layout', {}),
         audit=p.get('audit', {}),
+        web_renames={_path(cfg, f): ['-D' + x for x in names]
+                     for f, names in p.get('web', {}).get('renames', {}).items()},
         # headers of the include directory the probes leave out: portable.h, and the bindings
         # for the runtime, which declare no records
         size_probe_skip=p.get('size_probe_skip', ['portable.h', 'hookgame.h', 'rpgame.h']),

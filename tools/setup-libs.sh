@@ -22,7 +22,9 @@ libs=${SETUP_LIBS:-sdl3 mt32emu}
 archs=${SETUP_MACOS_ARCHS:-}
 gen=; command -v ninja >/dev/null 2>&1 && gen="-G Ninja"
 # SETUP_WEB=1: for the web build (docs/WEB.md), with Emscripten's emcmake (emsdk_env.sh sourced),
-# static libraries, pthreads on
+# static libraries, pthreads on (SDL's threads too: SDL_PTHREADS, which SDL's CMake turns off
+# for Emscripten unless asked; without it SDL_CreateThread fails and the port cannot start its
+# timer thread)
 web=${SETUP_WEB:-}
 cm=cmake; [ -n "$web" ] && cm="emcmake cmake"
 webflags=; [ -n "$web" ] && webflags="-DCMAKE_C_FLAGS=-pthread -DCMAKE_CXX_FLAGS=-pthread"
@@ -33,7 +35,7 @@ src=$(mktemp -d); trap 'rm -rf "$src"' EXIT
 build() {   # name tag repo subdir cmake-args...
   name=$1; tag=$2; repo=$3; sub=$4; shift 4
   case " $libs " in *" $name "*) ;; *) return ;; esac
-  stamp="$tag${archs:+ $archs}${web:+ web}"
+  stamp="$tag${archs:+ $archs}${web:+ web pthreads}"
   if [ "$(cat "$prefix/.$name" 2>/dev/null)" = "$stamp" ]; then echo "$name: $tag already in $prefix"; return; fi
   git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$repo" "$src/$name"
   # shellcheck disable=SC2086
@@ -51,7 +53,7 @@ console=OFF
 if [ -z "$web" ] && [ "$(uname -s)" = Linux ] && ! pkg-config --exists x11 2>/dev/null && ! pkg-config --exists wayland-client 2>/dev/null; then
   console=ON; echo "sdl3: no X11 or Wayland headers, building without windows (offscreen video only)"
 fi
-if [ -n "$web" ]; then sdl_kind="-DSDL_SHARED=OFF -DSDL_STATIC=ON"; mt_kind="-Dlibmt32emu_SHARED=OFF"; else sdl_kind=; mt_kind="-Dlibmt32emu_SHARED=ON"; fi
+if [ -n "$web" ]; then sdl_kind="-DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_PTHREADS=ON"; mt_kind="-Dlibmt32emu_SHARED=OFF"; else sdl_kind=; mt_kind="-Dlibmt32emu_SHARED=ON"; fi
 # shellcheck disable=SC2086
 build sdl3 "$sdl_tag" https://github.com/libsdl-org/SDL . -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
   -DSDL_UNIX_CONSOLE_BUILD=$console $sdl_kind

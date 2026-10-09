@@ -8,6 +8,9 @@
    at a time, case-insensitively, first under the home directory and then under the data root.
    A file the game creates goes to the home directory, and a file it opens to change is copied
    there first, so the data root is never written. Any POSIX host can use this file as it is. */
+#if defined(__EMSCRIPTEN__) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700               /* realpath, for open_dir */
+#endif
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -30,6 +33,22 @@
 
 static char data_root[MAXP];
 static char home_root[MAXP];
+
+#ifdef __EMSCRIPTEN__
+#include <limits.h>
+/* Emscripten's NODERAWFS (the web build linked for Node.js, which replays the sessions) lists
+   a directory named through a symbolic link as its last component as empty (opendir of
+   ".../data/DATA", a link, reads only "." and ".."; a link earlier in the path is followed),
+   and the replays' data directories are links (tools/replay.py's port_data): the link is
+   resolved first. */
+static DIR *open_dir(const char *dir)
+{
+    char real[PATH_MAX];
+    return opendir(realpath(dir, real) ? real : dir);
+}
+#else
+#define open_dir opendir
+#endif
 
 static int is_dir(const char *p)
 {
@@ -81,7 +100,7 @@ static int find_ci(const char *dir, const char *name, char *out, size_t outsz)
     struct dirent *e;
     int found = 0;
     if (!*name) return 0;
-    d = opendir(dir);
+    d = open_dir(dir);
     if (!d) return 0;
     while ((e = readdir(d)) != NULL) {
         if (strcasecmp(e->d_name, name) == 0) {
@@ -291,7 +310,7 @@ static int seen_add(struct seen *s, const char *name)
 static void list_one(const char *dir, struct seen *s,
                      void (*fn)(const char *, int, long, long, void *), void *ctx)
 {
-    DIR *dd = opendir(dir);
+    DIR *dd = open_dir(dir);
     struct dirent *e;
     char p[MAXP];
     struct stat st;
