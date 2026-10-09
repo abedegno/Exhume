@@ -245,6 +245,10 @@ static int start_pick(const char *start)
 {
     static char from[1024];             /* the dialog's start, kept while it is open */
     SDL_PathInfo info;
+#ifdef __EMSCRIPTEN__
+    (void)start; (void)info; (void)from;
+    return -1;                          /* a browser has no host folders to choose */
+#endif
     if (!g_win) return -1;
     SDL_SetAtomicInt(&pick_state, 0);
     from[0] = 0;
@@ -439,26 +443,325 @@ static void mouse_title(SDL_Window *w, const PlatConfig *cfg, int locked)
     SDL_SetWindowTitle(w, t);
 }
 
-int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), void *arg)
-{
-    static uint8_t pix[640 * 480];
-    static uint32_t rgb[640 * 480];
+/* The main loop's state (plat_run, loop_step, loop_end): kept between passes, as the browser runs
+   the loop one pass a frame (emscripten_set_main_loop) where the desktop runs it as a while. */
+static struct loop {
+    uint8_t pix[640 * 480];
+    uint32_t rgb[640 * 480];
+    uint32_t layer[SET_W * SET_H];
     uint8_t pal[768];
     uint32_t lut[256];
-    SDL_Window *win = NULL;
-    SDL_Renderer *ren = NULL;
-    SDL_Texture *tex = NULL, *ltex = NULL;
-    static uint32_t layer[SET_W * SET_H];
-    const PlatConfig *cfg = &live;
-    int tw = 0, th = 0, w = 320, hgt = 200, quit = 0, shot = 0, i, scale = cfg0->scale > 0 ? cfg0->scale : 3;
-    unsigned swallow = 0;
-    int hidden_win = 0, vsync = 0;
-    Uint64 frame_ns = 0, last_present = 0, pace_from = 0;
-    unsigned presents = 0, paced = 0, hidden_passes = 0;
+    SDL_Window *win;
+    SDL_Renderer *ren;
+    SDL_Texture *tex, *ltex;
+    int tw, th, w, hgt, quit, shot;
+    unsigned swallow;
+    int hidden_win;
+    Uint64 frame_ns, last_present, pace_from;
+    unsigned presents, paced, hidden_passes;
     void *targ[2];
-    SDL_FRect dst = { 0, 0, 0, 0 };
+    SDL_FRect dst;
     Uint64 start;
+} L = { .w = 320, .hgt = 200 };
+
+/* One pass of the loop: the events, the game's picture presented. 0 to go on, 1 to stop. */
+static int loop_step(void)
+{
+    const PlatConfig *cfg = &live;
     SDL_Event e;
+    int i;
+
+    {
+        int c = SDL_SetAtomicInt(&capture_req, 0);
+        if (c && L.win && !locked) {      /* the pointer lock's own capture stands */
+            captured = c == 1;
+            SDL_SetWindowRelativeMouseMode(L.win, captured);
+        }
+    }
+    while (SDL_PollEvent(&e)) {
+        PlatPointer p;
+        float x, y;
+        memset(&p, 0, sizeof p);
+        switch (e.type) {
+        case SDL_EVENT_QUIT:
+            if (hooks->lifecycle) hooks->lifecycle(PLAT_QUIT_REQUEST);
+            L.quit = 1;
+            break;
+        case SDL_EVENT_DROP_FILE:
+            if (hooks->drop && e.drop.data) hooks->drop(e.drop.data);
+            break;
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP:
+            if (cfg->mouse_lock && e.key.scancode == SDL_SCANCODE_F10 && (e.key.mod & SDL_KMOD_CTRL)) {
+                /* Ctrl+F10 releases a captured pointer, as in DOSBox; the game never sees it */
+                if (e.type == SDL_EVENT_KEY_DOWN && locked) {
+                    SDL_SetWindowRelativeMouseMode(L.win, false);
+                    locked = 0;
+                    if (!captured) rel_restore = 0;     /* as plat_set_mouse_lock(0): no lock to hold it by */
+                    mouse_title(L.win, cfg, 0);
+                }
+                break;
+            }
+#ifdef __APPLE__
+            {
+                /* Cmd+, (the macOS settings key) opens and closes the screen as F11 does, which
+                   the desktop may take for Show Desktop; the comma's release goes nowhere */
+                static int cmd_comma;
+                if (e.key.scancode == SDL_SCANCODE_COMMA && (e.type == SDL_EVENT_KEY_DOWN ? (e.key.mod & SDL_KMOD_GUI) != 0 : cmd_comma)) {
+                    cmd_comma = e.type == SDL_EVENT_KEY_DOWN;
+                    handle_key(SDL_SCANCODE_F11, cmd_comma, e.key.repeat);
+                    break;
+                }
+            }
+#endif
+            handle_key(e.key.scancode, e.type == SDL_EVENT_KEY_DOWN, e.key.repeat);
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (e.motion.which == SDL_TOUCH_MOUSEID || !hooks->pointer || !L.ren || L.dst.w <= 0) break;
+            if (settings_open()) {
+                /* the screen has the pointer: its position in the layer's pixels */
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                    if (e.button.button == SDL_BUTTON_LEFT) left_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+                    SDL_RenderCoordinatesFromWindow(L.ren, e.button.x, e.button.y, &x, &y);
+                } else
+                    SDL_RenderCoordinatesFromWindow(L.ren, e.motion.x, e.motion.y, &x, &y);
+                /* a left press is a press even when the screen still thinks the button down: the host
+                   can lose a release (a macOS fullscreen switch does), and the next click went for a drag */
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT)
+                    settings_pointer((int)((x - L.dst.x) * SET_W / L.dst.w), (int)((y - L.dst.y) * SET_H / L.dst.h), 0);
+                settings_pointer((int)((x - L.dst.x) * SET_W / L.dst.w), (int)((y - L.dst.y) * SET_H / L.dst.h), left_down);
+                sync_open();
+                break;
+            }
+            if (cfg->mouse_lock && !locked) {
+                /* the pointer lock option: a click captures the pointer and goes no further,
+                   nor does its release; the pointer moves nothing until then */
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && SDL_SetWindowRelativeMouseMode(L.win, true)) {
+                    locked = 1;
+                    L.swallow |= 1u << e.button.button;
+                    mouse_title(L.win, cfg, 1);
+                }
+                break;
+            }
+            if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && (L.swallow & (1u << e.button.button))) {
+                L.swallow &= ~(1u << e.button.button);
+                break;
+            }
+            if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                SDL_RenderCoordinatesFromWindow(L.ren, e.motion.x, e.motion.y, &x, &y);
+                p.type = PLAT_POINTER_MOVE;
+                {
+                    /* window points to render pixels to screen pixels */
+                    float dens = L.win ? SDL_GetWindowPixelDensity(L.win) : 1.0f;
+                    p.dx = e.motion.xrel * dens * (float)L.w / L.dst.w;
+                    p.dy = e.motion.yrel * dens * (float)L.hgt / L.dst.h;
+                }
+            } else {
+                unsigned b = e.button.button == SDL_BUTTON_LEFT ? PLAT_BUTTON_LEFT
+                           : e.button.button == SDL_BUTTON_RIGHT ? PLAT_BUTTON_RIGHT : PLAT_BUTTON_MIDDLE;
+                SDL_RenderCoordinatesFromWindow(L.ren, e.button.x, e.button.y, &x, &y);
+                p.type = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? PLAT_POINTER_DOWN : PLAT_POINTER_UP;
+                p.button = b;
+                buttons = p.type == PLAT_POINTER_DOWN ? buttons | b : buttons & ~b;
+            }
+            p.x = (x - L.dst.x) * (float)L.w / L.dst.w;
+            p.y = (y - L.dst.y) * (float)L.hgt / L.dst.h;
+            p.buttons = buttons;
+            p.absolute = !locked && !captured;
+            last_x = p.x; last_y = p.y;
+            if (!locked && !captured) {
+                /* the game's cursor stands in for the host's over the picture */
+                int over = x >= L.dst.x && x < L.dst.x + L.dst.w && y >= L.dst.y && y < L.dst.y + L.dst.h;
+                if (over != cursor_hidden) {
+                    if (over) SDL_HideCursor(); else SDL_ShowCursor();
+                    cursor_hidden = over;
+                }
+            }
+            hooks->pointer(&p);
+            break;
+        case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+            if (cursor_hidden) { SDL_ShowCursor(); cursor_hidden = 0; }
+            break;
+        case SDL_EVENT_FINGER_DOWN:
+        case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_MOTION: {
+            int ow, oh;
+            if (!hooks->pointer || !L.ren || L.dst.w <= 0) break;
+            SDL_GetCurrentRenderOutputSize(L.ren, &ow, &oh);
+            x = e.tfinger.x * (float)ow; y = e.tfinger.y * (float)oh;
+            if (settings_open()) {
+                settings_pointer((int)((x - L.dst.x) * SET_W / L.dst.w), (int)((y - L.dst.y) * SET_H / L.dst.h),
+                                 e.type != SDL_EVENT_FINGER_UP);
+                sync_open();
+                break;
+            }
+            p.id = (int)(e.tfinger.fingerID & 0x7FFFFFFF) + 1;
+            p.type = e.type == SDL_EVENT_FINGER_DOWN ? PLAT_POINTER_DOWN
+                   : e.type == SDL_EVENT_FINGER_UP ? PLAT_POINTER_UP : PLAT_POINTER_MOVE;
+            p.button = PLAT_BUTTON_LEFT;
+            p.buttons = p.type == PLAT_POINTER_UP ? 0 : PLAT_BUTTON_LEFT;
+            p.x = (x - L.dst.x) * (float)L.w / L.dst.w;
+            p.y = (y - L.dst.y) * (float)L.hgt / L.dst.h;
+            p.dx = e.tfinger.dx * (float)ow * (float)L.w / L.dst.w;
+            p.dy = e.tfinger.dy * (float)oh * (float)L.hgt / L.dst.h;
+            p.absolute = 1;
+            hooks->pointer(&p);
+            break;
+        }
+        case SDL_EVENT_WINDOW_OCCLUDED:
+            L.hidden_win = 1;
+            break;
+        case SDL_EVENT_WINDOW_EXPOSED:
+            L.hidden_win = 0;
+            break;
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+        case SDL_EVENT_WINDOW_MINIMIZED:
+            if (e.type == SDL_EVENT_WINDOW_MINIMIZED) L.hidden_win = 1;
+            if (hooks->lifecycle) hooks->lifecycle(PLAT_SUSPEND);
+            break;
+        case SDL_EVENT_DID_ENTER_FOREGROUND:
+        case SDL_EVENT_WINDOW_RESTORED:
+            if (e.type == SDL_EVENT_WINDOW_RESTORED) L.hidden_win = 0;
+            if (hooks->lifecycle) hooks->lifecycle(PLAT_RESUME);
+            break;
+        default:
+            break;
+        }
+    }
+    if (hooks->tick) hooks->tick();     /* an input script's events (inscript.c) */
+    sync_open();
+    {
+        int ps = SDL_GetAtomicInt(&pick_state);
+        if (ps) {                       /* the folder picker answered (or was cancelled) */
+            SDL_SetAtomicInt(&pick_state, 0);
+            settings_folder_chosen(ps == 1 ? pick_path : NULL);
+        }
+    }
+    hooks->scanout(L.pix, &L.w, &L.hgt, L.pal);
+    if (!L.shot && cfg->screenshot_after_ms > 0 && SDL_GetTicks() - L.start >= (Uint64)cfg->screenshot_after_ms) {
+        L.shot = 1;
+        if (plat_write_png(cfg->screenshot_path ? cfg->screenshot_path : PLAT_NAME ".png", L.pix, L.w, L.hgt, L.pal) == 0)
+            fprintf(stderr, PLAT_NAME ": wrote %s (%dx%d) at %lu ms\n", cfg->screenshot_path ? cfg->screenshot_path : PLAT_NAME ".png",
+                    L.w, L.hgt, (unsigned long)(SDL_GetTicks() - L.start));
+    }
+    if (cfg->exit_after_ms > 0 && SDL_GetTicks() - L.start >= (Uint64)cfg->exit_after_ms) L.quit = 1;
+    if (SDL_GetAtomicInt(&game_done)) L.quit = 1;
+    if (L.ren && L.hidden_win) {
+        /* minimised or covered: nothing to draw, and presenting would not wait (in a browser the
+           step is not called while the page is hidden, and a wait would hold the page's thread) */
+#ifndef __EMSCRIPTEN__
+        SDL_Delay(16);
+#endif
+        L.hidden_passes++;
+    } else if (L.ren) {
+        if (L.w != L.tw || L.hgt != L.th) {
+            if (L.tex) SDL_DestroyTexture(L.tex);
+            L.tex = SDL_CreateTexture(L.ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, L.w, L.hgt);
+            SDL_SetTextureScaleMode(L.tex, SDL_SCALEMODE_NEAREST);
+            L.tw = L.w; L.th = L.hgt;
+        }
+        for (i = 0; i < 256; i++) {
+            const uint8_t *c = L.pal + 3 * i;
+            L.lut[i] = (uint32_t)((c[0] << 2) | (c[0] >> 4)) << 16 | (uint32_t)((c[1] << 2) | (c[1] >> 4)) << 8
+                   | (uint32_t)((c[2] << 2) | (c[2] >> 4));
+        }
+        for (i = 0; i < L.w * L.hgt; i++) L.rgb[i] = L.lut[L.pix[i]];
+        SDL_UpdateTexture(L.tex, NULL, L.rgb, L.w * 4);
+        L.dst = place(L.ren, cfg, L.w, L.hgt);
+        SDL_SetRenderDrawColor(L.ren, 0, 0, 0, 255);
+        SDL_RenderClear(L.ren);
+        SDL_RenderTexture(L.ren, L.tex, NULL, &L.dst);
+        if (L.ltex && settings_draw(L.layer)) {
+            /* the settings screen: the picture dimmed, the layer over it */
+            SDL_SetRenderDrawBlendMode(L.ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(L.ren, 0, 0, 0, 160);
+            SDL_RenderFillRect(L.ren, &L.dst);
+            SDL_UpdateTexture(L.ltex, NULL, L.layer, SET_W * 4);
+            SDL_RenderTexture(L.ren, L.ltex, NULL, &L.dst);
+        }
+        if (L.shot == 1 && cfg->window_shot_path) {
+            /* the window's contents as scaled, for checking the presentation */
+            SDL_Surface *s = SDL_RenderReadPixels(L.ren, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGB24) : NULL;
+            if (c) {
+                uint8_t *rgbp = malloc((size_t)c->w * (size_t)c->h * 3);
+                int yy;
+                for (yy = 0; rgbp && yy < c->h; yy++)
+                    memcpy(rgbp + (size_t)yy * (size_t)c->w * 3, (uint8_t *)c->pixels + (size_t)yy * (size_t)c->pitch, (size_t)c->w * 3);
+                if (rgbp && plat_write_png_rgb(cfg->window_shot_path, rgbp, c->w, c->h) == 0)
+                    fprintf(stderr, PLAT_NAME ": wrote %s (%dx%d, the window)\n", cfg->window_shot_path, c->w, c->h);
+                free(rgbp);
+            }
+            if (c) SDL_DestroySurface(c);
+            if (s) SDL_DestroySurface(s);
+            L.shot = 2;
+        }
+        SDL_RenderPresent(L.ren);
+        {
+            /* vsync is only a request: a driver may ignore it, and on Windows a present to a
+               window in the background can return at once. Unpaced, this loop then uploads and
+               presents as fast as it can, which can stall the desktop's compositor and with it
+               the pointer in every program. So it never presents faster than the display
+               refreshes: when a present came back in under half a frame time, it waits out the
+               rest. Where vsync holds, a present takes about a frame and it never waits. */
+            Uint64 now = SDL_GetTicksNS();
+#ifdef __EMSCRIPTEN__
+            /* in a browser the step runs once a frame (requestAnimationFrame), which paces it;
+               a wait here would hold the page's thread */
+            if (0) {
+#else
+            if (L.last_present && now - L.last_present < L.frame_ns / 2) {
+#endif
+                SDL_DelayPrecise(L.frame_ns - (now - L.last_present));
+                L.paced++;
+                now = SDL_GetTicksNS();
+            }
+            L.last_present = now;
+            if (!L.pace_from) L.pace_from = now;
+            if (++L.presents == 600) {
+                /* once, for bug reports: whether the display's vsync held */
+                fprintf(stderr, PLAT_NAME ": %u presents in %.1f s, %u paced (vsync %s)\n", L.presents,
+                        (double)(now - L.pace_from) / 1e9, L.paced, L.paced > L.presents / 4 ? "not honoured" : "holds");
+            }
+        }
+    } else {
+        SDL_Delay(10);
+    }
+    return L.quit;
+}
+
+/* After the loop: the window's things released. The game's status. */
+static int loop_end(void)
+{
+    if (L.ren) fprintf(stderr, PLAT_NAME ": %u presents, %u paced, %u passes with the window hidden\n", L.presents, L.paced, L.hidden_passes);
+    if (L.tex) SDL_DestroyTexture(L.tex);
+    if (L.ltex) SDL_DestroyTexture(L.ltex);
+    if (L.ren) SDL_DestroyRenderer(L.ren);
+    if (L.win) SDL_DestroyWindow(L.win);
+    SDL_Quit();
+    return game_status;
+}
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* The browser's loop: one pass a frame; at the end the page is told (Module.onGameExit). */
+static void web_step(void)
+{
+    if (loop_step()) {
+        emscripten_cancel_main_loop();
+        loop_end();
+        EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
+    }
+}
+#endif
+
+int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), void *arg)
+{
+    const PlatConfig *cfg = &live;
+    int scale = cfg0->scale > 0 ? cfg0->scale : 3;
+    int vsync = 0;
+    void **targ = L.targ;
     SDL_Thread *gt;
 
     hooks = h;
@@ -477,34 +780,34 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
            fits all looked alike (the settings file keeps the larger scale for a larger display) */
         if (scale > plat_max_scale(cfg->aspect)) scale = plat_max_scale(cfg->aspect);
         live.scale = scale;
-        win = SDL_CreateWindow(cfg->title ? cfg->title : PLAT_TITLE, 320 * scale,
+        L.win = SDL_CreateWindow(cfg->title ? cfg->title : PLAT_TITLE, 320 * scale,
                                (cfg->aspect ? 240 : 200) * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (cfg->fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
-        if (win) ren = SDL_CreateRenderer(win, NULL);
-        if (!win || !ren) {
+        if (L.win) L.ren = SDL_CreateRenderer(L.win, NULL);
+        if (!L.win || !L.ren) {
             fprintf(stderr, PLAT_NAME ": no window: %s\n", SDL_GetError());
             return 1;
         }
-        g_win = win;
-        ltex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, SET_W, SET_H);
-        if (ltex) {
-            SDL_SetTextureScaleMode(ltex, SDL_SCALEMODE_LINEAR);
-            SDL_SetTextureBlendMode(ltex, SDL_BLENDMODE_BLEND);
+        g_win = L.win;
+        L.ltex = SDL_CreateTexture(L.ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, SET_W, SET_H);
+        if (L.ltex) {
+            SDL_SetTextureScaleMode(L.ltex, SDL_SCALEMODE_LINEAR);
+            SDL_SetTextureBlendMode(L.ltex, SDL_BLENDMODE_BLEND);
         }
-        vsync = SDL_SetRenderVSync(ren, 1);
+        vsync = SDL_SetRenderVSync(L.ren, 1);
         {
             /* the display's frame time, which the loop below never presents faster than */
-            const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+            const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(L.win));
             float hz = m && m->refresh_rate > 0 ? m->refresh_rate : 60.0f;
-            frame_ns = (Uint64)(1e9f / hz);
-            fprintf(stderr, PLAT_NAME ": renderer %s, display %.0f Hz, vsync %s\n", SDL_GetRendererName(ren), hz,
+            L.frame_ns = (Uint64)(1e9f / hz);
+            fprintf(stderr, PLAT_NAME ": renderer %s, display %.0f Hz, vsync %s\n", SDL_GetRendererName(L.ren), hz,
                     vsync ? "requested" : "refused");
         }
-        set_icon(win);
-        if (cfg->mouse_lock) mouse_title(win, cfg, 0);
+        set_icon(L.win);
+        if (cfg->mouse_lock) mouse_title(L.win, cfg, 0);
     }
     targ[0] = (void *)game;
     targ[1] = arg;
-    start = SDL_GetTicks();
+    L.start = SDL_GetTicks();
     {
         /* the game's thread gets a large stack: host frames are bigger than DOS's */
         SDL_PropertiesID props = SDL_CreateProperties();
@@ -519,263 +822,18 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
         fprintf(stderr, PLAT_NAME ": no game thread: %s\n", SDL_GetError());
         return 1;
     }
-    while (!quit) {
-        {
-            int c = SDL_SetAtomicInt(&capture_req, 0);
-            if (c && win && !locked) {      /* the pointer lock's own capture stands */
-                captured = c == 1;
-                SDL_SetWindowRelativeMouseMode(win, captured);
-            }
-        }
-        while (SDL_PollEvent(&e)) {
-            PlatPointer p;
-            float x, y;
-            memset(&p, 0, sizeof p);
-            switch (e.type) {
-            case SDL_EVENT_QUIT:
-                if (hooks->lifecycle) hooks->lifecycle(PLAT_QUIT_REQUEST);
-                quit = 1;
-                break;
-            case SDL_EVENT_DROP_FILE:
-                if (hooks->drop && e.drop.data) hooks->drop(e.drop.data);
-                break;
-            case SDL_EVENT_KEY_DOWN:
-            case SDL_EVENT_KEY_UP:
-                if (cfg->mouse_lock && e.key.scancode == SDL_SCANCODE_F10 && (e.key.mod & SDL_KMOD_CTRL)) {
-                    /* Ctrl+F10 releases a captured pointer, as in DOSBox; the game never sees it */
-                    if (e.type == SDL_EVENT_KEY_DOWN && locked) {
-                        SDL_SetWindowRelativeMouseMode(win, false);
-                        locked = 0;
-                        if (!captured) rel_restore = 0;     /* as plat_set_mouse_lock(0): no lock to hold it by */
-                        mouse_title(win, cfg, 0);
-                    }
-                    break;
-                }
-#ifdef __APPLE__
-                {
-                    /* Cmd+, (the macOS settings key) opens and closes the screen as F11 does, which
-                       the desktop may take for Show Desktop; the comma's release goes nowhere */
-                    static int cmd_comma;
-                    if (e.key.scancode == SDL_SCANCODE_COMMA && (e.type == SDL_EVENT_KEY_DOWN ? (e.key.mod & SDL_KMOD_GUI) != 0 : cmd_comma)) {
-                        cmd_comma = e.type == SDL_EVENT_KEY_DOWN;
-                        handle_key(SDL_SCANCODE_F11, cmd_comma, e.key.repeat);
-                        break;
-                    }
-                }
-#endif
-                handle_key(e.key.scancode, e.type == SDL_EVENT_KEY_DOWN, e.key.repeat);
-                break;
-            case SDL_EVENT_MOUSE_MOTION:
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (e.motion.which == SDL_TOUCH_MOUSEID || !hooks->pointer || !ren || dst.w <= 0) break;
-                if (settings_open()) {
-                    /* the screen has the pointer: its position in the layer's pixels */
-                    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                        if (e.button.button == SDL_BUTTON_LEFT) left_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-                        SDL_RenderCoordinatesFromWindow(ren, e.button.x, e.button.y, &x, &y);
-                    } else
-                        SDL_RenderCoordinatesFromWindow(ren, e.motion.x, e.motion.y, &x, &y);
-                    /* a left press is a press even when the screen still thinks the button down: the host
-                       can lose a release (a macOS fullscreen switch does), and the next click went for a drag */
-                    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT)
-                        settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h), 0);
-                    settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h), left_down);
-                    sync_open();
-                    break;
-                }
-                if (cfg->mouse_lock && !locked) {
-                    /* the pointer lock option: a click captures the pointer and goes no further,
-                       nor does its release; the pointer moves nothing until then */
-                    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && SDL_SetWindowRelativeMouseMode(win, true)) {
-                        locked = 1;
-                        swallow |= 1u << e.button.button;
-                        mouse_title(win, cfg, 1);
-                    }
-                    break;
-                }
-                if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && (swallow & (1u << e.button.button))) {
-                    swallow &= ~(1u << e.button.button);
-                    break;
-                }
-                if (e.type == SDL_EVENT_MOUSE_MOTION) {
-                    SDL_RenderCoordinatesFromWindow(ren, e.motion.x, e.motion.y, &x, &y);
-                    p.type = PLAT_POINTER_MOVE;
-                    {
-                        /* window points to render pixels to screen pixels */
-                        float dens = win ? SDL_GetWindowPixelDensity(win) : 1.0f;
-                        p.dx = e.motion.xrel * dens * (float)w / dst.w;
-                        p.dy = e.motion.yrel * dens * (float)hgt / dst.h;
-                    }
-                } else {
-                    unsigned b = e.button.button == SDL_BUTTON_LEFT ? PLAT_BUTTON_LEFT
-                               : e.button.button == SDL_BUTTON_RIGHT ? PLAT_BUTTON_RIGHT : PLAT_BUTTON_MIDDLE;
-                    SDL_RenderCoordinatesFromWindow(ren, e.button.x, e.button.y, &x, &y);
-                    p.type = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? PLAT_POINTER_DOWN : PLAT_POINTER_UP;
-                    p.button = b;
-                    buttons = p.type == PLAT_POINTER_DOWN ? buttons | b : buttons & ~b;
-                }
-                p.x = (x - dst.x) * (float)w / dst.w;
-                p.y = (y - dst.y) * (float)hgt / dst.h;
-                p.buttons = buttons;
-                p.absolute = !locked && !captured;
-                last_x = p.x; last_y = p.y;
-                if (!locked && !captured) {
-                    /* the game's cursor stands in for the host's over the picture */
-                    int over = x >= dst.x && x < dst.x + dst.w && y >= dst.y && y < dst.y + dst.h;
-                    if (over != cursor_hidden) {
-                        if (over) SDL_HideCursor(); else SDL_ShowCursor();
-                        cursor_hidden = over;
-                    }
-                }
-                hooks->pointer(&p);
-                break;
-            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
-                if (cursor_hidden) { SDL_ShowCursor(); cursor_hidden = 0; }
-                break;
-            case SDL_EVENT_FINGER_DOWN:
-            case SDL_EVENT_FINGER_UP:
-            case SDL_EVENT_FINGER_MOTION: {
-                int ow, oh;
-                if (!hooks->pointer || !ren || dst.w <= 0) break;
-                SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
-                x = e.tfinger.x * (float)ow; y = e.tfinger.y * (float)oh;
-                if (settings_open()) {
-                    settings_pointer((int)((x - dst.x) * SET_W / dst.w), (int)((y - dst.y) * SET_H / dst.h),
-                                     e.type != SDL_EVENT_FINGER_UP);
-                    sync_open();
-                    break;
-                }
-                p.id = (int)(e.tfinger.fingerID & 0x7FFFFFFF) + 1;
-                p.type = e.type == SDL_EVENT_FINGER_DOWN ? PLAT_POINTER_DOWN
-                       : e.type == SDL_EVENT_FINGER_UP ? PLAT_POINTER_UP : PLAT_POINTER_MOVE;
-                p.button = PLAT_BUTTON_LEFT;
-                p.buttons = p.type == PLAT_POINTER_UP ? 0 : PLAT_BUTTON_LEFT;
-                p.x = (x - dst.x) * (float)w / dst.w;
-                p.y = (y - dst.y) * (float)hgt / dst.h;
-                p.dx = e.tfinger.dx * (float)ow * (float)w / dst.w;
-                p.dy = e.tfinger.dy * (float)oh * (float)hgt / dst.h;
-                p.absolute = 1;
-                hooks->pointer(&p);
-                break;
-            }
-            case SDL_EVENT_WINDOW_OCCLUDED:
-                hidden_win = 1;
-                break;
-            case SDL_EVENT_WINDOW_EXPOSED:
-                hidden_win = 0;
-                break;
-            case SDL_EVENT_WILL_ENTER_BACKGROUND:
-            case SDL_EVENT_WINDOW_MINIMIZED:
-                if (e.type == SDL_EVENT_WINDOW_MINIMIZED) hidden_win = 1;
-                if (hooks->lifecycle) hooks->lifecycle(PLAT_SUSPEND);
-                break;
-            case SDL_EVENT_DID_ENTER_FOREGROUND:
-            case SDL_EVENT_WINDOW_RESTORED:
-                if (e.type == SDL_EVENT_WINDOW_RESTORED) hidden_win = 0;
-                if (hooks->lifecycle) hooks->lifecycle(PLAT_RESUME);
-                break;
-            default:
-                break;
-            }
-        }
-        if (hooks->tick) hooks->tick();     /* an input script's events (inscript.c) */
-        sync_open();
-        {
-            int ps = SDL_GetAtomicInt(&pick_state);
-            if (ps) {                       /* the folder picker answered (or was cancelled) */
-                SDL_SetAtomicInt(&pick_state, 0);
-                settings_folder_chosen(ps == 1 ? pick_path : NULL);
-            }
-        }
-        hooks->scanout(pix, &w, &hgt, pal);
-        if (!shot && cfg->screenshot_after_ms > 0 && SDL_GetTicks() - start >= (Uint64)cfg->screenshot_after_ms) {
-            shot = 1;
-            if (plat_write_png(cfg->screenshot_path ? cfg->screenshot_path : PLAT_NAME ".png", pix, w, hgt, pal) == 0)
-                fprintf(stderr, PLAT_NAME ": wrote %s (%dx%d) at %lu ms\n", cfg->screenshot_path ? cfg->screenshot_path : PLAT_NAME ".png",
-                        w, hgt, (unsigned long)(SDL_GetTicks() - start));
-        }
-        if (cfg->exit_after_ms > 0 && SDL_GetTicks() - start >= (Uint64)cfg->exit_after_ms) quit = 1;
-        if (SDL_GetAtomicInt(&game_done)) quit = 1;
-        if (ren && hidden_win) {
-            /* minimised or covered: nothing to draw, and presenting would not wait */
-            SDL_Delay(16);
-            hidden_passes++;
-        } else if (ren) {
-            if (w != tw || hgt != th) {
-                if (tex) SDL_DestroyTexture(tex);
-                tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, hgt);
-                SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
-                tw = w; th = hgt;
-            }
-            for (i = 0; i < 256; i++) {
-                const uint8_t *c = pal + 3 * i;
-                lut[i] = (uint32_t)((c[0] << 2) | (c[0] >> 4)) << 16 | (uint32_t)((c[1] << 2) | (c[1] >> 4)) << 8
-                       | (uint32_t)((c[2] << 2) | (c[2] >> 4));
-            }
-            for (i = 0; i < w * hgt; i++) rgb[i] = lut[pix[i]];
-            SDL_UpdateTexture(tex, NULL, rgb, w * 4);
-            dst = place(ren, cfg, w, hgt);
-            SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
-            SDL_RenderClear(ren);
-            SDL_RenderTexture(ren, tex, NULL, &dst);
-            if (ltex && settings_draw(layer)) {
-                /* the settings screen: the picture dimmed, the layer over it */
-                SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-                SDL_SetRenderDrawColor(ren, 0, 0, 0, 160);
-                SDL_RenderFillRect(ren, &dst);
-                SDL_UpdateTexture(ltex, NULL, layer, SET_W * 4);
-                SDL_RenderTexture(ren, ltex, NULL, &dst);
-            }
-            if (shot == 1 && cfg->window_shot_path) {
-                /* the window's contents as scaled, for checking the presentation */
-                SDL_Surface *s = SDL_RenderReadPixels(ren, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGB24) : NULL;
-                if (c) {
-                    uint8_t *rgbp = malloc((size_t)c->w * (size_t)c->h * 3);
-                    int yy;
-                    for (yy = 0; rgbp && yy < c->h; yy++)
-                        memcpy(rgbp + (size_t)yy * (size_t)c->w * 3, (uint8_t *)c->pixels + (size_t)yy * (size_t)c->pitch, (size_t)c->w * 3);
-                    if (rgbp && plat_write_png_rgb(cfg->window_shot_path, rgbp, c->w, c->h) == 0)
-                        fprintf(stderr, PLAT_NAME ": wrote %s (%dx%d, the window)\n", cfg->window_shot_path, c->w, c->h);
-                    free(rgbp);
-                }
-                if (c) SDL_DestroySurface(c);
-                if (s) SDL_DestroySurface(s);
-                shot = 2;
-            }
-            SDL_RenderPresent(ren);
-            {
-                /* vsync is only a request: a driver may ignore it, and on Windows a present to a
-                   window in the background can return at once. Unpaced, this loop then uploads and
-                   presents as fast as it can, which can stall the desktop's compositor and with it
-                   the pointer in every program. So it never presents faster than the display
-                   refreshes: when a present came back in under half a frame time, it waits out the
-                   rest. Where vsync holds, a present takes about a frame and it never waits. */
-                Uint64 now = SDL_GetTicksNS();
-                if (last_present && now - last_present < frame_ns / 2) {
-                    SDL_DelayPrecise(frame_ns - (now - last_present));
-                    paced++;
-                    now = SDL_GetTicksNS();
-                }
-                last_present = now;
-                if (!pace_from) pace_from = now;
-                if (++presents == 600) {
-                    /* once, for bug reports: whether the display's vsync held */
-                    fprintf(stderr, PLAT_NAME ": %u presents in %.1f s, %u paced (vsync %s)\n", presents,
-                            (double)(now - pace_from) / 1e9, paced, paced > presents / 4 ? "not honoured" : "holds");
-                }
-            }
-        } else {
-            SDL_Delay(10);
-        }
+#ifdef __EMSCRIPTEN__
+    /* in a browser the page's thread must go back to it between passes, so the browser calls
+       the pass each frame and main never returns (simulate_infinite_loop); the game's thread is
+       not waited for, as the page is left or reloaded. Under Node.js (the web objects' replay
+       checks, which have no frames to wait for) the loop runs as on the desktop and main returns. */
+    if (!EM_ASM_INT({ return typeof process == 'object' && !!(process.versions && process.versions.node); })) {
+        emscripten_set_main_loop(web_step, 0, 1);     /* never returns: the browser calls the step each frame */
+        return 0;
     }
-    if (ren) fprintf(stderr, PLAT_NAME ": %u presents, %u paced, %u passes with the window hidden\n", presents, paced, hidden_passes);
-    if (tex) SDL_DestroyTexture(tex);
-    if (ltex) SDL_DestroyTexture(ltex);
-    if (ren) SDL_DestroyRenderer(ren);
-    if (win) SDL_DestroyWindow(win);
-    SDL_Quit();
-    return game_status;
+#endif
+    while (!loop_step()) {}
+    return loop_end();
 }
 
 /* Dialogs (plat.h): SDL's message box and folder picker, before plat_run. */
