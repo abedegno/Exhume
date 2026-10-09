@@ -49,6 +49,14 @@ void port_on_flip(void);
 int port_blackbox_start(const char *home);
 void port_blackbox_close(int crashed);
 
+/* The game's file layer (sys/borland.c): port_files_changed counts the game's changes to its
+   files (a write, a written file's close after its buffer is out, a removal, a rename, a new
+   folder), so that the web build knows when to copy the home directory into the browser's
+   storage; port_flush_writes writes out what the web build's write-behind buffers still hold
+   (nothing elsewhere), for the end of a run that never reaches exit. */
+unsigned port_files_changed(void);
+void port_flush_writes(void);
+
 /* The paragraph map (mem/parmap.c, docs/port.md "Far pointers and segments"): host memory
    given DOS paragraph numbers, so that MK_FP, FP_SEG, FP_OFF and segment arithmetic work.
    pm_add gives a block the paragraphs from seg; the block's byte 0 is seg:0000. */

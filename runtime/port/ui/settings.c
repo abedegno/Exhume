@@ -302,7 +302,19 @@ void settings_init(const char *home, const struct setting *table, int n, const c
         mark[nrows] = f->kind == ENH_GAMEPLAY ? "changes play" : NULL;
         enh_bit[nrows++] = i;
     }
-    for (i = 0; i < nrows; i++) value[i] = load_value(i);
+    for (i = 0; i < nrows; i++) {
+        const struct setting *s = &rows[i];
+        value[i] = load_value(i);
+        /* each value the settings file gave that is not the default, for the logs (the web page's
+           tests check that a setting survives a reload) */
+        if (enh_bit[i] >= 0 || s->get || !s->key) continue;
+        if (s->kind == SET_FOLDER) {
+            if (path[i][0]) fprintf(stderr, "settings: loaded %s=%s\n", s->key, path[i]);
+        } else if (value[i] != s->def) {
+            if (s->kind == SET_CYCLE && s->stored) fprintf(stderr, "settings: loaded %s=%s\n", s->key, s->stored[value[i]]);
+            else fprintf(stderr, "settings: loaded %s=%d\n", s->key, value[i]);
+        }
+    }
     memcpy(start_value, value, sizeof start_value);
     memcpy(start_path, path, sizeof start_path);
     notice[0] = 0;

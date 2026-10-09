@@ -745,13 +745,51 @@ static int loop_end(void)
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-/* The browser's loop: one pass a frame; at the end the page is told (Module.onGameExit). */
+#include "port.h"
+/* The browser's loop: one pass a frame. The page keeps the home directory in the browser's
+   storage (web/page.js, Module.syncHome): once a second, when the game has changed a file since
+   the last look (port_files_changed: a save), it is copied there. At the end main does not go on
+   after plat_run as on the desktop (the browser called this pass, not main), so main's part is
+   done here: the black box's recording closed and the write-behind buffers written out. Then the
+   home is copied, and only when that is done (or after 10 s) does the loop stop and the page
+   hear of it (Module.onGameExit): the runtime ends with the loop (EXIT_RUNTIME), closing the
+   file system's connection to the browser's storage under a copy still going. */
+static void web_end(void)
+{
+    emscripten_cancel_main_loop();
+    loop_end();
+    EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
+}
+
 static void web_step(void)
 {
+    static unsigned seen;
+    static Uint64 looked, ending;
+    Uint64 now = SDL_GetTicks();
+    if (ending) {
+        if (EM_ASM_INT({ return Module.homeKept ? 1 : 0; }) || now - ending >= 10000) web_end();
+        return;
+    }
     if (loop_step()) {
-        emscripten_cancel_main_loop();
-        loop_end();
-        EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
+#ifdef PORT_BLACKBOX
+        port_blackbox_close(0);
+#endif
+        port_flush_writes();
+        ending = now ? now : 1;
+        EM_ASM({
+            Module.homeKept = false;
+            if (Module.syncHome) Module.syncHome(function() { Module.homeKept = true; });
+            else Module.homeKept = true;
+        });
+        return;
+    }
+    if (now - looked >= 1000) {
+        unsigned n = port_files_changed();
+        looked = now;
+        if (n != seen) {
+            seen = n;
+            EM_ASM({ if (Module.syncHome) Module.syncHome(); });
+        }
     }
 }
 

@@ -50,6 +50,15 @@
 static unsigned char fd_text[MAXFD];
 static unsigned char fd_eof[MAXFD];
 static char *fd_cow[MAXFD];             /* the DOS path of a file to copy on its first write */
+static unsigned char fd_wrote[MAXFD];   /* a handle written to since it was opened */
+
+/* The game's changes to its files (writes as they reach the file, a written file's close,
+   removals, renames, new folders), counted for the web build, which keeps the home directory
+   in the browser's storage and copies it there once a second when this has moved
+   (platform/sdl3/plat_sdl3.c). Counted on the game's thread, read on the backend's. */
+static unsigned files_changed;
+static void changed(void) { __atomic_add_fetch(&files_changed, 1u, __ATOMIC_RELAXED); }
+unsigned port_files_changed(void) { return __atomic_load_n(&files_changed, __ATOMIC_RELAXED); }
 
 /* Write-behind for files opened write-only (the web build): under Emscripten every file call
    from the game's thread is proxied to the main thread, some 1.5 ms each under Node.js, and the
@@ -76,6 +85,7 @@ static int wb_flush(int fd)
         if (r <= 0) { wb_len[fd] = 0; return -1; }
         done += (unsigned)r;
     }
+    if (done) changed();
     wb_len[fd] = 0;
     return 0;
 }
@@ -108,14 +118,16 @@ static ssize_t raw_write(int fd, const void *buf, size_t n)
     if (fd < 0 || fd >= MAXFD || !wb_buf[fd]) return write(fd, buf, n);
     if (wb_len[fd] + n > WB_SIZE) {
         if (wb_flush(fd)) return -1;
-        if (n > WB_SIZE) return write(fd, buf, n);
+        if (n > WB_SIZE) { ssize_t w = write(fd, buf, n); if (w > 0) changed(); return w; }
     }
     memcpy(wb_buf[fd] + wb_len[fd], buf, n);
     wb_len[fd] += (unsigned)n;
     return (ssize_t)n;
 }
 #define WB_FLUSH(fd) wb_flush(fd)
+void port_flush_writes(void) { wb_flush_all(); }
 #else
+void port_flush_writes(void) {}
 #define raw_write write
 #define WB_FLUSH(fd) 0
 #endif
@@ -167,6 +179,7 @@ int bc_open(const char *path, int access, ...)
     if (fd >= 0 && fd < MAXFD) {
         fd_text[fd] = !(access & B_BINARY);
         fd_eof[fd] = 0;
+        fd_wrote[fd] = (fl & (O_RDWR | O_WRONLY)) && (fl & (O_CREAT | O_TRUNC));    /* a new or emptied file */
         free(fd_cow[fd]);
         fd_cow[fd] = NULL;
 #ifdef PORT_WRITE_BEHIND
@@ -238,7 +251,7 @@ int bc_read(int fd, void *buf, unsigned n)
     }
 }
 
-int bc_write(int fd, const void *buf, unsigned n)
+static int write_text(int fd, const void *buf, unsigned n)
 {
     const unsigned char *b = buf;
     unsigned i, start = 0;
@@ -255,15 +268,28 @@ int bc_write(int fd, const void *buf, unsigned n)
     return (int)n;
 }
 
+int bc_write(int fd, const void *buf, unsigned n)
+{
+    int r = write_text(fd, buf, n);
+    if (r > 0 && fd >= 0 && fd < MAXFD) fd_wrote[fd] = 1;
+#ifdef PORT_WRITE_BEHIND
+    if (r > 0 && fd >= 0 && fd < MAXFD && wb_buf[fd]) return r;    /* not in the file yet: counted when it is */
+#endif
+    if (r > 0) changed();
+    return r;
+}
+
 int bc_close(int fd)
 {
-    int r = 0;
+    int r = 0, wrote = 0;
 #ifdef PORT_WRITE_BEHIND
     r = wb_flush(fd);
     wb_stop(fd);
 #endif
-    if (fd >= 0 && fd < MAXFD) { free(fd_cow[fd]); fd_cow[fd] = NULL; }
-    return close(fd) || r ? -1 : 0;
+    if (fd >= 0 && fd < MAXFD) { free(fd_cow[fd]); fd_cow[fd] = NULL; wrote = fd_wrote[fd]; fd_wrote[fd] = 0; }
+    r = close(fd) || r ? -1 : 0;
+    if (wrote) changed();               /* after the flush and the close: the file is whole */
+    return r;
 }
 
 long bc_lseek(int fd, long off, int whence)
@@ -310,19 +336,25 @@ int bc_access(const char *path, int mode)
 
 int bc_unlink(const char *path)
 {
-    return plat_remove(path);
+    int r = plat_remove(path);
+    if (r == 0) changed();
+    return r;
 }
 
 int bc_rename(const char *from, const char *to)
 {
-    return plat_rename(from, to);
+    int r = plat_rename(from, to);
+    if (r == 0) changed();
+    return r;
 }
 
 int bc_mkdir(const char *path)
 {
     char host[1024];
     if (plat_resolve(path, PLAT_CREATE, host, sizeof host)) return -1;
-    return mkdir(host, 0755);
+    if (mkdir(host, 0755)) return -1;
+    changed();
+    return 0;
 }
 
 /* The DOS current directory: the port keeps the game in its own directory (the merged tree's
@@ -395,6 +427,7 @@ size_t bc_fwrite(const void *buf, size_t size, size_t n, FILE *fp)
     ssize_t r;
     if (!want) return 0;
     while (put < want && (r = write(fileno(fp), (const char *)buf + put, (unsigned)(want - put))) > 0) put += (size_t)r;
+    if (put) changed();
     return put / size;
 }
 

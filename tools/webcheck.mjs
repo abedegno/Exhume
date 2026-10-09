@@ -113,6 +113,65 @@ const cases = {
     await p.waitForSelector('#menu:not([hidden])', { timeout: 10000 }).then(() => check(true, 'controls: a game that ends returns to the menu')).catch(() => check(false, 'controls: a game that ends returns to the menu'));
     await ctx.close();
   },
+  async saves() {  // the home (settings, saved games, recordings) kept in IndexedDB: written back as it changes, there after a reload
+    // one fresh context throughout, so that its IndexedDB is empty at the start and kept across the reloads
+    const ctx = await browser.createBrowserContext(); const p = await page(ctx); let log = []; p.on('console', m => log.push(m.text()));
+    const home = '/home/web_user/.uw1port', sleep = ms => new Promise(r => setTimeout(r, ms));
+    const play = async () => {
+      await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+      log = []; await p.click('#play-uw1');
+      let lit = 0; for (let i = 0; i < 90 && lit <= 10000; i++) { lit = await litPixels(p); if (lit <= 10000) await sleep(500); }
+      return lit > 10000;
+    };
+    const read = f => p.evaluate(f => { try { return window.__exhumeModule.FS.readFile(f, { encoding: 'utf8' }); } catch { return null; } }, f);
+    // a file's contents as kept in IndexedDB (Emscripten's IDBFS: a database named by the mount
+    // point, store FILE_DATA, keyed by the path), or null: what a reload would find
+    const stored = f => p.evaluate((h, f) => new Promise(ok => { const q = indexedDB.open(h); q.onerror = () => ok(null);
+      q.onsuccess = () => { const db = q.result; try { const g = db.transaction('FILE_DATA').objectStore('FILE_DATA').get(f);
+        g.onsuccess = () => { db.close(); ok(g.result && g.result.contents ? new TextDecoder().decode(g.result.contents) : null); }; g.onerror = () => { db.close(); ok(null); };
+      } catch { db.close(); ok(null); } }; }), home, f);
+    await p.goto(url, { waitUntil: 'networkidle0' });
+    check(await play(), 'saves: uw1 draws its title');
+    // a setting changed through the settings screen (port_config_set): the gear, Down to Volume, Left (100 to 90)
+    await p.$eval('#gear', b => b.click()); await sleep(500);
+    for (const k of ['ArrowDown', 'ArrowDown', 'ArrowDown', 'ArrowLeft']) { await p.keyboard.press(k); await sleep(150); }
+    await p.keyboard.press('Escape');
+    check(/volume=90/.test(await read(`${home}/uw1port.cfg`) || ''), 'saves: the settings screen writes volume=90', JSON.stringify(await read(`${home}/uw1port.cfg`)));
+    await sleep(2000);
+    check(/volume=90/.test(await stored(`${home}/uw1port.cfg`) || ''), 'saves: the setting is copied to IndexedDB when written', JSON.stringify(await stored(`${home}/uw1port.cfg`)));
+    // a saved game's file, put in the home's save folder through the page's FS (a scripted save in
+    // the game is too slow here), copied when the page is hidden (a player switching tabs)
+    await p.evaluate(h => { const F = window.__exhumeModule.FS; F.mkdirTree(`${h}/SAVE4`); F.writeFile(`${h}/SAVE4/WEBCHECK.DAT`, 'kept when hidden'); }, home);
+    await sleep(1500);
+    const before = await stored(`${home}/SAVE4/WEBCHECK.DAT`);
+    await p.evaluate(() => { Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+    await sleep(2000);
+    check(before === null && await stored(`${home}/SAVE4/WEBCHECK.DAT`) === 'kept when hidden', 'saves: the page hidden, the home is copied to IndexedDB', JSON.stringify(before));
+    // a reload as the page's own (location.reload, as a player's F5): puppeteer's reload bypasses
+    // the cache, and the service worker, so the page reloaded that way is not isolated
+    await Promise.all([p.waitForNavigation({ waitUntil: 'networkidle0' }), p.evaluate(() => location.reload())]);
+    check(await play(), 'saves: uw1 draws its title after a reload');
+    const cfg = await read(`${home}/uw1port.cfg`);
+    check(/(^|\n)volume=90(\n|$)/.test(cfg || ''), 'saves: the settings file has volume=90 after the reload', JSON.stringify(cfg));
+    check(log.some(l => /settings: loaded volume=90/.test(l)), 'saves: the port reads volume 90 at its start', log.filter(l => /settings/.test(l)).join(' | '));
+    check(await read(`${home}/SAVE4/WEBCHECK.DAT`) === 'kept when hidden', 'saves: a file in a save folder, copied when the page was hidden, is there after the reload');
+    // the game's end (the window closed): the home copied before the page reloads itself, the
+    // session's recording closed first (its header's count FFFFFFFFh, written only by the close)
+    await p.evaluate(h => { const F = window.__exhumeModule.FS; F.mkdirTree(`${h}/SAVE4`); F.writeFile(`${h}/SAVE4/WEBCHECK2.DAT`, 'kept at the end'); }, home);
+    const gone = p.waitForNavigation({ timeout: 20000 }).catch(() => null);
+    await p.evaluate(() => window.__exhumeModule._exhume_quit());
+    await gone;
+    check(await play(), 'saves: uw1 draws its title after the game ended');
+    check(await read(`${home}/SAVE4/WEBCHECK2.DAT`) === 'kept at the end', 'saves: a file written before the game ended is there after');
+    // every RECORD.OUT in the home, wherever the black box put it (a session's start copies the
+    // home, the last session's recording with it, into its own folder), with its header's count
+    const heads = await p.evaluate(h => { const F = window.__exhumeModule.FS, out = [];
+      const walk = d => { for (const n of F.readdir(d)) { if (n === '.' || n === '..') continue; const f = `${d}/${n}`;
+        if (F.isDir(F.stat(f).mode)) walk(f); else if (n === 'RECORD.OUT') { const b = F.readFile(f); out.push([f.slice(h.length + 1), b.length, [...b.subarray(8, 12)].map(x => x.toString(16)).join(' ')]); } } };
+      walk(h); return out; }, home);
+    check(heads.some(([, n, c]) => n > 12 && c === 'ff ff ff ff'), 'saves: the ended session\'s recording was closed and kept', JSON.stringify(heads));
+    await ctx.close();
+  },
   async noworker() {  // no service worker: a message, not a blank page
     const ctx = await browser.createBrowserContext(); const p = await ctx.newPage();
     await p.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'serviceWorker', { get: () => undefined }); });

@@ -52,6 +52,9 @@
 #endif
 #include "port.h"
 #include "plat.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #if !defined(PORT_GAME_EXE) || !defined(PORT_GAME_FOLDER)
 #error "portgame.h defines PORT_GAME_EXE and PORT_GAME_FOLDER for sys/gamedir.c"
@@ -499,5 +502,11 @@ int port_config_set(const char *home, const char *key, const char *value)
     fprintf(out, "%s=%s\n", key, value);
     if (fclose(out)) return -1;
     remove(path);
-    return rename(tmp, path);
+    if (rename(tmp, path)) return -1;
+#ifdef __EMSCRIPTEN__
+    /* the web page keeps the home directory in the browser's storage (web/page.js): copied there
+       now. Asked of the page's thread, which has the page's Module; from any thread, not waited for. */
+    MAIN_THREAD_ASYNC_EM_ASM({ if (Module.syncHome) Module.syncHome(); });
+#endif
+    return 0;
 }
