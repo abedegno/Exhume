@@ -70,7 +70,9 @@ static int same_folder(const char *a, const char *b)
 
 /* macOS gives F11 to the desktop (Show Desktop) unless that shortcut is turned off, so the backend
    takes Cmd+, there too, and that is the key the footer names */
-#ifdef __APPLE__
+#if defined(__EMSCRIPTEN__)
+#define FOOTER "The gear (or F11) opens this at any time \xC2\xB7 Esc closes"
+#elif defined(__APPLE__)
 #define FOOTER "Cmd+, opens this at any time \xC2\xB7 Esc closes"
 #else
 #define FOOTER "F11 opens this at any time \xC2\xB7 Esc closes"
@@ -313,7 +315,14 @@ void settings_init(const char *home, const struct setting *table, int n, const c
 }
 
 int settings_open(void) { return shown; }
-void settings_show(int on) { shown = on != 0; drag_row = -1; }
+/* "settings: shown" once each time the screen opens, for the logs (the web page's tests check a
+   first visit starts without it) */
+void settings_show(int on)
+{
+    if (on && !shown) fprintf(stderr, "settings: shown\n");
+    shown = on != 0;
+    drag_row = -1;
+}
 int settings_value(int row) { return row >= 0 && row < nrows ? value[row] : 0; }
 void settings_set_value(int row, int v)
 {

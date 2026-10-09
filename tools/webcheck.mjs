@@ -46,6 +46,29 @@ const cases = {
       await p.close();
     }
   },
+  async data() {  // with the data packed (web/pack.sh), each game reaches its own title screen, not the port's folder message
+    // (the browser's own "Failed to load resource ... 404 (Not Found)", the favicon before the service worker's reload, is not the port's)
+    for (const g of ['uw1', 'uw2']) {
+      const p = await page(); const log = []; p.on('console', m => log.push(m.text()));
+      await p.goto(url, { waitUntil: 'networkidle0' }); await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+      await p.click(`#play-${g}`); await new Promise(r => setTimeout(r, 20000));
+      check(!log.some(l => /game folder|not found|cannot start/i.test(l) && !/^Failed to load resource/.test(l)), `data: ${g} finds its game files`, log.slice(-5).join(' | '));
+      check(log.some(l => /mt32: .*ROM/i.test(l) && !/no ROMs/.test(l)), `data: ${g} finds the MT-32 ROMs`, log.filter(l => /mt32/.test(l)).join(' | '));
+      // the page seeds the home with settings-at-start=0; the port logs "settings: shown" each time the screen opens
+      check(!log.some(l => /settings: shown/.test(l)), `data: ${g} starts without the settings screen`, log.filter(l => /settings/.test(l)).join(' | '));
+      await p.close();
+    }
+  },
+  async missing() {  // a game whose files are absent: the page comes back to the menu and says what failed, not a black page
+    const p = await page(); await p.goto(url, { waitUntil: 'networkidle0' });
+    await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+    await p.evaluate(() => window.startGame('nogame'));
+    const s = await p.evaluate(() => ({ menu: !document.getElementById('menu').hidden, game: !document.getElementById('game').hidden,
+                                        status: document.getElementById('status').textContent }));
+    check(s.menu && !s.game, 'missing: the menu is back and the game hidden', JSON.stringify(s));
+    check(/nogame/.test(s.status), 'missing: the status line names what failed', JSON.stringify(s.status));
+    await p.close();
+  },
 };
 for (const [n, f] of Object.entries(cases)) if (!only.length || only.includes(n)) await f().catch(e => check(false, `${n}: threw`, e.message));
 await browser.close(); server.close();

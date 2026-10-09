@@ -62,6 +62,13 @@ static const struct setting R2[] = {
     { SET_TAB_SOUND, "A", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
     { SET_TAB_SOUND, "Folder", SET_FOLDER, "folder-test", NULL, NULL, 0, 0, 0, 0, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
+/* a row with tab -1 (settab.c's WEB_HIDDEN, the web's Window scale) before a Display row: on no tab */
+static int hidden_applies;
+static void apply_hidden(int v) { (void)v; hidden_applies++; }
+static const struct setting H[] = {
+    { -1, "Hidden", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, apply_hidden, NULL, NULL, NULL, NULL, NULL, NULL },
+    { SET_TAB_DISPLAY, "C", SET_BOOL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+};
 static char picked_from[256] = "unset";
 static int capture_pick(const char *start) { snprintf(picked_from, sizeof picked_from, "%s", start ? start : "(none)"); return 0; }
 static const struct setting L[] = {
@@ -229,6 +236,26 @@ int main(void)
         CHECK(settings_note(1) && !strcmp(settings_note(1), "Restart to apply"), "the check can tell (another folder is a change)");
         settings_pick_folder = NULL;
         unlink(link); rmdir(real);
+    }
+    {
+        /* a row with tab -1 is counted on no tab: Display's first row is the next one, and Enter,
+           Down and a click on every tab never reach it */
+        int t, k;
+        settings_init("h", H, 2, "Test");
+        settings_show(1);
+        hidden_applies = 0;
+        settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* Sound to Display, its first row */
+        settings_key(SET_KEY_ENTER);
+        CHECK(settings_value(1) == 1 && settings_value(0) == 0, "a row with tab -1 is not Display's first row");
+        for (t = 0; t < SET_TABS; t++) {
+            for (k = 0; k < 4; k++) { settings_key(SET_KEY_DOWN); settings_key(SET_KEY_ENTER); }
+            settings_pointer(LABEL_X + 4, ROW_Y + 5, 1); settings_pointer(LABEL_X + 4, ROW_Y + 5, 0);
+            settings_pointer(LABEL_X + 4, ROW_Y + ROW_H + 5, 1); settings_pointer(LABEL_X + 4, ROW_Y + ROW_H + 5, 0);
+            settings_key(SET_KEY_TAB);
+        }
+        CHECK(settings_value(0) == 0 && hidden_applies == 0, "nor is it reached from any tab, by key or by click");
+        CHECK(settings_draw(px), "and the screen draws");
+        settings_show(0);
     }
     printf("%d failed\n", fails);
     return fails != 0;
