@@ -8,6 +8,7 @@
    what DOS's would, and the game's own record of what is mapped stays true. The frame is
    mapped twice in a row (frame.c), so a pointer run past its end wraps to its start as a far
    pointer's offset does. */
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "port.h"
@@ -105,6 +106,50 @@ void emm_free(int h)
             slot[q] = -1;
         }
     xh[h].used = 0;
+}
+
+/* The frame's far pointer arithmetic (portable.h, EMS_WRAP and EMS_ADD). In DOS a far
+   pointer's offset wraps at 64 KB, so a pointer into the frame moved past E000:FFFF comes back
+   to E000:0000. The frame mapped twice (frame.c) wraps a pointer run up to 64 KB past the end by
+   itself; with the frame mapped once (PORT_FRAME_SINGLE, the web build) nothing does, so the
+   game's C says where it relies on it. */
+
+int port_ems_has(const void *p)
+{
+    uintptr_t a = (uintptr_t)p, f = (uintptr_t)frame;
+    return frame && a >= f && a < f + 0x10000;
+}
+
+/* EMS_ADD(p, n): p + n with the offset wrapping at 64 KB, for p in the frame; else p + n. */
+void *port_ems_add(const void *p, long n)
+{
+    if (!port_ems_has(p)) return (unsigned char *)p + n;
+    return frame + (((uintptr_t)p - (uintptr_t)frame + (uintptr_t)n) & 0xFFFF);
+}
+
+/* EMS_WRAP(p): p, a pointer into the frame or one the game has moved forward from such a pointer
+   by any distance, as the start of what the game reads with the offset wrapping past FFFFh to
+   the frame's start. The frame mapped twice: the pointer at p's offset in the frame. Mapped once:
+   the frame from p's offset to its end and then from its start, twice over (an index from p can
+   pass FFFFh too), copied to a buffer of the port's, which holds what the game reads through p
+   until the next call or the next change to the frame. Only for reading. A pointer below the
+   frame is returned as it is. */
+const void *port_ems_wrap(const void *p)
+{
+    uintptr_t a = (uintptr_t)p, f = (uintptr_t)frame;
+    size_t off;
+    if (!frame || a < f) return p;
+    off = (size_t)(a - f) & 0xFFFF;
+#ifdef PORT_FRAME_SINGLE
+    if (off) {
+        static unsigned char line[0x20000];
+        memcpy(line, frame + off, 0x10000 - off);
+        memcpy(line + 0x10000 - off, frame, off);
+        memcpy(line + 0x10000, line, 0x10000);
+        return line;
+    }
+#endif
+    return frame + off;
 }
 
 int emm_open(unsigned min_pages, unsigned max_pages, unsigned free_pages, unsigned seg)

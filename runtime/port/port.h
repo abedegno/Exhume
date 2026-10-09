@@ -108,8 +108,16 @@ int emm_map(unsigned physical, unsigned logical);
 int emm_alloc(unsigned n);
 int emm_map_handle(unsigned physical, int h, unsigned logical);
 void emm_free(int h);
-/* The frame's host memory: 64 KB mapped twice in a row and a guard page (mem/frame.c). */
+/* The frame's host memory: 64 KB mapped twice in a row and a guard page (mem/frame.c); with
+   PORT_FRAME_SINGLE, 64 KB once (WebAssembly cannot map memory twice; -DPORT_FRAME_SINGLE
+   builds it on the desktop, with the 64 KB after it inaccessible). port_ems_has: whether p is
+   in the frame's 64 KB (mem/emm.c; the far pointer arithmetic is portable.h's EMS_WRAP and
+   EMS_ADD). */
+#if defined(__EMSCRIPTEN__) && !defined(PORT_FRAME_SINGLE)
+#define PORT_FRAME_SINGLE 1
+#endif
 unsigned char *port_frame_alloc(void);
+int port_ems_has(const void *p);
 
 /* Finding the game, and the settings file (sys/gamedir.c, sys/gogreg.c). port_find_game
    looks for the game's directory by itself; port_game_in looks in a folder the user chose;

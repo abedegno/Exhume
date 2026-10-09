@@ -5,8 +5,32 @@
    pointer past the end reads and writes the start, as in DOS; a page after the second copy is
    left inaccessible, so a pointer that runs further faults at once (sys/crash.c reports where)
    instead of corrupting other data. Kept apart from ems.c because it needs the host's own
-   memory-mapping calls, which the game's headers do not see. */
-#ifdef _WIN32
+   memory-mapping calls, which the game's headers do not see.
+   PORT_FRAME_SINGLE (the web build, where memory cannot be mapped twice; -DPORT_FRAME_SINGLE
+   checks it on the desktop) has the 64 KB once: the game's C says where it relies on the wrap
+   (EMS_WRAP and EMS_ADD, portable.h). On the desktop the 64 KB after it are inaccessible,
+   so a pointer that still runs past the end faults at once and sys/crash.c reports where. */
+#if defined(__EMSCRIPTEN__)
+#include <stdlib.h>
+
+unsigned char *port_frame_alloc(void)
+{
+    return calloc(1, 0x10000);
+}
+#elif defined(PORT_FRAME_SINGLE) && !defined(_WIN32)
+#undef _POSIX_C_SOURCE
+#define _DARWIN_C_SOURCE
+#include <stddef.h>
+#include <sys/mman.h>
+
+unsigned char *port_frame_alloc(void)
+{
+    unsigned char *base = mmap(NULL, 0x20000, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (base == MAP_FAILED) return NULL;
+    if (mprotect(base, 0x10000, PROT_READ | PROT_WRITE)) { munmap(base, 0x20000); return NULL; }
+    return base;
+}
+#elif defined(_WIN32)
 /* Windows: one section mapped at two adjacent addresses. The 144 KB are reserved to find a
    free range, then released and mapped there (allocation granularity is 64 KB, so both views
    and the guard page start on its boundary); another thread can take the range in between,

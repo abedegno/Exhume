@@ -267,6 +267,7 @@ def main(argv):
     ap.add_argument('--debug', action='store_true')
     ap.add_argument('--sanitize', default='null')
     ap.add_argument('--coverage', action='store_true')
+    ap.add_argument('--frame-single', action='store_true', help='the EMS frame mapped once, as WebAssembly has it (a desktop check)')
     ap.add_argument('--release', action='store_true')
     ap.add_argument('--arch', action='append', default=[])
     a = ap.parse_args(argv)
@@ -290,6 +291,12 @@ def main(argv):
         portcheck.FLAGS = portcheck.FLAGS + cov
         PORT_FLAGS.extend(cov)
         link_extra = ['-fprofile-instr-generate']
+    if a.frame_single:
+        OUT = portcfg.variant_out(CFG, 'single')
+        EXE = os.path.join(OUT, P.exe)
+        portcheck.OUT = OUT
+        portcheck.FLAGS = portcheck.FLAGS + ['-DPORT_FRAME_SINGLE']
+        PORT_FLAGS.append('-DPORT_FRAME_SINGLE')
     if a.release:
         RELEASE = True
         OUT = portcfg.variant_out(CFG, 'release')

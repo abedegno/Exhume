@@ -127,6 +127,27 @@ void port_far_copy(void *dst, const void *src, unsigned n);
 #define FAR_COPY(dst, src, n) port_far_copy((void *)(dst), (const void *)(src), (unsigned)(n))
 #endif
 
+/* EMS_WRAP(p) and EMS_ADD(p, n): a far pointer into the EMS page frame whose offset the
+   original lets wrap past FFFFh to the frame's start, as a far pointer's does in DOS. The port
+   cannot always map the frame's 64 KB twice in a row, which wraps such a pointer by itself (the
+   web build has it once), so the code says where it relies on the wrap (runtime/port/mem/emm.c).
+   EMS_WRAP(p) is p where the original reads from p, at an index or through a reader it passes p
+   to, and the reading can run past the frame's end (UW2: CUTS.C plays an LPF's records from the
+   frame, and a record near the end continues at its start); on the host it is a pointer to
+   what those reads see, for reading only, good until the frame changes. EMS_ADD(p, n) is p + n
+   where the original moves a pointer into the frame by n and writes there (UW2: CUTS.C's
+   readlpinc, whose offset out_size - lp_left wraps in DOS's 16-bit int); on the host p + n with
+   the offset taken mod 64 KB. The original tokens under Turbo C. */
+#ifdef __TURBOC__
+#define EMS_WRAP(p) (p)
+#define EMS_ADD(p, n) (p + n)
+#else
+const void *port_ems_wrap(const void *p);
+void *port_ems_add(const void *p, long n);
+#define EMS_WRAP(p) ((__typeof__(p))port_ems_wrap(p))
+#define EMS_ADD(p, n) ((__typeof__(p))port_ems_add((p), (long)(n)))
+#endif
+
 /* AX_RESULT(v), at the end of a function the original wrote with no return statement, whose
    callers use what it left in AX: v is that value, read from the code (UW2: GRFX.C's
    grfx_init, where init_world tests what grfx_quikfont left in AL). Nothing under Turbo C (an empty statement,
