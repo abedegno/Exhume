@@ -56,6 +56,9 @@ static int mt_ok;
 
 #define RING 32768                      /* frames, about 0.74 s */
 #define PREBUFFER 2048
+static _Atomic unsigned underruns;      /* times the device found the ring empty after it started playing */
+
+unsigned audio_underruns(void) { return atomic_load(&underruns); }
 static int16_t ring[RING * 2];
 static _Atomic int volume = 100;        /* percent: the settings screen's slider (audio_set_volume) */
 static FILE *tap;                       /* PORT_AUDIO_TAP=FILE: what the device is given (after the volume), raw */
@@ -93,6 +96,7 @@ static void fill(int16_t *out, int frames)
         if (t == h) {                   /* underflow: silence until the ring fills again */
             memset(out + i * 2, 0, (size_t)(frames - i) * 4);
             priming = 1;
+            atomic_fetch_add(&underruns, 1);
             break;
         }
         out[i * 2] = ring[(t % RING) * 2];

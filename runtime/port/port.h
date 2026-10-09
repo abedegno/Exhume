@@ -186,6 +186,7 @@ void port_pause_wait(void);             /* sys/pit.c: the game's thread, at a cl
 int port_game_parked(void);             /* sys/pit.c: 1 while the game's thread waits in port_pause_wait */
 uint32_t pit_paused_ms(void);           /* sys/pit.c: milliseconds spent paused so far (main thread) */
 void audio_set_volume(int percent);     /* sound/audio.c: 0..100, applied to every sample played after the call */
+unsigned audio_underruns(void);         /* sound/audio.c: times the device found the ring empty after it started playing */
 void mouse_look_mode(int on);
 void mouse_look_speed(int pct);
 int mouse_int33(uint16_t *ax, uint16_t *bx, uint16_t *cx, uint16_t *dx);
