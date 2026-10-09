@@ -384,7 +384,9 @@ def main(argv):
         OUT = web_out('web')
         portcheck.OUT = OUT
         EXE = os.path.join(OUT, re.sub(r'\.exe$', '', P.exe) + '.js')
-        WEB = ['-pthread']
+        # the build's own paths kept out of the program (__FILE__ in the null traps): the page is
+        # published (web/deploy.sh refuses a site naming a local path)
+        WEB = ['-pthread', f'-ffile-prefix-map={root}/=', f'-ffile-prefix-map={os.path.dirname(here)}/=exhume/']
         portcheck.FLAGS = portcheck.FLAGS + WEB + ['-O2']
         PORT_FLAGS.extend(WEB)
         LIBS = os.path.join(os.path.dirname(LIBS), 'libs-web')
