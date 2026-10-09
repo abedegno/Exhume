@@ -3,7 +3,10 @@
 // device, so the port would play into nothing and never run dry). Each game is started in a fresh
 // profile (its first visit: the MT-32 when the ROMs are packed) and played, untouched, for SECONDS;
 // the port's audio_underruns() is read once a second. Fails when the count rises after the first
-// second. Usage: node tools/audiocheck-web.mjs SITE [SECONDS] [GAME...]
+// second, and fails closed when a zero proves nothing: when the page's audio context is not
+// running at the end, when nothing reached the speakers (the peak level over the run), or when the
+// port's "audio: music card" line does not name a sounding MT-32 (ANY_CARD=1 lets any card through,
+// for a site packed without ROMs). Usage: node tools/audiocheck-web.mjs SITE [SECONDS] [GAME...]
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
 import puppeteer from 'puppeteer';
 const site = path.resolve(process.argv[2]); const seconds = +(process.argv[3] || 60);
@@ -23,8 +26,11 @@ for (const g of games) {
   p.on('dialog', d => d.dismiss());
   const log = []; p.on('console', m => { const t = m.text(); log.push(t); if (process.env.ALL || /mt32|music|audio|sound|card|driver/i.test(t)) console.log(`     ${g} console: ${t}`); });
   // the page's audio contexts, kept so that their state can be read: the device really running
+  if (process.env.SUSPEND) await p.evaluateOnNewDocument(() => { window.__suspend = true; });
   await p.evaluateOnNewDocument(() => { const A = window.AudioContext; window.__ctxs = [];
-    window.AudioContext = class extends A { constructor(...a) { super(...a); window.__ctxs.push(this); } };
+    window.AudioContext = class extends A { constructor(...a) { super(...a); window.__ctxs.push(this);
+      // SUSPEND=1: every context held suspended (a check that a silent device fails the run)
+      if (window.__suspend) { this.suspend(); this.resume = () => Promise.resolve(); } } };
     // and what reaches the speakers: an analyser beside each connection to a destination, its level read once a second
     const connect = AudioNode.prototype.connect; window.__taps = [];
     AudioNode.prototype.connect = function (d, ...r) {
@@ -48,23 +54,27 @@ for (const g of games) {
     // PAUSE_AT=S: the settings screen opened at second S (the game paused), a check that a ring left to run dry is counted
     if (+process.env.PAUSE_AT === s) await p.evaluate(() => window.__exhumeModule._web_open_settings());
   }
-  // the music card the game was started with: UW.CFG's first number, from the home's copy (the port
-  // writes the first visit's choice there) or the game's own; the MT-32 is card 6 in UW1, 5 in UW2
-  const cfg = await p.evaluate(g => { const M = window.__exhumeModule, found = [];
-    const walk = d => { for (const n of M.FS.readdir(d)) { if (n === '.' || n === '..') continue; const f = `${d}/${n}`;
-      if (M.FS.isDir(M.FS.stat(f).mode)) walk(f); else if (n.toUpperCase() === 'UW.CFG') found.push([f, M.FS.readFile(f, { encoding: 'utf8' }).split(/\s/)[0]]); } };
-    try { walk(`/home/web_user/.${g}port`); walk('/game'); } catch (e) { found.push(['error', String(e)]); }
-    return found; }, g);
-  const dev = await p.evaluate(() => window.__ctxs.map(c => `${c.state} at ${c.currentTime.toFixed(1)} s, ${c.sampleRate} Hz`).join('; '));
-  console.log(`     ${g}: audio device: ${dev || 'none'}`);
-  const mt32 = { uw1: '6', uw2: '5' }[g];
-  console.log(`     ${g}: music card ${cfg.length ? cfg[0][1] : '?'} (${cfg[0] && cfg[0][1] === mt32 ? 'the MT-32' : 'NOT the MT-32'}) from ${cfg.map(c => c.join('=')).join(', ')}`);
+  // the music card the port opened: its own line (sound/audio.c, the web only), the last one said;
+  // and, for the record, the choice it wrote to the home's DATA/UW.CFG (the MT-32 is 6 in UW1, 5 in UW2)
+  const said = log.map(l => /: audio: music card (\S+)( \(silent\))?/.exec(l)).filter(Boolean).at(-1);
+  const cfg = await p.evaluate(g => { const f = `/home/web_user/.${g}port/DATA/UW.CFG`, M = window.__exhumeModule;
+    try { return M.FS.analyzePath(f).exists ? `${f}: ${M.FS.readFile(f, { encoding: 'utf8' }).split(/\s/)[0]}` : `${f}: none`; } catch (e) { return `${f}: ${e}`; } }, g);
+  const ctxs = await p.evaluate(() => window.__ctxs.map(c => ({ state: c.state, t: c.currentTime, rate: c.sampleRate })));
+  const peak = Math.max(0, ...levels);
+  console.log(`     ${g}: audio device: ${ctxs.map(c => `${c.state} at ${c.t.toFixed(1)} s, ${c.rate} Hz`).join('; ') || 'none'}`);
   console.log(`     ${g}: peak level each second: ${levels.map(l => l.toFixed(2)).join(' ')}`);
   const changes = counts.map((n, i) => [i + 1, n]).filter(([i, n]) => i === 1 || n !== counts[i - 2]);
   console.log(`     ${g}: underruns over time (s:count at each change): ${changes.map(([s, n]) => `${s}:${n}`).join(' ')}`);
+  const results = [
+    [ctxs.length > 0 && ctxs.every(c => c.state === 'running'), `the audio device is running (${ctxs.map(c => c.state).join(', ') || 'no audio context'})`],
+    [peak > 0.001, `sound reached the speakers (peak level ${peak.toFixed(2)})`],
+    [!!said && (process.env.ANY_CARD || (said[1] === 'mt32' && !said[2])),
+     `${process.env.ANY_CARD ? 'the port names its music card (ANY_CARD: any card)' : 'the music plays on the MT-32'} (the port: ${said ? said[0].slice(2) : 'no "audio: music card" line'}; ${cfg})`],
+  ];
   const late = counts.at(-1) - counts[0];
-  const ok = counts[0] >= 0 && late === 0;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${g}: ${counts.at(-1)} underruns in ${seconds} s, ${late} after the first second`);
+  results.push([counts[0] >= 0 && late === 0, `${counts.at(-1)} underruns in ${seconds} s, ${late} after the first second`]);
+  for (const [good, what] of results) console.log(`${good ? 'ok  ' : 'FAIL'} ${g}: ${what}`);
+  const ok = results.every(r => r[0]);
   if (!ok) fails++;
   await ctx.close();
 }

@@ -236,6 +236,21 @@ void audio_music_device(int kind)
 #else
     if (kind == DRV_MT32) fprintf(stderr, PORT_NAME ": built without libmt32emu (brew install mt32emu); the MT-32 is silent\n");
 #endif
+#ifdef __EMSCRIPTEN__
+    {
+        /* the card the music plays on, as the driver set it up (tools/audiocheck-web.mjs reads
+           it); the web only, so the desktop's output is as it was */
+        static const char *const names[] = { "none", "adlib", "sbfm", "sbpro1", "pasfm", "sbpro2", "mt32", "speaker" };
+        int sounds = 1;
+#ifdef AUDIO_HAVE_MT32EMU
+        if (kind == DRV_MT32) sounds = mt_ok;
+#else
+        if (kind == DRV_MT32) sounds = 0;
+#endif
+        fprintf(stderr, PORT_NAME ": audio: music card %s%s\n",
+                kind >= 0 && kind < (int)(sizeof names / sizeof *names) ? names[kind] : "other", sounds ? "" : " (silent)");
+    }
+#endif
 }
 
 void audio_opl_write(int c, unsigned reg, unsigned val)
