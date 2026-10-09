@@ -35,6 +35,39 @@ jobs:
       - run: {{port}}
       - run: {{port_check}}
 
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+{{checkout_submodules}}
+{{exhume_checkout}}
+      # Emscripten, pinned to the version the web build is made with (docs/WEB.md), in ~/emsdk
+      # where the Makefile's web target sources it
+      - name: Cache Emscripten
+        uses: actions/cache@v6
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('{{web_emsdk_script}}') }}
+      - name: Install Emscripten
+        run: EMSDK_VERSION=4.0.15 sh {{web_emsdk_script}}
+      - name: Cache the web libraries
+        uses: actions/cache@v6
+        with:
+          path: {{web_libs_dir}}
+          key: libs-web-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('{{web_libs_script}}', '{{web_emsdk_script}}') }}
+      - name: Build SDL3 and libmt32emu for WebAssembly (when not cached)
+        run: |
+          # shellcheck source=/dev/null
+          . ~/emsdk/emsdk_env.sh >/dev/null 2>&1
+          SETUP_WEB=1 sh {{web_libs_script}} {{web_libs_dir}}
+      - run: python3 -m venv {{venv}} && {{venv}}/bin/pip install -q -r {{requirements}}
+      - name: Fetch Nuked OPL3 (the web build has the FM music as the desktop one does)
+        run: {{setup_sound}}
+      - run: {{web_make}}
+
   macos:
     runs-on: macos-latest
     timeout-minutes: 30
