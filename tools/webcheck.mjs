@@ -161,6 +161,11 @@ const cases = {
     const gone = p.waitForNavigation({ timeout: 20000 }).catch(() => null);
     await p.evaluate(() => window.__exhumeModule._exhume_quit());
     await gone;
+    // the end waited for the game's thread to stop at a clock read (parked) before it wrote out
+    // the files and closed the recording, then stopped the loop (loop_end's "presents" line)
+    const at = re => log.findIndex(l => re.test(l)), parkedAt = at(/web: game parked, flushing/), endAt = at(/presents, \d+ paced/);
+    check(parkedAt >= 0 && endAt > parkedAt, 'saves: the end waits for the game to park before writing out its files',
+          log.filter(l => /^web:|presents,/.test(l)).join(' | '));
     check(await play(), 'saves: uw1 draws its title after the game ended');
     check(await read(`${home}/SAVE4/WEBCHECK2.DAT`) === 'kept at the end', 'saves: a file written before the game ended is there after');
     // every RECORD.OUT in the home, wherever the black box put it (a session's start copies the

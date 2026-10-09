@@ -79,9 +79,22 @@ void port_pause(int on)
     }
 }
 
+static _Atomic int parked;                   /* the game's thread is waiting in port_pause_wait */
+
 void port_pause_wait(void)
 {
+    if (!atomic_load(&paused)) return;
+    atomic_store(&parked, 1);
     while (atomic_load(&paused)) plat_sleep_ns(10000000);
+    atomic_store(&parked, 0);
+}
+
+/* 1 while the game's thread waits at a clock read for the pause to end: it is between two of its
+   own steps, not in the middle of a file call, so another thread may write out its files (the web
+   build's end of a run, platform/sdl3/plat_sdl3.c). */
+int port_game_parked(void)
+{
+    return atomic_load(&parked);
 }
 
 /* Milliseconds spent paused so far (main thread): an input script's clock is the BIOS clock plus

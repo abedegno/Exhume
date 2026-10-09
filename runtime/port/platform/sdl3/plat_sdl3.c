@@ -748,12 +748,20 @@ static int loop_end(void)
 #include "port.h"
 /* The browser's loop: one pass a frame. The page keeps the home directory in the browser's
    storage (web/page.js, Module.syncHome): once a second, when the game has changed a file since
-   the last look (port_files_changed: a save), it is copied there. At the end main does not go on
-   after plat_run as on the desktop (the browser called this pass, not main), so main's part is
-   done here: the black box's recording closed and the write-behind buffers written out. Then the
-   home is copied, and only when that is done (or after 10 s) does the loop stop and the page
-   hear of it (Module.onGameExit): the runtime ends with the loop (EXIT_RUNTIME), closing the
-   file system's connection to the browser's storage under a copy still going. */
+   the last look (port_files_changed: a save), it is copied there.
+   At the end main does not go on after plat_run as on the desktop (the browser called this pass,
+   not main), so main's part is done here, in steps, a pass each, as this thread must not wait:
+   1. the game's thread is stopped where it is safe: paused (port_pause, as the settings screen
+      does), and its files touched only once it waits at its next clock read (port_game_parked),
+      not while it is in the middle of a write; one that has not parked in 3 s (a long load) is
+      written out from anyway, and the log says so. A game that has exited is not waiting for.
+   2. the black box's recording closed, the write-behind buffers written out, the home copied;
+   3. when the copy is done (or after 10 s) the loop stops and the page hears of it
+      (Module.onGameExit): the runtime ends with the loop (EXIT_RUNTIME), closing the file
+      system's connection to the browser's storage, which is why the copy is waited for.
+   The game stays paused to the end, so it writes nothing that would not be copied. (The
+   desktop's main closes the recording after plat_run with the game's thread still running: the
+   same race, left as it is there, where the process ends at once.) */
 static void web_end(void)
 {
     emscripten_cancel_main_loop();
@@ -761,26 +769,49 @@ static void web_end(void)
     EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
 }
 
+static void web_write_out(void)
+{
+#ifdef PORT_BLACKBOX
+    port_blackbox_close(0);
+#endif
+    port_flush_writes();
+    EM_ASM({
+        Module.homeKept = false;
+        if (Module.syncHome) Module.syncHome(function() { Module.homeKept = true; });
+        else Module.homeKept = true;
+    });
+}
+
 static void web_step(void)
 {
     static unsigned seen;
-    static Uint64 looked, ending;
+    static int stage;                   /* 0 running, 1 waiting for the game to park, 2 for the copy */
+    static Uint64 looked, since;
     Uint64 now = SDL_GetTicks();
-    if (ending) {
-        if (EM_ASM_INT({ return Module.homeKept ? 1 : 0; }) || now - ending >= 10000) web_end();
+    if (stage == 1) {
+        if (port_game_parked() || now - since >= 3000) {
+            fprintf(stderr, port_game_parked() ? "web: game parked, flushing\n"
+                                               : "web: the game did not park in 3 s, flushing anyway\n");
+            web_write_out();
+            stage = 2;
+            since = now;
+        }
+        return;
+    }
+    if (stage == 2) {
+        if (EM_ASM_INT({ return Module.homeKept ? 1 : 0; }) || now - since >= 10000) web_end();
         return;
     }
     if (loop_step()) {
-#ifdef PORT_BLACKBOX
-        port_blackbox_close(0);
-#endif
-        port_flush_writes();
-        ending = now ? now : 1;
-        EM_ASM({
-            Module.homeKept = false;
-            if (Module.syncHome) Module.syncHome(function() { Module.homeKept = true; });
-            else Module.homeKept = true;
-        });
+        since = now;
+        if (SDL_GetAtomicInt(&game_done)) {
+            fprintf(stderr, "web: game ended, flushing\n");
+            web_write_out();
+            stage = 2;
+        } else {
+            port_pause(1);
+            stage = 1;
+        }
         return;
     }
     if (now - looked >= 1000) {

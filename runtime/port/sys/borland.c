@@ -55,7 +55,9 @@ static unsigned char fd_wrote[MAXFD];   /* a handle written to since it was open
 /* The game's changes to its files (writes as they reach the file, a written file's close,
    removals, renames, new folders), counted for the web build, which keeps the home directory
    in the browser's storage and copies it there once a second when this has moved
-   (platform/sdl3/plat_sdl3.c). Counted on the game's thread, read on the backend's. */
+   (platform/sdl3/plat_sdl3.c). Counted on the game's thread, read on the backend's. Only the
+   game's file layer (these bc_ calls) is counted: the port's own host stdio (the settings file,
+   the black box's starting copy) is not, and port_config_set asks for its own copy. */
 static unsigned files_changed;
 static void changed(void) { __atomic_add_fetch(&files_changed, 1u, __ATOMIC_RELAXED); }
 unsigned port_files_changed(void) { return __atomic_load_n(&files_changed, __ATOMIC_RELAXED); }
