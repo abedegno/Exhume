@@ -754,6 +754,20 @@ static void web_step(void)
         EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
     }
 }
+
+/* The page's controls (web/page.js), called on the page's thread as the step is: the gear opens
+   the settings screen as F11 does, and a game is ended as by closing the window. */
+EMSCRIPTEN_KEEPALIVE void web_open_settings(void)
+{
+    if (!settings_open()) settings_show(1);
+    sync_open();
+}
+
+EMSCRIPTEN_KEEPALIVE void exhume_quit(void)
+{
+    if (hooks && hooks->lifecycle) hooks->lifecycle(PLAT_QUIT_REQUEST);
+    L.quit = 1;
+}
 #endif
 
 int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), void *arg)

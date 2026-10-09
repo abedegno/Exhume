@@ -69,6 +69,29 @@ const cases = {
     check(/nogame/.test(s.status), 'missing: the status line names what failed', JSON.stringify(s.status));
     await p.close();
   },
+  async controls() {  // the page's own controls: the loading progress, the gear, full screen, and a game's end
+    const p = await page(); const log = []; p.on('console', m => log.push(m.text()));
+    await p.goto(url, { waitUntil: 'networkidle0' }); await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+    let progressed = false;
+    await p.click('#play-uw1');
+    for (let i = 0; i < 40 && !progressed; i++) { progressed = /\d+%|MB/.test(await p.$eval('#progress', e => e.textContent).catch(() => '')); await new Promise(r => setTimeout(r, 100)); }
+    check(progressed, 'controls: the page shows loading progress');
+    await new Promise(r => setTimeout(r, 15000));
+    check(!!(await p.$('#gear')) && !!(await p.$('#fullscreen')), 'controls: the gear and full-screen buttons are there');
+    await p.click('#gear'); await new Promise(r => setTimeout(r, 1500));
+    check(log.some(l => /settings: (open|shown)/.test(l)), 'controls: the gear opens the settings screen', log.slice(-5).join(' | '));
+    check(await p.evaluate(() => document.pointerLockElement === null), 'controls: the settings screen frees the pointer');
+    await p.evaluate(() => window.__exhumeModule._exhume_quit && window.__exhumeModule._exhume_quit());
+    await p.waitForSelector('#menu:not([hidden])', { timeout: 10000 }).then(() => check(true, 'controls: a game that ends returns to the menu')).catch(() => check(false, 'controls: a game that ends returns to the menu'));
+    await p.close();
+  },
+  async noworker() {  // no service worker: a message, not a blank page
+    const ctx = await browser.createBrowserContext(); const p = await ctx.newPage();
+    await p.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'serviceWorker', { get: () => undefined }); });
+    await p.goto(url, { waitUntil: 'networkidle0' });
+    check(/cannot run/i.test(await p.$eval('#status', e => e.textContent)), 'noworker: the page says why it cannot start');
+    await ctx.close();
+  },
 };
 for (const [n, f] of Object.entries(cases)) if (!only.length || only.includes(n)) await f().catch(e => check(false, `${n}: threw`, e.message));
 await browser.close(); server.close();
