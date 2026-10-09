@@ -21,6 +21,11 @@ mt_tag=libmt32emu_2_8_3
 libs=${SETUP_LIBS:-sdl3 mt32emu}
 archs=${SETUP_MACOS_ARCHS:-}
 gen=; command -v ninja >/dev/null 2>&1 && gen="-G Ninja"
+# SETUP_WEB=1: for the web build (docs/WEB.md), with Emscripten's emcmake (emsdk_env.sh sourced),
+# static libraries, pthreads on
+web=${SETUP_WEB:-}
+cm=cmake; [ -n "$web" ] && cm="emcmake cmake"
+webflags=; [ -n "$web" ] && webflags="-DCMAKE_C_FLAGS=-pthread -DCMAKE_CXX_FLAGS=-pthread"
 osx="${archs:+-DCMAKE_OSX_ARCHITECTURES=$archs}"
 if [ -n "$archs" ]; then export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"; fi
 src=$(mktemp -d); trap 'rm -rf "$src"' EXIT
@@ -28,12 +33,12 @@ src=$(mktemp -d); trap 'rm -rf "$src"' EXIT
 build() {   # name tag repo subdir cmake-args...
   name=$1; tag=$2; repo=$3; sub=$4; shift 4
   case " $libs " in *" $name "*) ;; *) return ;; esac
-  stamp="$tag${archs:+ $archs}"
+  stamp="$tag${archs:+ $archs}${web:+ web}"
   if [ "$(cat "$prefix/.$name" 2>/dev/null)" = "$stamp" ]; then echo "$name: $tag already in $prefix"; return; fi
   git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$repo" "$src/$name"
   # shellcheck disable=SC2086
-  cmake -S "$src/$name/$sub" -B "$src/$name/build" $gen -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib $osx "$@" >/dev/null
+  $cm -S "$src/$name/$sub" -B "$src/$name/build" $gen -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib $osx $webflags "$@" >/dev/null
   cmake --build "$src/$name/build" --parallel >/dev/null
   cmake --install "$src/$name/build" >/dev/null
   echo "$stamp" > "$prefix/.$name"
@@ -43,10 +48,13 @@ build() {   # name tag repo subdir cmake-args...
 # With neither X11 nor Wayland headers (a CI runner), SDL3 is built for the console: its
 # offscreen video driver and dummy audio, which is all --hidden replays use.
 console=OFF
-if [ "$(uname -s)" = Linux ] && ! pkg-config --exists x11 2>/dev/null && ! pkg-config --exists wayland-client 2>/dev/null; then
+if [ -z "$web" ] && [ "$(uname -s)" = Linux ] && ! pkg-config --exists x11 2>/dev/null && ! pkg-config --exists wayland-client 2>/dev/null; then
   console=ON; echo "sdl3: no X11 or Wayland headers, building without windows (offscreen video only)"
 fi
+if [ -n "$web" ]; then sdl_kind="-DSDL_SHARED=OFF -DSDL_STATIC=ON"; mt_kind="-Dlibmt32emu_SHARED=OFF"; else sdl_kind=; mt_kind="-Dlibmt32emu_SHARED=ON"; fi
+# shellcheck disable=SC2086
 build sdl3 "$sdl_tag" https://github.com/libsdl-org/SDL . -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
-  -DSDL_UNIX_CONSOLE_BUILD=$console
-build mt32emu "$mt_tag" https://github.com/munt/munt mt32emu -Dlibmt32emu_SHARED=ON
+  -DSDL_UNIX_CONSOLE_BUILD=$console $sdl_kind
+# shellcheck disable=SC2086
+build mt32emu "$mt_tag" https://github.com/munt/munt mt32emu $mt_kind
 echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig"
