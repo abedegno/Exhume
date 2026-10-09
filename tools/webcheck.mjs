@@ -7,13 +7,22 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'applic
 const server = http.createServer((q, r) => {
   const f = path.join(site, decodeURIComponent(q.url.split('?')[0]).replace(/\/$/, '/index.html'));
   if (!f.startsWith(site) || !fs.existsSync(f)) { r.writeHead(404); return r.end(); }
-  r.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream' }); fs.createReadStream(f).pipe(r);
+  r.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream' });
+  if (slowData && path.extname(f) === '.data') return trickle(fs.readFileSync(f), r);
+  fs.createReadStream(f).pipe(r);
 }).listen(0);
+// a game's .data served at about 6 MB/s while slowData is set (the controls case), so its download
+// takes seconds and the page's progress can be seen to move, however fast the machine
+let slowData = false;
+async function trickle(buf, r) {
+  for (let i = 0; i < buf.length; i += 256 << 10) { r.write(buf.subarray(i, i + (256 << 10))); await new Promise(t => setTimeout(t, 40)); }
+  r.end();
+}
 const url = `http://localhost:${server.address().port}/`;
 let fails = 0; const check = (ok, what, more = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ' ' + more}`); if (!ok) fails++; };
 const browser = await puppeteer.launch({ headless: 'new', args: ['--autoplay-policy=no-user-gesture-required'] });
-async function page() {
-  const p = await browser.newPage(); await p.setViewport({ width: 1280, height: 900 });
+async function page(ctx = browser) {
+  const p = await ctx.newPage(); await p.setViewport({ width: 1280, height: 900 });
   p.on('dialog', d => { console.log(`     (dialog: ${d.message().split('\n')[0]})`); d.dismiss(); });   // an alert() would stall the page
   return p;
 }
@@ -70,20 +79,39 @@ const cases = {
     await p.close();
   },
   async controls() {  // the page's own controls: the loading progress, the gear, full screen, and a game's end
-    const p = await page(); const log = []; p.on('console', m => log.push(m.text()));
+    // a fresh context: the file packager's cache (IndexedDB) is empty, so the game's .data really downloads
+    const ctx = await browser.createBrowserContext(); const p = await page(ctx); const log = []; p.on('console', m => log.push(m.text()));
     await p.goto(url, { waitUntil: 'networkidle0' }); await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
-    let progressed = false;
-    await p.click('#play-uw1');
-    for (let i = 0; i < 40 && !progressed; i++) { progressed = /\d+%|MB/.test(await p.$eval('#progress', e => e.textContent).catch(() => '')); await new Promise(r => setTimeout(r, 100)); }
-    check(progressed, 'controls: the page shows loading progress');
-    await new Promise(r => setTimeout(r, 15000));
+    // every text the progress line shows, from before the click
+    await p.evaluate(() => { const e = document.getElementById('progress'); window.__progress = [];
+      new MutationObserver(() => { if (window.__progress.at(-1) !== e.textContent) window.__progress.push(e.textContent); }).observe(e, { childList: true, characterData: true, subtree: true }); });
+    slowData = true;
+    try {
+      await p.click('#play-uw1');
+      await p.waitForFunction(() => !document.getElementById('game').hidden || !!document.getElementById('status').textContent, { timeout: 60000 });
+    } finally { slowData = false; }
+    // the download's own reports: megabytes and a percentage strictly between 0 and 100, at least three of them
+    const shown = await p.evaluate(() => window.__progress);
+    const mid = new Set(shown.map(t => /MB \((\d+)%\)/.exec(t)).filter(m => m && +m[1] > 0 && +m[1] < 100).map(m => +m[1]));
+    check(mid.size >= 3, `controls: the page shows the download's progress (${mid.size} values between 0% and 100%)`, JSON.stringify(shown.slice(0, 4)));
+    // the game running: its title drawn
+    let lit = 0; for (let i = 0; i < 60 && lit <= 10000; i++) { lit = await litPixels(p); if (lit <= 10000) await new Promise(r => setTimeout(r, 500)); }
+    check(lit > 10000, `controls: the game draws its title (${lit} lit pixels)`);
     check(!!(await p.$('#gear')) && !!(await p.$('#fullscreen')), 'controls: the gear and full-screen buttons are there');
-    await p.click('#gear'); await new Promise(r => setTimeout(r, 1500));
+    // the pointer locked to the canvas by a real click, as a player's would be
+    await p.evaluate(() => document.getElementById('canvas').addEventListener('click', e => e.target.requestPointerLock(), { once: true }));
+    await p.click('#canvas'); await p.waitForFunction(() => document.pointerLockElement !== null, { timeout: 5000 }).catch(() => {});
+    check(await p.evaluate(() => document.pointerLockElement?.id === 'canvas'), 'controls: the pointer is locked to the canvas');
+    // a locked pointer's clicks all go to the canvas (Chrome's pointer lock), so the gear is pressed
+    // through its own click (as a keyboard's Enter on it would be), not at its place on the screen
+    await p.$eval('#gear', b => b.click());
+    await p.waitForFunction(() => document.pointerLockElement === null, { timeout: 3000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 500));
     check(log.some(l => /settings: (open|shown)/.test(l)), 'controls: the gear opens the settings screen', log.slice(-5).join(' | '));
-    check(await p.evaluate(() => document.pointerLockElement === null), 'controls: the settings screen frees the pointer');
+    check(await p.evaluate(() => document.pointerLockElement === null), 'controls: the gear frees the pointer');
     await p.evaluate(() => window.__exhumeModule._exhume_quit && window.__exhumeModule._exhume_quit());
     await p.waitForSelector('#menu:not([hidden])', { timeout: 10000 }).then(() => check(true, 'controls: a game that ends returns to the menu')).catch(() => check(false, 'controls: a game that ends returns to the menu'));
-    await p.close();
+    await ctx.close();
   },
   async noworker() {  // no service worker: a message, not a blank page
     const ctx = await browser.createBrowserContext(); const p = await ctx.newPage();
