@@ -119,12 +119,63 @@ static int set_key_of(SDL_Scancode sc)
     }
 }
 
+/* The game's pointer events (PlatHooks.pointer), every one through here. In the web build it
+   also keeps a count of each button's presses and releases and the buttons held with its last
+   press, which only tools/webcheck.mjs reads (web_test_input). */
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+static unsigned seen[3][3];             /* per button (left, right, middle): presses, releases, buttons at the last press */
+#endif
+static void to_game(const PlatPointer *p)
+{
+#ifdef __EMSCRIPTEN__
+    int i;
+    for (i = 0; i < 3; i++)
+        if (p->button == 1u << i) {
+            if (p->type == PLAT_POINTER_DOWN) { seen[i][0]++; seen[i][2] = p->buttons; }
+            else if (p->type == PLAT_POINTER_UP) seen[i][1]++;
+        }
+#endif
+    hooks->pointer(p);
+}
+
+/* Every button and key the game saw go down and has not seen come up, let go, as releases: their
+   real releases will not reach the game (they went to the settings screen, or to the host while
+   the window did not have the focus). 1 if there were any. */
+static int release_all(void)
+{
+    int i, any = 0;
+    for (i = 0; i < 3; i++)
+        if (buttons & (1u << i)) {
+            PlatPointer p;
+            memset(&p, 0, sizeof p);
+            buttons &= ~(1u << i);
+            any = 1;
+            if (!hooks->pointer) continue;
+            p.type = PLAT_POINTER_UP;
+            p.x = last_x; p.y = last_y;
+            p.button = 1u << i;
+            p.buttons = buttons;
+            p.absolute = !locked && !captured;
+            to_game(&p);
+        }
+    for (i = 0; i < 256; i++)
+        if (held[i]) {
+            held[i] = 0;
+            any = 1;
+            if (!hooks->key) continue;
+            if (i >= 128) hooks->key(0xE0);
+            hooks->key((uint8_t)((i & 0x7F) | 0x80));
+        }
+    return any;
+}
+
 /* The screen opened or closed since the last look (by F11, Escape or a click): the game's clock
    stops or goes on, and a closing screen lets go of every key the game saw down before it (their
    releases went to the screen) and gives back a pointer capture it took. */
 static void sync_open(void)
 {
-    int o = settings_open(), i;
+    int o = settings_open();
     if (o == was_open) return;
     was_open = o;
     if (o) {
@@ -150,25 +201,8 @@ static void sync_open(void)
         }
         if (g_win && rel_restore) SDL_SetWindowRelativeMouseMode(g_win, true);
         rel_restore = 0;
-        /* a button held when it opened was let go over the screen: the game gets the release */
-        for (i = 0; i < 3; i++)
-            if ((buttons & (1u << i)) && hooks->pointer) {
-                PlatPointer p;
-                memset(&p, 0, sizeof p);
-                buttons &= ~(1u << i);
-                p.type = PLAT_POINTER_UP;
-                p.x = last_x; p.y = last_y;
-                p.button = 1u << i;
-                p.buttons = buttons;
-                p.absolute = !locked && !captured;
-                hooks->pointer(&p);
-            }
-        for (i = 0; i < 256; i++)
-            if (held[i] && hooks->key) {
-                if (i >= 128) hooks->key(0xE0);
-                hooks->key((uint8_t)((i & 0x7F) | 0x80));
-                held[i] = 0;
-            }
+        /* a button or key held when it opened was let go over the screen: the game gets the release */
+        release_all();
     }
 }
 
@@ -299,7 +333,7 @@ void plat_pointer_event(const PlatPointer *ev)
     else if (p.type == PLAT_POINTER_UP) buttons &= ~p.button;
     p.buttons = buttons;
     if (p.absolute) { last_x = p.x; last_y = p.y; }
-    hooks->pointer(&p);
+    to_game(&p);
 }
 
 void plat_window_click(float x, float y, int release)
@@ -579,7 +613,21 @@ static int loop_step(void)
                     cursor_hidden = over;
                 }
             }
-            hooks->pointer(&p);
+            to_game(&p);
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+#ifdef __EMSCRIPTEN__
+        case SDL_EVENT_WINDOW_HIDDEN:       /* the page hidden (another tab): the browser's focus may stay */
+#endif
+            /* the host may keep a release from the window once it has lost the focus (a browser's
+               context menu took a right button's; Alt+Tab with a key held): the game is not left
+               with a button or key held that the player has let go. A press the capture's click
+               swallowed is forgotten too, so that its release, if it never comes, cannot swallow
+               the next click's. */
+            left_down = 0;
+            L.swallow = 0;
+            if (release_all())
+                fprintf(stderr, PLAT_NAME ": the window lost the focus: the buttons and keys held let go\n");
             break;
         case SDL_EVENT_WINDOW_MOUSE_LEAVE:
             if (cursor_hidden) { SDL_ShowCursor(); cursor_hidden = 0; }
@@ -607,7 +655,7 @@ static int loop_step(void)
             p.dx = e.tfinger.dx * (float)ow * (float)L.w / L.dst.w;
             p.dy = e.tfinger.dy * (float)oh * (float)L.hgt / L.dst.h;
             p.absolute = 1;
-            hooks->pointer(&p);
+            to_game(&p);
             break;
         }
         case SDL_EVENT_WINDOW_OCCLUDED:
@@ -844,6 +892,17 @@ EMSCRIPTEN_KEEPALIVE void web_open_settings(void)
 {
     if (!settings_open()) settings_show(1);
     sync_open();
+}
+
+/* tools/webcheck.mjs's rightclick case: what reached the game's pointer (to_game). WHAT 0 the
+   presses of button WHICH (0 left, 1 right, 2 middle), 1 its releases, 2 the buttons held with its
+   last press; 3 the buttons the game holds now; 4 whether the game holds key WHICH (a set-1 code,
+   +128 after E0). Nothing calls it but the check. */
+EMSCRIPTEN_KEEPALIVE int web_test_input(int what, int which)
+{
+    if (what <= 2) return which >= 0 && which < 3 ? (int)seen[which][what] : -1;
+    if (what == 3) return (int)buttons;
+    return which >= 0 && which < 256 ? held[which] : -1;
 }
 
 EMSCRIPTEN_KEEPALIVE void exhume_quit(void)

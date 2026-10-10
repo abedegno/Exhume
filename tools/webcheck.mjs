@@ -191,6 +191,49 @@ const cases = {
           'saves: every recording is in a session\'s folder under recordings/ (none in RECORDIN/ or a stage/)', JSON.stringify(heads));
     await ctx.close();
   },
+  async rightclick() {  // a right click on the picture is the game's, not the browser's menu, and a click after it still reaches the game
+    // what reached the game's pointer, from the port's test hook web_test_input (platform/sdl3/plat_sdl3.c):
+    // per button (0 left, 1 right) its presses, releases and the buttons held with its last press; the buttons held now; a key held
+    const ctx = await browser.createBrowserContext(); const p = await page(ctx); const log = []; p.on('console', m => log.push(m.text()));
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const seen = () => p.evaluate(() => { const t = window.__exhumeModule._web_test_input;
+      return { left: [0, 1, 2].map(f => t(f, 0)), right: [0, 1, 2].map(f => t(f, 1)), held: t(3, 0), shift: t(4, 0x2A) }; });
+    await p.goto(url, { waitUntil: 'networkidle0' }); await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+    // every context menu event that reaches the document, and whether the page had refused the browser's menu for it
+    await p.evaluate(() => { window.__menus = []; document.addEventListener('contextmenu', e => window.__menus.push(e.defaultPrevented)); });
+    await p.click('#play-uw1');
+    let lit = 0; for (let i = 0; i < 90 && lit <= 10000; i++) { lit = await litPixels(p); if (lit <= 10000) await sleep(500); }
+    check(lit > 10000, `rightclick: uw1 draws its title (${lit} lit pixels)`);
+    // a player's right click on the picture
+    let a = await seen();
+    await p.click('#canvas', { button: 'right' }); await sleep(500);
+    let b = await seen(); const menus = await p.evaluate(() => window.__menus);
+    check(menus.length > 0 && menus.every(x => x), 'rightclick: the browser\'s context menu is refused over the game', JSON.stringify(menus));
+    check(b.right[0] === a.right[0] + 1 && b.right[1] === a.right[1] + 1 && b.held === 0, 'rightclick: the game sees the right button go down and come up', JSON.stringify({ a, b }));
+    // then a left click: the game sees it, with the left button alone held (not the right as well)
+    a = b; await p.click('#canvas'); await sleep(500); b = await seen();
+    check(b.left[0] === a.left[0] + 1 && b.left[1] === a.left[1] + 1 && b.left[2] === 1 && b.held === 0, 'rightclick: a left click after it reaches the game, the left button alone', JSON.stringify({ a, b }));
+    // the backstop: a release the host keeps from the window once it has lost the focus (the window
+    // blurred, or the page hidden) is given to the game then, for the buttons and the keys
+    const box = await (await p.$('#canvas')).boundingBox();
+    for (const [how, lose, regain] of [
+      ['the window loses the focus', () => window.dispatchEvent(new FocusEvent('blur')), () => window.dispatchEvent(new FocusEvent('focus'))],
+      ['the page is hidden', () => { for (const [k, v] of [['hidden', true], ['visibilityState', 'hidden']]) Object.defineProperty(document, k, { get: () => v, configurable: true });
+                                     document.dispatchEvent(new Event('visibilitychange')); },
+                             () => { delete document.hidden; delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')); }]]) {
+      await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await p.mouse.down({ button: 'right' }); await p.keyboard.down('ShiftLeft'); await sleep(500);
+      a = await seen();
+      await p.evaluate(lose); await sleep(500);
+      b = await seen();
+      check(a.held === 2 && a.shift === 1 && b.held === 0 && b.right[1] === a.right[1] + 1 && b.shift === 0,
+            `rightclick: ${how} with the right button and a key held, the game sees both let go`, JSON.stringify({ a, b }));
+      await p.evaluate(regain); await p.mouse.up({ button: 'right' }); await p.keyboard.up('ShiftLeft'); await sleep(500);
+      a = await seen(); await p.click('#canvas'); await sleep(500); b = await seen();
+      check(b.left[0] === a.left[0] + 1 && b.left[2] === 1 && b.held === 0, `rightclick: after ${how}, a left click reaches the game, the left button alone`, JSON.stringify({ a, b }));
+    }
+    await ctx.close();
+  },
   async refused() {  // a browser that refuses the service worker (cookies and site data blocked): a message and no game to click
     const ctx = await browser.createBrowserContext(); const p = await ctx.newPage();
     await p.evaluateOnNewDocument(() => { ServiceWorkerContainer.prototype.register = () => Promise.reject(new DOMException('blocked for the check', 'SecurityError')); });
