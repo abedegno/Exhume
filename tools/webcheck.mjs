@@ -93,6 +93,33 @@ const cases = {
       await ctx.close();
     }
   },
+  async persist() {  // the page asks for persistent storage once in a browser (Firefox shows a prompt for it), and never when it is persistent already
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const spy = already => { window.__persist = 0; const f = StorageManager.prototype.persist;
+      StorageManager.prototype.persist = function () { window.__persist++; return f.call(this); };
+      if (already) StorageManager.prototype.persisted = () => Promise.resolve(true); };
+    // a start (the click, then long enough for the ask, which comes before the download), with the times it asked and the page's storage line
+    const start = async (p, log) => {
+      await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 40000 });
+      log.length = 0; await p.click('#play-uw1'); await sleep(3000);
+      return { asked: await p.evaluate(() => window.__persist), said: log.filter(l => /^storage: /.test(l)) };
+    };
+    const ctx = await browser.createBrowserContext(); const p = await page(ctx); const log = []; p.on('console', m => log.push(m.text()));
+    await p.evaluateOnNewDocument(spy, false);
+    await p.goto(url, { waitUntil: 'networkidle0' });
+    const first = await start(p, log);
+    check(first.asked === 1 && first.said.length === 1, 'persist: the first start in a browser asks for persistent storage, and logs the answer', JSON.stringify(first));
+    await Promise.all([p.waitForNavigation({ waitUntil: 'networkidle0' }), p.evaluate(() => location.reload())]);
+    const second = await start(p, log);
+    check(second.asked === 0 && second.said.length === 1, 'persist: a second start in the same browser does not ask again', JSON.stringify(second));
+    await ctx.close();
+    const ctx2 = await browser.createBrowserContext(); const q = await page(ctx2); const log2 = []; q.on('console', m => log2.push(m.text()));
+    await q.evaluateOnNewDocument(spy, true);
+    await q.goto(url, { waitUntil: 'networkidle0' });
+    const kept = await start(q, log2);
+    check(kept.asked === 0 && kept.said.some(l => /storage: persistent/.test(l)), 'persist: a browser whose storage is persistent already is not asked', JSON.stringify(kept));
+    await ctx2.close();
+  },
   async data() {  // with the data packed (web/pack.sh), each game reaches its own title screen, not the port's folder message
     // (the browser's own "Failed to load resource ... 404 (Not Found)", the favicon before the service worker's reload, is not the port's)
     for (const g of ['uw1', 'uw2']) {
