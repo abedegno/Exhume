@@ -27,7 +27,9 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
 The groups of `all` run side by side, and within a group the replays that do not depend on each
 other; at most N replays run at once (each keeps a core busy), while the live runs (registry's
 and script's, which wait on the wall clock and use little of a core) run in their group's order
-alongside them. Each group's results are printed together, in the order above, with its time;
+alongside them. script's three screenshot runs, which are judged by the wall clock, each take
+one of the N places, ahead of the replays waiting, so that no more than N busy port processes
+share the machine while one runs. Each group's results are printed together, in the order above, with its time;
 at the end a table gives every group's time, its port runs and their time. The saved game the
 enhanced sessions start from (their stage_from session, replayed without enhancements) is made
 once a run and shared.
@@ -40,7 +42,33 @@ import replay as R
 
 results = []
 JOBS = min(8, os.cpu_count() or 4)
-_slots = threading.BoundedSemaphore(JOBS)
+
+
+class Slots:
+    """JOBS places for busy port processes. A run judged by the wall clock (first=True) takes the
+    next free one before any replay waiting, so it waits for one replay at most, not for every
+    replay queued (keys queues about sixty)."""
+    def __init__(self, n):
+        self.free, self.urgent, self.cv = n, 0, threading.Condition()
+
+    def take(self, first=False):
+        with self.cv:
+            if first: self.urgent += 1
+            while self.free == 0 or (not first and self.urgent):
+                self.cv.wait()
+            if first: self.urgent -= 1
+            self.free -= 1
+
+    def give(self):
+        with self.cv:
+            self.free += 1
+            self.cv.notify_all()
+
+    def __enter__(self): self.take()
+    def __exit__(self, *a): self.give()
+
+
+_slots = Slots(JOBS)
 _tl = threading.local()             # out: the group's lines, held until it ends; group: its name; planning
 _lock = threading.Lock()
 STATS = {}                          # group: [port runs, their seconds]
@@ -155,15 +183,22 @@ def selftest_presentation():
           state_diff(g, [{'ck': [1, 1, 4, 0], 'secs': {'PLYR': 'a'}}]) == [(0, ['header'])])
 
 
-def port(home, *args, hidden=True, exit_after=1500):
+def port(home, *args, hidden=True, exit_after=1500, timed=False):
     """Runs the port briefly in its own home (offscreen, no sound device), returning (exit
-    status, output). hidden=False is a player's run: settings read and written."""
+    status, output). hidden=False is a player's run: settings read and written. timed: a run
+    judged by the wall clock (a screenshot at a moment), which takes a replay slot (ahead of the
+    replays waiting), so that while it runs no more than JOBS busy port processes share the
+    machine."""
     env = R.port_env()
     env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')   # dummy: a player's run gets a window
     cmd = [R.port_exe(), R.RC.port_data_flag, R.DATA, R.RC.port_home_flag, home, '--no-recording',
            '--exit-after', str(exit_after)] + (['--hidden'] if hidden else []) + list(args)
     t = time.time()
-    r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=env, timeout=180)
+    if timed: _slots.take(first=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=env, timeout=180)
+    finally:
+        if timed: _slots.give()
     _note(time.time() - t)
     return r.returncode, r.stdout + r.stderr
 
@@ -393,6 +428,7 @@ def sha(path): return hashlib.sha256(open(path, 'rb').read()).hexdigest()
 
 def baseline(args):
     mode = args[0] if args else 'check'
+    if mode not in ('check', 'make', 'record'): sys.exit(__doc__)
     root = os.path.join(R.RC.sessions, 'enhanced')
     names = args[1:] or (sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))) if os.path.isdir(root) else [])
     if mode == 'check':
@@ -425,7 +461,7 @@ def baseline(args):
             text = text[:text.rindex('}')].rstrip() + ',\n "checkpoints": [\n  ' + ',\n  '.join(lines) + '\n ]\n}\n'
             open(gp, 'w').write(text)
             say(f'wrote {os.path.relpath(gp, R.root)}: {len(a)} checkpoints')
-        else:
+        elif mode == 'check':
             g = json.load(open(gp))
             check(f'{name}: made by the port, labelled so', g.get('made_by') == 'port')
             check(f'{name}: its recording unchanged', g['recording']['sha256'] == sha(rec))
@@ -478,7 +514,7 @@ def script():
             w = os.path.join(d, 'w' + str(len(shots))); os.makedirs(w)
             png = os.path.join(d, f'menu{len(shots)}.png')
             port(w, '--enhance', flags, '--sound', '0,0', '--input-script', m, '--screenshot-after', '7000',
-                 '--screenshot', png, exit_after=7500)
+                 '--screenshot', png, exit_after=7500, timed=True)
             shots.append(open(png, 'rb').read() if os.path.exists(png) else b'')
         # and positively: the screen is the one end (the last item, directly) gives, taken at 7 s,
         # after the screen's fade-in (the screenshot's time is the wall clock's, the script's the PIT's);
@@ -486,7 +522,7 @@ def script():
         e = os.path.join(d, 'end.script'); open(e, 'w').write('3000 key home\n3300 key end\n3600 key enter\n')
         w = os.path.join(d, 'wend'); os.makedirs(w); png = os.path.join(d, 'menuend.png')
         port(w, '--enhance', 'skip-intro', '--sound', '0,0', '--input-script', e, '--screenshot-after', '7000',
-             '--screenshot', png, exit_after=7500)
+             '--screenshot', png, exit_after=7500, timed=True)
         shots.append(open(png, 'rb').read() if os.path.exists(png) else b'')
         check('wrap-menu: up from the first item opens the last, not the first',
               differ(shots[0], shots[2]) < 0.10 and differ(shots[0], shots[1]) > 0.50,
@@ -807,7 +843,7 @@ def main(argv):
             JOBS = max(1, int(argv[i + 1])); del argv[i:i + 2]; break
         if a.startswith('-j') and a[2:].isdigit():
             JOBS = max(1, int(a[2:])); del argv[i]; break
-    _slots = threading.BoundedSemaphore(JOBS)
+    _slots = Slots(JOBS)
     cmd = argv[0] if argv else 'selftest'
     one = {'selftest': selftest, 'registry': registry, 'script': script, 'coverage': coverage, 'holes': holes,
            'looking': looking, 'keys': keys, 'presentation': presentation}
@@ -815,7 +851,9 @@ def main(argv):
     elif cmd == 'checks' and argv[1:2] == ['record']:
         RECORDING = True
         run_groups([('looking', looking)]); run_groups([('keys', keys)])     # live: one after the other
-    elif cmd == 'baseline': run_groups([('baseline', lambda: baseline(argv[1:]))])
+    elif cmd == 'baseline':
+        if argv[1:2] and argv[1] not in ('check', 'make', 'record'): sys.exit(__doc__)   # before the group's thread
+        run_groups([('baseline', lambda: baseline(argv[1:]))])
     elif cmd == 'all':
         d = tempfile.mkdtemp(prefix='enhcheck-')
         rc, out = port(d, '--enhance', 'list'); shutil.rmtree(d, ignore_errors=True)
