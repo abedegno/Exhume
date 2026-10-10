@@ -34,15 +34,22 @@ MIN_TICKS = 8           # PORT_FRAME_TICKS
 # backwards. Held 400 ms, A or D turns the player about 45 degrees (measured, both games), and
 # the saved game faces about 45 degrees (north-east), so these face north, east, west and
 # south. Each heading's moves: (key, what, the move's angle from the facing, clockwise).
+# The check needs open floor around the mouse-look session's saved spot (about 200 units to the
+# north and east, more to the south and west, in both games): a move into a wall would fail it.
+# The keys are timed from setcheck's READY, when the saved game is loaded and ready (wall-clock,
+# as setcheck's stage runs are: an input script cannot wait for the first frame), so MOVECHECK_JOBS
+# stays low enough that a run keeps its timing.
+R0 = S.READY
 SLIDE_LEFT, SLIDE_RIGHT, BACK = ('z', 'slides left', -90), ('c', 'slides right', 90), ('x', 'walks backwards', 180)
 HEADINGS = (
     ('north-east (the saved game\'s)', [], 45, (SLIDE_LEFT, SLIDE_RIGHT, BACK)),
-    ('north', ['6000 down a', '6400 up a'], 0, (SLIDE_LEFT, SLIDE_RIGHT, BACK)),
-    ('east', ['6000 down d', '6400 up d'], 90, (SLIDE_LEFT, SLIDE_RIGHT, BACK)),
-    ('west', ['6000 down a', '7200 up a'], 270, (BACK,)),
-    ('south', ['6000 down d', '7200 up d'], 180, (BACK,)),
+    ('north', [f'{R0} down a', f'{R0 + 400} up a'], 0, (SLIDE_LEFT, SLIDE_RIGHT, BACK)),
+    ('east', [f'{R0} down d', f'{R0 + 400} up d'], 90, (SLIDE_LEFT, SLIDE_RIGHT, BACK)),
+    ('west', [f'{R0} down a', f'{R0 + 1200} up a'], 270, (BACK,)),
+    ('south', [f'{R0} down d', f'{R0 + 1200} up d'], 180, (BACK,)),
 )
-MOVE_AT, MOVE_FOR, EXIT_AFTER = 7600, 500, 9000
+MOVE_AT, MOVE_FOR, EXIT_AFTER = R0 + 1600, 500, R0 + 3000
+STILL_LATER = 2000      # the second keyless run ends this much later
 
 LINE = re.compile(r'motion: x (-?\d+) y (-?\d+) z (-?\d+) facing (\d+) heading (\d+) frames (\d+) ticks (\d+) short (\d+)')
 
@@ -65,11 +72,11 @@ def off(a, b):
     return abs((a - b + 180) % 360 - 180)
 
 
-def run(work, name, lines):
+def run(work, name, lines, after=EXIT_AFTER):
     """One run from the saved game, in a directory of its own (each run makes its own view of the
     game's folder there)."""
     d = os.path.join(work, 'run-' + name); os.makedirs(d)
-    h, out = S.stage_run(d, name, lines, EXIT_AFTER)
+    h, out = S.stage_run(d, name, lines, after)
     shutil.rmtree(d, ignore_errors=True)
     return name, readout(out), out
 
@@ -83,7 +90,7 @@ def main(argv):
     work = tempfile.mkdtemp(prefix='movecheck-')
     try:
         S.use_stage(work)
-        jobs = [('still', [])]
+        jobs = [('still', []), ('still-later', [], EXIT_AFTER + STILL_LATER)]
         for hname, turn, _, moves in HEADINGS:
             for key, _, _ in moves:
                 jobs.append((f'{hname.split()[0]}-{key}', turn + [f'{MOVE_AT} down {key}', f'{MOVE_AT + MOVE_FOR} up {key}']))
@@ -95,7 +102,11 @@ def main(argv):
         check(f'the port reports the player\'s position ({R.RC.port_name.upper()}_POS_LOG)', still, out[-400:])
         if not still: return 1
         x0, y0, f0 = still['x'], still['y'], still['facing'] * 360 / 65536
-        check('standing still: the player stays put', (still['x'], still['y']) == (x0, y0))
+        # the reference for every move: a keyless run that ends later must be where this one is
+        later = res['still-later'][0]
+        check(f'standing still: the player stays put ({STILL_LATER} ms later, still at the same place and facing)',
+              later and (later['x'], later['y'], later['facing']) == (x0, y0, still['facing']),
+              f'{(x0, y0, still["facing"])}, then {later and (later["x"], later["y"], later["facing"])}')
         check('the saved game faces about north-east', off(f0, 45) <= 20, f'{f0:.0f} degrees')
         for hname, _, want, moves in HEADINGS:
             for key, what, turn in moves:
@@ -112,12 +123,13 @@ def main(argv):
                       off(facing, want) <= 20 and dist >= MIN_MOVE and angle <= MAX_ANGLE,
                       f'moved ({dx}, {dy}), {dist:.0f} at {angle:.0f} degrees off' +
                       ('' if off(facing, want) <= 20 else f'; the turn missed {want} degrees'))
-        moved = [res[n][0] for n in res if n != 'still' and res[n][0]]
+        moved = [res[n][0] for n in res if not n.startswith('still') and res[n][0]]
         frames = sum(r['frames'] for r in moved); ticks = sum(r['ticks'] for r in moved); short = sum(r['short'] for r in moved)
+        gaps = sum(max(r['frames'] - 1, 0) for r in moved)      # a run's ticks span its frames less one
         check(f'the 3D frames come {MIN_TICKS} or more ticks apart (at most {SHORT_FRAMES:.0%} early, '
               f'{MIN_TICKS} ticks a frame on average)',
-              frames and short <= SHORT_FRAMES * frames and ticks >= MIN_TICKS * frames,
-              f'{short} of {frames} frames early, {ticks / max(frames, 1):.1f} ticks a frame')
+              gaps and short <= SHORT_FRAMES * gaps and ticks >= MIN_TICKS * gaps,
+              f'{short} of {gaps} frames early, {ticks / max(gaps, 1):.1f} ticks a frame')
     finally:
         shutil.rmtree(work, ignore_errors=True)
     n = len(E.results); bad = E.results.count(False)
