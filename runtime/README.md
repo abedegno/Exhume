@@ -1,6 +1,6 @@
 # Runtime: the porting harness
 
-The C that a native port of a matched decompilation builds against: the portability layer, the platform layer and its SDL3 backend, the emulated PC hardware (VGA, EMS memory, PIT), Borland's C library where the host's differs, a library for Miles AIL 2 games and its drivers, the x86 machine that translated assembly runs on, record and replay, and the black box. It was written for UW2Decomp's port and made independent of UW2; nothing here holds game data or code from a game.
+The C that a native port of a matched decompilation builds against: the portability layer, the platform layer and its SDL3 backend, the emulated PC hardware (VGA, EMS memory, PIT), Borland's C library where the host's differs, a library for Miles AIL 2 games and its drivers, the x86 machine that translated assembly runs on, record and replay, and the black box. It was written for UW2's port (in UW2Decomp, now Underworld Exhumed's `uw2/`) and made independent of UW2; UW1's port builds on it too; nothing here holds game data or code from a game.
 
 It is a library a project builds against in place, never a copy. Exhume's tools compile it where it is (`[port] runtime`, default this checkout's `runtime/`; docs/config.md), and a project with its own build scripts finds the checkout the same way (Underworld Exhumed's tools/exhume.py in each game: `$EXHUME`, else `../exhume`, the repository's submodule, else `.exhume` in the project, else `~/Exhume`) and pins the commit it was proved with, best as a git submodule (docs/port.md). The project keeps only what is its own: a few bindings headers that say what is the game's, and the C written from or for its game. docs/port.md, "The runtime", has the build arrangement, and each file's first comment says what it is for.
 
@@ -24,7 +24,7 @@ A project that does not need a part leaves it out with `[port] runtime_exclude` 
 
 The runtime's headers include the project's bindings by fixed names, found on the include path ahead of the runtime's own directories. A project writes these, and nothing else of the runtime's:
 
-| File (where) | Included by | What it says (UW2's, in UW2Decomp) |
+| File (where) | Included by | What it says (UW2's, in Underworld Exhumed's uw2/) |
 | --- | --- | --- |
 | `hookgame.h` (the shared headers, an 8.3 name) | `include/portable.h`, first | the original tokens of the hooks it uses: `ORIG_GAME_TIME()`, `ORIG_KEY()`, `ORIG_MOUSE()`, `ORIG_MBUTTONS()`, `ORIG_JOY_READ()`, `ORIG_JOY_BUTTONS()`, `SLAVE_TIMER_HZ`, `RENDER_TAG_CONTEXT`; may be empty (src/include/hookgame.h) |
 | `rpgame.h` (the shared headers) | `replay/replay.c` | what the hooks read and what the dumps hold: `RP_MAGIC`, `RP_CLOCK`, the key state, the mouse and joystick, `RP_SHUTDOWN()`, the clock's tick and PIT divisor, C0's null checksum, `RP_LEVEL`, `RP_NSECTIONS` and `RP_DUMP` (replay.c's first comment; src/include/rpgame.h) |

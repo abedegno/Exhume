@@ -5,13 +5,13 @@ description: Use when a byte-matched, exactly linked DOS decompilation with a wo
 
 # Port and verify
 
-Paths are relative to the Exhume checkout. docs/port.md is the method and the reasons; runtime/ is the porting harness every port builds against in place, never copied (runtime/README.md); examples/uw2/ has UW2's configuration, and UW2Decomp's src/port and src/include have UW2's bindings, the worked example. UW2Decomp went from Milestone 1 to Milestone 6a in about 21 hours this way (docs/case-study-uw2.md, "The port").
+Paths are relative to the Exhume checkout. docs/port.md is the method and the reasons; runtime/ is the porting harness every port builds against in place, never copied (runtime/README.md); examples/uw2/ has UW2's configuration, and Underworld Exhumed's uw2/src/port and uw2/src/include have UW2's bindings, the worked example. UW2's port (then UW2Decomp) went from Milestone 1 to Milestone 6a in about 21 hours this way (docs/case-study-uw2.md, "The port").
 
 ## Before you start
 
 - The modding build works and its layout audit is done (skills/modding-build), and the readability pass has given you the gate (skills/readability-pass): every change to a shared source must pass `tools/gate.py check`, so the DOS bytes never change.
 - One tree, two builds. Port-only C goes in the port's directory, never in a game source; a shared-source change is a macro or type that is the original tokens under Turbo C. Add the port's directory to `[project] exclude`.
-- The runtime is a library. Never copy a runtime file into the project: the tools compile runtime/ where it is (`[port] runtime`; docs/port.md, "The runtime"), and the project writes only its bindings and its game's own C. A project with build scripts of its own finds the checkout as UW2Decomp's tools/exhume.py does and pins the Exhume commit it was proved with (UW2Decomp's tools/exhume-ref), which CI checks out. A fix you find in the runtime goes into Exhume, proved on UW2 (examples/uw2/prove-port.sh) before the project moves its pin.
+- The runtime is a library. Never copy a runtime file into the project: the tools compile runtime/ where it is (`[port] runtime`; docs/port.md, "The runtime"), and the project writes only its bindings and its game's own C. A project with build scripts of its own finds the checkout as Underworld Exhumed's uw2/tools/exhume.py does and pins the Exhume commit it was proved with: best as a git submodule, as Underworld Exhumed does (`exhume/`), whose recorded commit CI checks out. A fix you find in the runtime goes into Exhume, proved on UW2 (examples/uw2/prove-port.sh) before the project moves its pin.
 
 ## Steps
 

@@ -13,7 +13,7 @@ source without disturbing the matched build).
 
 --add (with --mod only) links one more resident module that no source in the matched build has,
 after the last resident code module: the replay DOS build adds the record and replay code
-(UW2Decomp's src/replay/REPLAY.C, tools/replay.py's [replay] link) this way.
+(Exhume's runtime/replay/replay.c, tools/replay.py's [replay] link) this way.
 
 --mod is the modding build (docs/link.md, "The modding build"): sources may change by any
 size. The layout comes from the last exact run (<build>/LINK/base, written by extract.py when

@@ -11,7 +11,7 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 - `src`, `targets`, `symbols`, `matched`, `map`: sources, target tables, the symbol map, the list of matched segments, the map directory. Sources may sit in subdirectories of `src` (one per subsystem, say); every tool finds them through tools/sources.py, by stem (the file name without extension, upper case, unique across the tree) or by DOS segment.
 - `exclude`: directories under `src` (relative to it) that hold no sources for the DOS build, such as a host port's own code; never searched for sources (UW2: `port`).
 - `include`: the shared headers (default `src/include`), never searched for sources. tools/build.py stages them in C:\ beside each source, and tools/srcdeps.py hashes a source together with the headers it includes, so the gate and the modding build recompile every includer of a changed header. The runtime's `include/` (portable.h; `[port] runtime`) is staged and hashed the same way, after these, so a project header of the same name wins.
-- `build`: where objects (`build/STEM/STEM.OBJ`, with `BUILD.LOG`), the link and the queue go. It may be outside root; Exhume's own proof sets it to `~/Exhume/build/uw2` so the UW2Decomp checkout is never written.
+- `build`: where objects (`build/STEM/STEM.OBJ`, with `BUILD.LOG`), the link and the queue go. It may be outside root; Exhume's own proof sets it to `~/Exhume/build/uw2` so the Underworld Exhumed checkout is never written.
 - `queue`: the build queue directory, relative to build.
 
 ## [binary]

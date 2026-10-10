@@ -1,6 +1,6 @@
 # Case study: Ultima Underworld II
 
-Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026; the byte-identical link and the port are from 3 October.
+Ultima Underworld II: Labyrinth of Worlds (Looking Glass Technologies for Origin Systems, DOS, 1993) was the first program decompiled with this method, in the repository UW2Decomp. Exhume's tools were extracted from it. This page records what was done, the numbers, and what each stage found. Unless a number says otherwise it comes from UW2Decomp's commit history and README as of 2 October 2026; the byte-identical link and the port are from 3 October. UW2Decomp has since become the `uw2/` folder of [Underworld Exhumed](https://github.com/abedegno/underworld-exhumed), beside UW1, with its history: the commits this page cites are there, and the page keeps the name the work was done under.
 
 ## The target
 

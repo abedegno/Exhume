@@ -3,7 +3,7 @@ translates (seg004, the 3D renderer; the seg003 graphics library modules it call
 registers; IMATH from seg021), the code segments and the routines the port has as hand-written C
 instead (docs/port.md, "The static recompiler"). The overrides, C for single instructions, are
 UW2Decomp's own (exhume.toml's [asm2c] overrides: its tools/asm2c.py).
-Paths are relative to the UW2Decomp checkout. With this spec, Exhume's asm2c.py --check finds
+Paths are relative to uw2/ in the Underworld Exhumed checkout. With this spec, Exhume's asm2c.py --check finds
 UW2Decomp's committed translations up to date, and regenerating them reproduces every file
 (examples/uw2/port/README.md).
 """

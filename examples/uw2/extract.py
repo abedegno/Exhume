@@ -668,7 +668,7 @@ def labels_at(m, f, para):
     return out
 
 # --mod: near addresses held as plain words in the extracted bytes. There are no relocations
-# in them and no near pointers into DGROUP (UW2Decomp's docs/LAYOUT.md); what they do hold is
+# in them and no near pointers into DGROUP (Underworld Exhumed's uw2/docs/LAYOUT.md); what they do hold is
 # near code offsets, tables of handlers in seg003 and seg004 that the assembly jumps through
 # (`jmp word ptr [bx+24F4h]` with DS on seg052_519C). Each one the IDA listing types, and the
 # rest of its table, becomes `dw offset NAME` (tools/modding.py), so that it follows that code

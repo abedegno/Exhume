@@ -1,6 +1,6 @@
 #!/bin/sh
 # Prove Exhume's port tools and runtime on UW2Decomp's native port, writing nothing into the
-# UW2Decomp checkout: everything happens in snapshots of its HEAD under $OUT (default
+# Underworld Exhumed checkout: everything happens in snapshots of its HEAD under $OUT (default
 # ~/Exhume/build/uw2-port), made with git archive, with its gitignored toolchain (TC, TASM)
 # copied in and its fetched or built helpers (fmtowns, .venv, node_modules, tools/emu2,
 # tools/libs, tools/nuked-opl3) linked. UW2Decomp builds against this checkout's runtime,
@@ -65,7 +65,7 @@ PREFIX=$(git -C "$UW" rev-parse --show-prefix)
 TOP=$(git -C "$UW" rev-parse --show-toplevel)
 echo "UW2Decomp $(git -C "$UW" log -1 --format='%h %s' "$REF")"
 
-# a snapshot of UW2Decomp's HEAD at $1, with the toolchain copied (tcc.mjs and dosrun copy their
+# a snapshot of uw2/ at HEAD, at $1, with the toolchain copied (tcc.mjs and dosrun copy their
 # stage with cpSync, which copies a symbolic link as a link) and the helpers linked
 snapshot() {   # DIR [nopatch|REF]
   d=$1; at=$REF

@@ -1,5 +1,5 @@
 # Exhume project configuration for Ultima Underworld II (UW2.EXE, DOS, 1993), the first
-# case study. It points at the UW2Decomp repository, which holds the sources, target tables,
+# case study. It points at `uw2/` in Underworld Exhumed (formerly the UW2Decomp repository), which holds the sources, target tables,
 # map and symbols. Everything UW2-specific that the generic tools need is here.
 #
 # Paths are relative to [project] root unless absolute. "~" and ${VAR} / ${VAR:-default}
@@ -90,7 +90,7 @@ boot = ["w:5000", "s:title", "w:15000", "s:intro", "k:Escape", "w:3000", "k:Esca
 
 [port]
 # The native port (docs/port.md): tools/portcheck.py, portbuild.py, portstubs.py,
-# layoutcheck.py, intaudit.py. UW2Decomp's src/port holds UW2's bindings for Exhume's runtime
+# layoutcheck.py, intaudit.py. Underworld Exhumed's uw2/src/port holds UW2's bindings for Exhume's runtime
 # (portgame.h, asmgame.h, ailgame.h), the C that replaces UW2's assembly modules and DOS-only
 # C, the translated modules and the stubs; the runtime (this checkout's runtime/, compiled in
 # place) is the rest, its replay/replay.c the record and replay code, and src/include has
@@ -161,7 +161,7 @@ main = "sys/main.c"                    # the port file fuzzhost replaces
 
 [asm2c]
 # tools/asm2c.py: UW2's 26 translated modules and their hand-written ranges; the overrides (C for
-# single instructions of UW2's) are UW2Decomp's own, in its tools/asm2c.py
+# single instructions of UW2's) are the project's own, in its tools/asm2c.py
 spec = "${EXHUME}/examples/uw2/port/asm2c_spec.py"
 overrides = "tools/asm2c.py"
 
@@ -171,8 +171,8 @@ overrides = "tools/asm2c.py"
 # SB Pro 2, MT-32
 drivers = { 1 = "SOUND/DM02.ADV", 2 = "SOUND/DM03.ADV", 3 = "SOUND/DM04.ADV", 4 = "SOUND/DM06.ADV", 5 = "SOUND/DM07.ADV", 6 = "SOUND/DM05.ADV" }
 # the project's own C for the sound library: the FM drivers' time-variant effects (Origin's
-# ALE.INC, translated from DM03.ADV in UW2Decomp), which plug into runtime/port/sound/yamaha.c's
-# struct AilFmExt as uw2_tvfx (UW2Decomp's src/port/ailgame.h names it as AIL_FM_EXT). Exhume
+# ALE.INC, translated from DM03.ADV in uw2/), which plug into runtime/port/sound/yamaha.c's
+# struct AilFmExt as uw2_tvfx (Underworld Exhumed's uw2/src/port/ailgame.h names it as AIL_FM_EXT). Exhume
 # holds no game code.
 extensions = ["src/port/sound/tvfx.c"]
 
@@ -190,7 +190,7 @@ hole_mark = 173
 # The record and replay harness (docs/port.md, "Verifying a port"): tools/replay.py,
 # golden.py, replaydos.mjs. Sessions are tests/replay/NAME.rec (with NAME.cfg for a sound
 # card); goldens tests/replay/golden/NAME. The record and replay code is the runtime's
-# replay/replay.c, compiled where it is, with UW2Decomp's src/include/rpgame.h.
+# replay/replay.c, compiled where it is, with Underworld Exhumed's uw2/src/include/rpgame.h.
 sessions = "tests/replay"
 golden = "tests/replay/golden"
 magic = "UW2R"

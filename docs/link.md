@@ -68,7 +68,7 @@ In extract.py:
 
 - For `--mod`: the IDA listing's `dw offset` lines and their table runs (seg052_519C's model opcode table at 4FAF:24F4, 110 named handlers and one unnamed entry), and SEG046 left out of the changed sources.
 
-In exhume.toml, for addrscan: far data as segment table entries 50 to 78, seg046 linked from OVERLAY.LIB, and seg003's dispatcher, which takes a routine's offset in BP and calls it with DS = ES = SS = seg_370D. UW2Decomp's docs/LAYOUT.md is the audit of UW2: the four DGROUP addresses its sources wrote as numbers and every scan line read by hand.
+In exhume.toml, for addrscan: far data as segment table entries 50 to 78, seg046 linked from OVERLAY.LIB, and seg003's dispatcher, which takes a routine's offset in BP and calls it with DS = ES = SS = seg_370D. Underworld Exhumed's uw2/docs/LAYOUT.md is the audit of UW2: the four DGROUP addresses its sources wrote as numbers and every scan line read by hand.
 
 In link.py:
 

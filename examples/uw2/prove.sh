@@ -1,6 +1,6 @@
 #!/bin/sh
 # Prove Exhume reproduces UW2Decomp's results with its own tools, writing nothing into the
-# UW2Decomp checkout: every output goes to $OUT (default ~/Exhume/build/uw2).
+# Underworld Exhumed checkout: every output goes to $OUT (default ~/Exhume/build/uw2).
 #
 #   examples/uw2/prove.sh [--map] [--no-boot]
 #

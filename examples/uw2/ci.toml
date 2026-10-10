@@ -1,4 +1,5 @@
-# UW2Decomp's values for tools/citemplates.py ([ci] vars in examples/uw2/exhume.toml): with
+# UW2Decomp's values (before it became Underworld Exhumed's uw2/, whose CI comes from its own
+# ci.toml with Exhume as a submodule) for tools/citemplates.py ([ci] vars in examples/uw2/exhume.toml): with
 # them the templates give UW2Decomp's own workflows and actions, byte for byte
 # (examples/uw2/prove-port.sh ci). UW2Decomp keeps its own copies of the setup scripts in
 # tools/; the jobs that build check out Exhume into .exhume, at the commit UW2Decomp's

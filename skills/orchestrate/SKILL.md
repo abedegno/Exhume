@@ -26,7 +26,7 @@ Paths are relative to the Exhume checkout. You (the orchestrator) prepare target
 ## Session limits and checkpoints
 
 - A usage limit stops every running agent at once, wherever it is. Plan for it: give each agent a unit of work that can be committed on its own, and commit a checkpoint before starting the next large step (UW2Decomp committed its port's Milestone 5 as a checkpoint, c58e5b7, ninety minutes before it was done, 50459d1). After a limit, resume the agents that stopped (SendMessage keeps their context) rather than restarting them, and check what each left on disk first: a half-applied edit is worse than none.
-- Write the plan and the state of the work into the repository (a design page with milestones and their exit tests, like UW2Decomp's docs/PORT.md), not only into the conversation, so a fresh session can pick it up.
+- Write the plan and the state of the work into the repository (a design page with milestones and their exit tests, like Underworld Exhumed's uw2/docs/PORT.md), not only into the conversation, so a fresh session can pick it up.
 - Keep one agent doing the gate and the commits; a limit hit mid-commit by several agents leaves a tree no one can explain.
 
 ## The DOS

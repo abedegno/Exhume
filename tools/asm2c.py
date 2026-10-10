@@ -15,7 +15,7 @@ holding the segment's bytes, or None)}; OVERRIDES, {(module, address): (C, why)}
 [declaration lines]} for the C names overrides use. The overrides are C for the game's own
 instructions, so a project whose spec is published apart from its decompilation keeps them in
 its own repository and names that file as [asm2c] overrides (a Python file with OVERRIDES and,
-optionally, PATCH_OVERRIDDEN, merged over the spec's; UW2: UW2Decomp's tools/asm2c.py).
+optionally, PATCH_OVERRIDDEN, merged over the spec's; UW2: Underworld Exhumed's uw2/tools/asm2c.py).
 
 Each module is read from its matched .ASM source and from the bytes the gate proves that source
 assembles to (the user's EXE, at the module's place in its target table, as tools/match.py reads
