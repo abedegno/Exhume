@@ -171,6 +171,13 @@ uint8_t port_inb(unsigned port);
 void pit_start(void);
 uint32_t pit_bios_ticks(void);                 /* 18.2 Hz ticks since start, as 0040:006C */
 
+/* Frame pacing (sys/pace.c): the game's thread, before it draws a 3D frame, waits until
+   PORT_FRAME_TICKS ticks of the game's clock (the 256 Hz *Time, read through CLOCK) have passed
+   since the last, so that the game's per-frame physics rounds no slow move away; never under
+   replay. */
+#define PORT_FRAME_TICKS 8
+void port_pace_frame(const volatile uint32_t *clock);
+
 /* The keyboard controller (sys/kbdint.c): a byte from the platform, as from port 60h. */
 void kbd_byte(uint8_t scancode);
 void kbd_tick_ms(uint32_t ms);                 /* the typematic repeat, from the PIT thread */

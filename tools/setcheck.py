@@ -178,14 +178,16 @@ def held():
     try:
         use_stage(work)
         T, r = READY + 4000, READY
-        # S walks forward in the original's keys (W is not bound)
-        walked = shot_of(work, 'walk', [f'{r} down s', f'{r + 500} up s'], T)
-        through = shot_of(work, 'through', [f'{r} down s', f'{r + 500} key f11', f'{r + 1500} key f11', f'{r + 2000} up s'], T)
-        stuck = shot_of(work, 'stuck', [f'{r} down s'], T)
+        # X walks backwards in the original's keys: away from the wall the saved game faces, which a
+        # forward walk (S) reaches within half a second once the frames are paced (both games), so
+        # that held on and let go would look the same
+        walked = shot_of(work, 'walk', [f'{r} down x', f'{r + 500} up x'], T)
+        through = shot_of(work, 'through', [f'{r} down x', f'{r + 500} key f11', f'{r + 1500} key f11', f'{r + 2000} up x'], T)
+        stuck = shot_of(work, 'stuck', [f'{r} down x'], T)
         d, s = differ(through, walked), differ(stuck, walked)
-        check('held: S held across the screen stops (closer to the view let go after half a second than to the held-on view)',
+        check('held: X held across the screen stops (closer to the view let go after half a second than to the held-on view)',
               d < s, f'vs let go {d:.3f}, vs held on {s:.3f}')
-        check('held: the check can tell (S held on to the end differs)', s > 0.15, f'{s:.3f}')
+        check('held: the check can tell (X held on to the end differs)', s > 0.15, f'{s:.3f}')
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

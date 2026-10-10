@@ -37,7 +37,8 @@ DEFAULT = {
              ['fuzzing, quick', T + 'fuzzasm.py' + C, 'port build'],
              ['sessions against the goldens', T + 'replay.py' + C + ' verify all', 'port build'],
              ['enhancements', T + 'enhcheck.py' + C + ' all', 'port build'],
-             ['settings screen', T + 'setcheck.py' + C + ' all', 'port build']],
+             ['settings screen', T + 'setcheck.py' + C + ' all', 'port build'],
+             ['player movement', T + 'movecheck.py' + C, 'port build']],
     'full': [['the gate', T + 'gate.py' + C + ' check'],
              ['port build', T + 'portbuild.py' + C],
              ['port-debug build', T + 'portbuild.py' + C + ' --debug'],
@@ -48,6 +49,7 @@ DEFAULT = {
              ['fuzzing, deep', T + 'fuzzasm.py' + C + ' --deep', 'port build'],
              ['enhancements', T + 'enhcheck.py' + C + ' all', 'port build'],
              ['settings screen', T + 'setcheck.py' + C + ' all', 'port build'],
+             ['player movement', T + 'movecheck.py' + C, 'port build'],
              ['coverage report', T + 'coverage.py' + C, 'port build']],
 }
 
