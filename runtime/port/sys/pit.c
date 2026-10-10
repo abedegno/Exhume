@@ -81,8 +81,29 @@ void port_pause(int on)
 
 static _Atomic int parked;                   /* the game's thread is waiting in port_pause_wait */
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* tools/webcheck.mjs's stop case: the game's thread made to stop at its next clock read as a
+   fault would stop it, so that the page can be seen to come back from it: 1 a fatal error
+   (port_fatal), 2 a halt (port_halt), 3 a trap (WebAssembly's unreachable). Called on the page's
+   thread; nothing calls it but the check. */
+static _Atomic int test_stop;
+EMSCRIPTEN_KEEPALIVE void web_test_stop(int how)
+{
+    atomic_store(&test_stop, how);
+}
+#endif
+
 void port_pause_wait(void)
 {
+#ifdef __EMSCRIPTEN__
+    switch (atomic_exchange(&test_stop, 0)) {
+    case 1: port_fatal("web_test_stop: a fatal error, for the page's check");
+    case 2: port_halt("web_test_stop: a halt, for the page's check");
+    case 3: __builtin_trap();
+    default: break;
+    }
+#endif
     if (!atomic_load(&paused)) return;
     atomic_store(&parked, 1);
     while (atomic_load(&paused)) plat_sleep_ns(10000000);

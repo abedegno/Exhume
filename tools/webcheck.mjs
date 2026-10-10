@@ -7,16 +7,25 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'applic
 const server = http.createServer((q, r) => {
   const f = path.join(site, decodeURIComponent(q.url.split('?')[0]).replace(/\/$/, '/index.html'));
   if (!f.startsWith(site) || !fs.existsSync(f)) { r.writeHead(404); return r.end(); }
+  if (stallData && path.extname(f) === '.data') return stall(fs.readFileSync(f), r);
   r.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream' });
-  if (slowData && path.extname(f) === '.data') return trickle(fs.readFileSync(f), r);
+  if (slowData && path.extname(f) === '.data') return trickle(fs.readFileSync(f), r, slowData);
   fs.createReadStream(f).pipe(r);
 }).listen(0);
 // a game's .data served at about 6 MB/s while slowData is set (the controls case), so its download
 // takes seconds and the page's progress can be seen to move, however fast the machine
-let slowData = false;
-async function trickle(buf, r) {
-  for (let i = 0; i < buf.length; i += 256 << 10) { r.write(buf.subarray(i, i + (256 << 10))); await new Promise(t => setTimeout(t, 40)); }
+// (slowData the milliseconds between its 256 KB pieces: 40, about 6 MB/s)
+let slowData = 0;
+async function trickle(buf, r, gap) {
+  for (let i = 0; i < buf.length; i += 256 << 10) { r.write(buf.subarray(i, i + (256 << 10))); await new Promise(t => setTimeout(t, gap)); }
   r.end();
+}
+// a .data that stops half way and never ends, while stallData is set (the stall case); the
+// responses are ended when the case is done
+let stallData = false; const stuck = [];
+function stall(buf, r) {
+  r.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': buf.length });
+  r.write(buf.subarray(0, buf.length >> 1)); stuck.push(r);
 }
 const url = `http://localhost:${server.address().port}/`;
 let fails = 0; const check = (ok, what, more = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ' ' + more}`); if (!ok) fails++; };
@@ -85,11 +94,11 @@ const cases = {
     // every text the progress line shows, from before the click
     await p.evaluate(() => { const e = document.getElementById('progress'); window.__progress = [];
       new MutationObserver(() => { if (window.__progress.at(-1) !== e.textContent) window.__progress.push(e.textContent); }).observe(e, { childList: true, characterData: true, subtree: true }); });
-    slowData = true;
+    slowData = 40;
     try {
       await p.click('#play-uw1');
       await p.waitForFunction(() => !document.getElementById('game').hidden || !!document.getElementById('status').textContent, { timeout: 60000 });
-    } finally { slowData = false; }
+    } finally { slowData = 0; }
     // the download's own reports: megabytes and a percentage strictly between 0 and 100, at least three of them
     const shown = await p.evaluate(() => window.__progress);
     const mid = new Set(shown.map(t => /MB \((\d+)%\)/.exec(t)).filter(m => m && +m[1] > 0 && +m[1] < 100).map(m => +m[1]));
@@ -176,6 +185,64 @@ const cases = {
       walk(h); return out; }, home);
     check(heads.some(([, n, c]) => n > 12 && c === 'ff ff ff ff'), 'saves: the ended session\'s recording was closed and kept', JSON.stringify(heads));
     await ctx.close();
+  },
+  async refused() {  // a browser that refuses the service worker (cookies and site data blocked): a message and no game to click
+    const ctx = await browser.createBrowserContext(); const p = await ctx.newPage();
+    await p.evaluateOnNewDocument(() => { ServiceWorkerContainer.prototype.register = () => Promise.reject(new DOMException('blocked for the check', 'SecurityError')); });
+    await p.goto(url, { waitUntil: 'networkidle0' }); await new Promise(r => setTimeout(r, 1000));
+    const s = await p.evaluate(() => ({ isolated: window.crossOriginIsolated, status: document.getElementById('status').textContent,
+                                        disabled: [...document.querySelectorAll('#menu button')].every(b => b.disabled) }));
+    check(!s.isolated && /cannot run the game here/i.test(s.status) && /cookies/.test(s.status), 'refused: the page says why it cannot start, in plain words', JSON.stringify(s));
+    check(s.disabled, 'refused: the game buttons are disabled');
+    await p.evaluate(() => { window.startGame('uw1'); }); await new Promise(r => setTimeout(r, 2000));
+    const t = await p.evaluate(() => ({ menu: !document.getElementById('menu').hidden, status: document.getElementById('status').textContent }));
+    check(t.menu && /cannot run the game here/i.test(t.status), 'refused: a start says the same, without a technical error', JSON.stringify(t));
+    await ctx.close();
+  },
+  async stop() {  // a game that stops (a fatal error, a halt, a trap on the game's thread): the menu back with a message, not a frozen picture
+    // web_test_stop(how) (runtime/port/sys/pit.c): the game's thread stops at its next clock read
+    for (const [how, what, re] of [[1, 'a fatal error', /stopped: web_test_stop: a fatal error/], [2, 'a halt', /stopped: web_test_stop: a halt/], [3, 'a trap', /stopped: it failed/]]) {
+      const p = await page(); const log = []; p.on('console', m => log.push(m.text()));
+      await p.goto(url, { waitUntil: 'networkidle0' }); await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+      await p.click('#play-uw1');
+      let lit = 0; for (let i = 0; i < 90 && lit <= 10000; i++) { lit = await litPixels(p); if (lit <= 10000) await new Promise(r => setTimeout(r, 500)); }
+      const gone = p.waitForNavigation({ timeout: 30000, waitUntil: 'networkidle0' }).then(() => true).catch(() => false);
+      await p.evaluate(h => window.__exhumeModule._web_test_stop(h), how);
+      const reloaded = await gone;
+      const s = await p.evaluate(() => ({ menu: !document.getElementById('menu').hidden, status: document.getElementById('status').textContent }));
+      check(lit > 10000 && reloaded && s.menu && re.test(s.status), `stop: ${what} brings back the menu with a message`, JSON.stringify({ lit, reloaded, ...s }) + ' ' + log.slice(-4).join(' | '));
+      if (how !== 3) check(log.some(l => /web: game ended, flushing/.test(l)), `stop: ${what} writes out the game's files first`, log.filter(l => /^web:/.test(l)).join(' | '));
+      await p.close();
+    }
+  },
+  async stall() {  // the load gives up only on a stall: a slow download that keeps moving goes on; one that stops brings the menu back
+    const ctx = await browser.createBrowserContext(); const p = await page(ctx); const log = []; p.on('console', m => log.push(m.text()));
+    await p.evaluateOnNewDocument(() => { window.__exhumeStallMs = 2000; });
+    await p.goto(url, { waitUntil: 'networkidle0' }); await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+    // a download that takes several times the stall limit (256 KB every 150 ms, about 1.7 MB/s) but never pauses for it
+    slowData = 150; const t0 = Date.now(); let took = 0;
+    try {
+      await p.click('#play-uw2');
+      await p.waitForFunction(() => !document.getElementById('game').hidden || !!document.getElementById('status').textContent, { timeout: 120000 });
+      took = Date.now() - t0;
+    } finally { slowData = 0; }
+    const s = await p.evaluate(() => ({ game: !document.getElementById('game').hidden, status: document.getElementById('status').textContent }));
+    check(s.game && took > 3 * 2000, `stall: a slow download that keeps moving is not cut off (${(took / 1000).toFixed(1)} s, limit 2 s without a byte)`, JSON.stringify(s));
+    await ctx.close();
+    // a download that stops half way: the menu, with the reason, on a fresh page
+    const ctx2 = await browser.createBrowserContext(); const q = await page(ctx2);
+    await q.evaluateOnNewDocument(() => { window.__exhumeStallMs = 2000; });
+    await q.goto(url, { waitUntil: 'networkidle0' }); await q.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
+    stallData = true;
+    try {
+      const gone = q.waitForNavigation({ timeout: 30000 }).then(() => true).catch(() => false);
+      await q.click('#play-uw1');
+      const reloaded = await gone;
+      await q.waitForSelector('#status', { timeout: 10000 });
+      const t = await q.evaluate(() => ({ menu: !document.getElementById('menu').hidden, status: document.getElementById('status').textContent }));
+      check(reloaded && t.menu && /download stopped/.test(t.status), 'stall: a download that stops brings the menu back, on a fresh page, with the reason', JSON.stringify({ reloaded, ...t }));
+    } finally { stallData = false; for (const r of stuck.splice(0)) r.destroy(); }
+    await ctx2.close();
   },
   async noworker() {  // no service worker: a message, not a blank page
     const ctx = await browser.createBrowserContext(); const p = await ctx.newPage();

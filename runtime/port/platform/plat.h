@@ -112,6 +112,15 @@ void plat_game_exit(int status) __attribute__((noreturn));
    visible (a stub the port reached, docs/port.md). Does not return. */
 void plat_game_park(void) __attribute__((noreturn));
 
+#ifdef __EMSCRIPTEN__
+/* The web build's stop for a fatal error or a halt (the port's port_fatal and port_halt): WHY is
+   kept for the page's message (the second argument of Module.onGameExit, web/page.js), then on
+   the game's thread plat_game_exit(status), so that the page's end runs as for a game that quit
+   (the files written out, the home copied, the menu back); on the page's thread, before the loop
+   (main's own checks), exit(status), with WHY in Module.stopWhy. Does not return. */
+void plat_game_stop(int status, const char *why) __attribute__((noreturn));
+#endif
+
 /* Captures the pointer (1) or lets it go (0), from the game's thread, for a mode that turns the
    view by the mouse (an enhancement's mouse-look): while captured the host's cursor is hidden
    and pointer events carry only motion (absolute 0). The event loop applies it; the pointer lock

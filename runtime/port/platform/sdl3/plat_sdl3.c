@@ -745,6 +745,7 @@ static int loop_end(void)
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <emscripten/threading.h>
 #include "port.h"
 /* The browser's loop: one pass a frame. The page keeps the home directory in the browser's
    storage (web/page.js, Module.syncHome): once a second, when the game has changed a file since
@@ -762,11 +763,24 @@ static int loop_end(void)
    The game stays paused to the end, so it writes nothing that would not be copied. (The
    desktop's main closes the recording after plat_run with the game's thread still running: the
    same race, left as it is there, where the process ends at once.) */
+static char stop_why[512];             /* plat_game_stop's reason, for the page */
+
 static void web_end(void)
 {
+    int st;
     emscripten_cancel_main_loop();
-    loop_end();
-    EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
+    st = loop_end();
+    EM_ASM({ if (Module.onGameExit) Module.onGameExit($0, UTF8ToString($1)); }, st, stop_why);
+}
+
+void plat_game_stop(int status, const char *why)
+{
+    snprintf(stop_why, sizeof stop_why, "%s", why ? why : "");
+    if (emscripten_is_main_runtime_thread()) {
+        EM_ASM({ Module.stopWhy = UTF8ToString($0); }, stop_why);
+        exit(status);
+    }
+    plat_game_exit(status);
 }
 
 static void web_write_out(void)

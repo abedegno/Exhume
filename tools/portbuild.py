@@ -308,8 +308,8 @@ def link_web(cc, objs, libs):
     name = os.path.basename(EXE)
     stem = re.sub(r'\.exe$', '', P.exe)
     page = [cc, '-o', EXE] + objs + libs + common + ['-lidbfs.js', '-sENVIRONMENT=web,worker', '-sMODULARIZE=1',
-            f'-sEXPORT_NAME={stem}', '-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain',
-            '-sINVOKE_RUN=0', '-sEXPORTED_FUNCTIONS=_main,_web_open_settings,_exhume_quit,_audio_underruns']
+            f'-sEXPORT_NAME={stem}', '-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain,UTF8ToString',
+            '-sINVOKE_RUN=0', '-sEXPORTED_FUNCTIONS=_main,_web_open_settings,_exhume_quit,_audio_underruns,_web_test_stop']
     nodeout = web_out('web-node'); os.makedirs(nodeout, exist_ok=True)
     node = [cc, '-o', os.path.join(nodeout, name)] + objs + libs + common + ['-sENVIRONMENT=node', '-sNODERAWFS=1']
     for cmd in (page, node):
