@@ -22,17 +22,98 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
     python3 tools/enhcheck.py [--config PATH] checks record  record looking's and keys' scripted
                                                             screens again (tests/replay/checks)
 
+    -j N    replays at once (default: one a core, up to 8, as replay.py verify)
+
+The groups of `all` run side by side, and within a group the replays that do not depend on each
+other; at most N replays run at once (each keeps a core busy), while the live runs (registry's
+and script's, which wait on the wall clock and use little of a core) run in their group's order
+alongside them. Each group's results are printed together, in the order above, with its time;
+at the end a table gives every group's time, its port runs and their time. The saved game the
+enhanced sessions start from (their stage_from session, replayed without enhancements) is made
+once a run and shared.
+
 Exit status 0 when every check passes."""
-import os, re, sys, json, struct, hashlib, tempfile, shutil, subprocess
+import os, re, sys, json, struct, hashlib, tempfile, shutil, subprocess, threading, time, atexit, traceback
+from concurrent.futures import ThreadPoolExecutor
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 import replay as R
 
 results = []
+JOBS = min(8, os.cpu_count() or 4)
+_slots = threading.BoundedSemaphore(JOBS)
+_tl = threading.local()             # out: the group's lines, held until it ends; group: its name; planning
+_lock = threading.Lock()
+STATS = {}                          # group: [port runs, their seconds]
+
+
+def say(line):
+    out = getattr(_tl, 'out', None)
+    if out is None: print(line, flush=True)
+    else: out.append(line)
 
 
 def check(name, ok, detail=''):
+    if getattr(_tl, 'planning', False): return      # keys' first pass, which only lists its shots
     results.append(bool(ok))
-    print(f"{'ok  ' if ok else 'FAIL'} {name}" + (f': {detail}' if detail != '' and not ok else ''))
+    say(f"{'ok  ' if ok else 'FAIL'} {name}" + (f': {detail}' if detail != '' and not ok else ''))
+
+
+def _note(dt):
+    with _lock:
+        s = STATS.setdefault(getattr(_tl, 'group', None) or '-', [0, 0.0])
+        s[0] += 1; s[1] += dt
+
+
+def replay_port(rec, out, extra=(), stage=None, env=None):
+    """R.run_port, quiet, waiting for one of the JOBS slots: a replay runs flat out on a core."""
+    with _slots:
+        t = time.time()
+        try:
+            return R.run_port(rec, out, list(extra), stage=stage, quiet=True, env=env)
+        finally:
+            _note(time.time() - t)
+
+
+def pmap(fn, items, serial=False):
+    """[fn(x) for x in items], each in a thread of its own (the replays among them wait for a
+    slot), in the items' order; serial: one after another (live runs, whose timing is the wall
+    clock's)."""
+    items = list(items)
+    if serial or len(items) < 2: return [fn(x) for x in items]
+    group = getattr(_tl, 'group', None)
+    def run(x):
+        _tl.group = group
+        return fn(x)
+    with ThreadPoolExecutor(max_workers=len(items)) as ex:
+        return list(ex.map(run, items))
+
+
+def run_groups(groups):
+    """Runs [(name, fn)] side by side, printing each group's lines (and its time) in the list's
+    order as soon as it and those before it have ended; then the table of times. An exception
+    in a group is a failed check of its own."""
+    def run(name, fn):
+        _tl.group, _tl.out = name, []
+        t = time.time()
+        try:
+            fn()
+        except BaseException:
+            check(f'{name}: ran to the end', False, traceback.format_exc()[-1500:])
+        return _tl.out, time.time() - t
+    t0, took = time.time(), {}
+    with ThreadPoolExecutor(max_workers=len(groups)) as ex:
+        futs = [(name, ex.submit(run, name, fn)) for name, fn in groups]
+        for name, f in futs:
+            lines, took[name] = f.result()
+            for l in lines: print(l)
+            n, s = STATS.get(name, [0, 0.0])
+            print(f'-- {name}: {took[name]:.1f} s ({n} port runs, {s:.1f} s of them)', flush=True)
+    print(f'enhcheck: times, {JOBS} replays at once (the groups overlap: each its own wall time; its port runs and their time)')
+    for name, _ in groups:
+        n, s = STATS.get(name, [0, 0.0])
+        print(f'  {name:13s} {took[name]:7.1f} s {n:5d} runs {s:7.1f} s')
+    tot = sum(v[1] for v in STATS.values())
+    print(f'  {"all":13s} {time.time() - t0:7.1f} s {sum(v[0] for v in STATS.values()):5d} runs {tot:7.1f} s', flush=True)
 
 
 def fake_recording(path, version, names=None):
@@ -81,7 +162,9 @@ def port(home, *args, hidden=True, exit_after=1500):
     env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')   # dummy: a player's run gets a window
     cmd = [R.port_exe(), R.RC.port_data_flag, R.DATA, R.RC.port_home_flag, home, '--no-recording',
            '--exit-after', str(exit_after)] + (['--hidden'] if hidden else []) + list(args)
+    t = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=env, timeout=180)
+    _note(time.time() - t)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -181,7 +264,7 @@ def run_checkpoints(rec, extra=(), stage=None):
     import golden as G
     d = tempfile.mkdtemp(prefix='enhcheck-')
     try:
-        R.run_port(rec, d, list(extra), stage=stage, quiet=True)
+        replay_port(rec, d, list(extra), stage=stage)
         return [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -201,7 +284,7 @@ def presentation():
     import golden as G
     flags = port_flags('presentation')
     if not flags:
-        print('presentation: the port has no presentation enhancement yet; nothing to replay')
+        say('presentation: the port has no presentation enhancement yet; nothing to replay')
         check('presentation: the list was read', port_flags('timing') != [], 'no enhancements listed at all')
         return
     sessions = sorted(f[:-4] for f in os.listdir(R.RC.sessions) if f.endswith('.rec'))
@@ -211,6 +294,8 @@ def presentation():
     # every presentation enhancement at once: each session replayed once with all of them, and
     # only a session that then differs from DOS replayed again with each alone, to name the one
     # (they change different things, so one undoing another's change is not a worry)
+    # (the sessions side by side: first those that start from nothing, then those staged from
+    # them; the replays of each flag alone, for the sessions that differ, side by side after)
     work = tempfile.mkdtemp(prefix='enhcheck-')
     try:
         def replay(name, flag, sub):
@@ -220,18 +305,24 @@ def presentation():
                 sd = os.path.join(work, 'all', G.STAGE_FROM[name])
                 stage = os.path.join(work, sub, name + '-stage'); os.makedirs(stage)
                 for x in G.stage_dirs(sd): shutil.copytree(os.path.join(sd, x), os.path.join(stage, x))
-            R.run_port(G.rec_of(name), d, ['--enhance', flag], stage=stage, quiet=True)
+            replay_port(G.rec_of(name), d, ['--enhance', flag], stage=stage)
             return [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
         every = ','.join(flags)
+        goldens = {name: G.load_golden(name) for name in order}
+        order = [n for n in order if goldens[n]]
+        diffs = {}
+        for batch in ([n for n in order if n not in G.STAGE_FROM], [n for n in order if n in G.STAGE_FROM]):
+            for name, got in zip(batch, pmap(lambda n: replay(n, every, 'all'), batch)):
+                diffs[name] = state_diff(goldens[name]['checkpoints'], got)
+        alone = [(name, flag) for name in order if diffs[name] for flag in flags]
+        ones = dict(zip(alone, pmap(lambda nf: state_diff(goldens[nf[0]]['checkpoints'], replay(nf[0], nf[1], nf[1])), alone)))
         for name in order:
-            g = G.load_golden(name)
-            if not g: continue
-            diff = state_diff(g['checkpoints'], replay(name, every, 'all'))
+            diff = diffs[name]
             if not diff:
                 check(f"{every}: {name} keeps DOS's game state", True, '')
                 continue
             for flag in flags:
-                one = state_diff(g['checkpoints'], replay(name, flag, flag))
+                one = ones[(name, flag)]
                 check(f"{flag}: {name} keeps DOS's game state", not one, one[:3])
             check(f"{every} together: {name} keeps DOS's game state", False, diff[:3])
     finally:
@@ -241,18 +332,40 @@ def presentation():
 def enh_dir(name): return os.path.join(R.RC.sessions, 'enhanced', name)
 
 
-def stage_of(name, work):
+_stages, _stage_locks, _stage_top = {}, {}, []
+
+
+def stage_of(name, work=None):
     """The saved game an enhanced session starts from: its stage_from file names a session,
-    which is replayed (no enhancements) and its saved game copied into work/stage. None without."""
+    which is replayed (no enhancements) and its saved game copied into a directory of its own.
+    None without. Each source session is replayed once a run, however many ask for it (all of
+    them `items`: eight replays before); the directory is only read (a replay copies it into its
+    home) and is removed when the process ends. With work (setcheck.py's), a copy of it is made
+    in work/stage, and that is returned."""
+    st = _stage(name)
+    if work is None or st is None: return st
+    shutil.copytree(st, os.path.join(work, 'stage'), dirs_exist_ok=True)
+    return os.path.join(work, 'stage')
+
+
+def _stage(name):
     import golden as G
     sf = os.path.join(enh_dir(name), 'stage_from')
     if not os.path.exists(sf): return None
     src = open(sf).read().strip()
-    d = os.path.join(work, 'src'); os.makedirs(d, exist_ok=True)
-    R.run_port(G.rec_of(src), d, [], quiet=True)
-    st = os.path.join(work, 'stage'); os.makedirs(st, exist_ok=True)
-    for x in G.stage_dirs(d): shutil.copytree(os.path.join(d, x), os.path.join(st, x), dirs_exist_ok=True)
-    return st
+    with _lock:
+        if not _stage_top:
+            _stage_top.append(tempfile.mkdtemp(prefix='enhcheck-stage-'))
+            atexit.register(shutil.rmtree, _stage_top[0], ignore_errors=True)
+        lk = _stage_locks.setdefault(src, threading.Lock())
+    with lk:
+        if src not in _stages:
+            d = os.path.join(_stage_top[0], src, 'src'); os.makedirs(d, exist_ok=True)
+            replay_port(G.rec_of(src), d, [])
+            st = os.path.join(_stage_top[0], src, 'stage'); os.makedirs(st, exist_ok=True)
+            for x in G.stage_dirs(d): shutil.copytree(os.path.join(d, x), os.path.join(st, x), dirs_exist_ok=True)
+            _stages[src] = st
+        return _stages[src]
 
 
 def record_session(name, flags=None):
@@ -263,7 +376,7 @@ def record_session(name, flags=None):
     script_path = os.path.join(e, 'session.script')
     last = max([int(l.split()[0]) for l in open(script_path) if l.split() and l.split()[0].isdigit()] or [0])
     work = tempfile.mkdtemp(prefix='enhcheck-')
-    stage = stage_of(name, work)
+    stage = stage_of(name)
     home = os.path.join(work, 'home'); os.makedirs(home)
     if stage: shutil.copytree(stage, home, dirs_exist_ok=True)
     data = R.port_data(work)
@@ -282,23 +395,25 @@ def baseline(args):
     mode = args[0] if args else 'check'
     root = os.path.join(R.RC.sessions, 'enhanced')
     names = args[1:] or (sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))) if os.path.isdir(root) else [])
+    if mode == 'check':
+        # the sessions' replays side by side, then their checks in order
+        got = dict(zip(names, pmap(lambda n: run_checkpoints(os.path.join(enh_dir(n), 'session.rec'), stage=stage_of(n)), names)))
     for name in names:
         rec = os.path.join(enh_dir(name), 'session.rec'); gp = os.path.join(enh_dir(name), 'golden.json')
-        work = tempfile.mkdtemp(prefix='enhcheck-')
-        stage = stage_of(name, work)
+        stage = stage_of(name)
         if mode == 'record':
             r, cfg, w = record_session(name)
             check(f'{name}: recorded from its script', os.path.exists(r), r)
             if os.path.exists(r):
                 shutil.copy(r, rec)
                 if os.path.exists(cfg): shutil.copy(cfg, os.path.join(enh_dir(name), 'session.cfg'))
-                print(f'wrote {os.path.relpath(rec, R.root)}')
+                say(f'wrote {os.path.relpath(rec, R.root)}')
             # that the session exercises its flag is shown once by hand when it is made (screenshots
             # with and without it at the same moment; the commit records it): two recordings of
             # one script differ in timing anyway, so comparing them would prove nothing
             shutil.rmtree(w, ignore_errors=True)
         elif mode == 'make':
-            a, b = run_checkpoints(rec, stage=stage), run_checkpoints(rec, stage=stage)
+            a, b = pmap(lambda _: run_checkpoints(rec, stage=stage), (1, 2))     # two runs, side by side
             check(f'{name}: the port twice identical', a == b and a, f'{len(a)} and {len(b)} checkpoints')
             if a != b or not a: continue
             meta = {'format': 1, 'session': name, 'made_by': 'port',
@@ -309,16 +424,14 @@ def baseline(args):
             lines = [json.dumps(c, separators=(',', ':')) for c in a]
             text = text[:text.rindex('}')].rstrip() + ',\n "checkpoints": [\n  ' + ',\n  '.join(lines) + '\n ]\n}\n'
             open(gp, 'w').write(text)
-            print(f'wrote {os.path.relpath(gp, R.root)}: {len(a)} checkpoints')
+            say(f'wrote {os.path.relpath(gp, R.root)}: {len(a)} checkpoints')
         else:
             g = json.load(open(gp))
             check(f'{name}: made by the port, labelled so', g.get('made_by') == 'port')
             check(f'{name}: its recording unchanged', g['recording']['sha256'] == sha(rec))
-            got = run_checkpoints(rec, stage=stage)
-            diff = [i for i, (x, y) in enumerate(zip(g['checkpoints'], got)) if x != y]
-            check(f'{name}: the port as its baseline', len(got) == len(g['checkpoints']) and not diff,
-                  f'{len(got)} checkpoints, not {len(g["checkpoints"])}; differ at {diff[:5]}')
-        shutil.rmtree(work, ignore_errors=True)
+            diff = [i for i, (x, y) in enumerate(zip(g['checkpoints'], got[name])) if x != y]
+            check(f'{name}: the port as its baseline', len(got[name]) == len(g['checkpoints']) and not diff,
+                  f'{len(got[name])} checkpoints, not {len(g["checkpoints"])}; differ at {diff[:5]}')
 
 
 def png_pixels(data):
@@ -400,20 +513,14 @@ def coverage():
     if not name: return
     import golden as G
     probe = R.RC.port_name.upper() + '_TEXTURE_PROBE'
-    screens = {}
-    old = {k: os.environ.get(k) for k in ('UWRPFULL', probe)}
-    os.environ['UWRPFULL'] = '0'; os.environ[probe] = '1'
-    try:
-        for on in (True, False):
-            d = tempfile.mkdtemp(prefix='enhcheck-')
-            R.run_port(G.rec_of(name), d, ['--enhance', 'perspective'] if on else [], quiet=True)
-            screens[on] = [ck['secs'].get('VGA ') for ck in R.read_dump(d)]
+    def screens(on):                    # the two runs side by side
+        d = tempfile.mkdtemp(prefix='enhcheck-')
+        try:
+            replay_port(G.rec_of(name), d, ['--enhance', 'perspective'] if on else [], env={'UWRPFULL': '0', probe: '1'})
+            return [ck['secs'].get('VGA ') for ck in R.read_dump(d)]
+        finally:
             shutil.rmtree(d, ignore_errors=True)
-    finally:
-        for k, v in old.items():
-            if v is None: os.environ.pop(k, None)
-            else: os.environ[k] = v
-    a, b = screens[True], screens[False]
+    a, b = pmap(screens, (True, False))
     bad = [i for i, (x, y) in enumerate(zip(a, b)) if x is None or x != y]
     check(f'perspective covers the original mappers\' pixels exactly ({name}, {len(b)} checkpoints)',
           len(a) == len(b) and a and not bad, f'{len(a)} and {len(b)} checkpoints; differ at {bad[:8]}')
@@ -440,28 +547,26 @@ def holes():
     name = R.RC.port_name.upper()
     probe, no_back = name + '_HOLE_PROBE', name + '_NO_BACK_PASS'
     frames, unused = {}, []
-    top = tempfile.mkdtemp(prefix='enhcheck-')
-    stage = stage_of('wide-pitch', top)     # once, for all three runs
-    for run, env in (('unprobed', {'UWRPFB': '1'}), ('without', {probe: str(HOLE_MARK), no_back: '1'}),
-                     ('with', {probe: str(HOLE_MARK)})):
-        old = {k: os.environ.get(k) for k in (probe, no_back, 'UWRPFB')}
-        for k in (probe, no_back, 'UWRPFB'):
-            if k in env: os.environ[k] = env[k]
-            else: os.environ.pop(k, None)
+    stage = stage_of('wide-pitch')
+    def one(job):                       # the three runs side by side, each with its own switches
+        run, env = job
+        env = {k: env.get(k) for k in (probe, no_back, 'UWRPFB')}       # (None: unset)
         work = tempfile.mkdtemp(prefix='enhcheck-')
         try:
             d = os.path.join(work, 'run'); os.makedirs(d)
-            R.run_port(rec, d, [], stage=stage, quiet=True)
+            replay_port(rec, d, [], stage=stage, env=env)
             log = open(os.path.join(d, 'port.log'), errors='replace').read()
-            frames[run] = [(int(p), int(n)) for p, n in re.findall(r'hole-probe: pitch (-?\d+) holes (\d+)', log)]
-            if run == 'unprobed':           # the mark in the frames as drawn (UWRPFB's checkpoints)
-                unused = [ck['secs']['FBUF'][2:].count(bytes([HOLE_MARK])) for ck in R.read_dump(d) if 'FBUF' in ck['secs']]
+            fr = [(int(p), int(n)) for p, n in re.findall(r'hole-probe: pitch (-?\d+) holes (\d+)', log)]
+            # the mark in the frames as drawn (UWRPFB's checkpoints)
+            un = [ck['secs']['FBUF'][2:].count(bytes([HOLE_MARK])) for ck in R.read_dump(d) if 'FBUF' in ck['secs']] \
+                if run == 'unprobed' else None
+            return run, fr, un
         finally:
             shutil.rmtree(work, ignore_errors=True)
-            for k, v in old.items():
-                if v is None: os.environ.pop(k, None)
-                else: os.environ[k] = v
-    shutil.rmtree(top, ignore_errors=True)
+    for run, fr, un in pmap(one, (('unprobed', {'UWRPFB': '1'}), ('without', {probe: str(HOLE_MARK), no_back: '1'}),
+                                  ('with', {probe: str(HOLE_MARK)}))):
+        frames[run] = fr
+        if un is not None: unused = un
     wo, w = frames['without'], frames['with']
     check('the hole probe reports nothing when off', not frames['unprobed'], f'{len(frames["unprobed"])} reports')
     check(f'the hole mark ({HOLE_MARK}) is a colour the session never draws', unused and max(unused) == 0,
@@ -493,7 +598,9 @@ CHECKS = os.path.join(R.RC.sessions, 'checks')
 RECORDING = False
 
 
-def shot_run(work, stage, name, flags, lines, after, settings=None):
+def shot_run(work, stage, name, flags, lines, after, settings=None, env=None):
+    """The screen at the end of CHECKS/name.rec replayed (recorded first when RECORDING), as
+    bytes of RGB; env: the test switches of the run (and of its recording)."""
     rec = os.path.join(CHECKS, name + '.rec')
     if RECORDING:
         h = os.path.join(work, 'rec-' + name)
@@ -503,11 +610,14 @@ def shot_run(work, stage, name, flags, lines, after, settings=None):
             open(os.path.join(h, R.RC.port_name + '.cfg'), 'a').write(settings)
         sp = os.path.join(work, name + '.script')
         open(sp, 'w').write('3000 key enter\n4500 key enter\n' + ''.join(l + '\n' for l in lines))
-        env = R.port_env(); env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+        penv = R.port_env(); penv.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+        for k, v in (env or {}).items():
+            if v is None: penv.pop(k, None)
+            else: penv[k] = v
         cmd = [R.port_exe(), R.RC.port_data_flag, R.port_data(work), R.RC.port_home_flag, h, '--hidden',
                '--no-recording', '--record', '--sound', '0,0', '--input-script', sp, '--exit-after', str(after),
                '--enhance', flags]
-        subprocess.run(cmd, capture_output=True, env=env, timeout=300)
+        subprocess.run(cmd, capture_output=True, env=penv, timeout=300)
         os.makedirs(CHECKS, exist_ok=True)
         if os.path.exists(os.path.join(h, 'RECORD.OUT')):
             shutil.copy(os.path.join(h, 'RECORD.OUT'), rec)
@@ -516,7 +626,7 @@ def shot_run(work, stage, name, flags, lines, after, settings=None):
     if not os.path.exists(rec): return b''
     d = os.path.join(work, 'replay-' + name)
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
-    R.run_port(rec, d, [], stage=stage, quiet=True)
+    replay_port(rec, d, [], stage=stage, env=env)
     full = [ck for ck in R.read_dump(d) if 'VGA ' in ck['secs']] if os.path.exists(os.path.join(d, 'STATE.OUT')) else []
     if not full: return b''
     pix, _ = R.scanout(full[-1]['secs'])
@@ -531,18 +641,18 @@ def looking():
     if not os.path.isdir(enh_dir('mouse-look')): return
     work = tempfile.mkdtemp(prefix='enhcheck-')
     try:
-        stage = stage_of('mouse-look', work)
-        shots = {}
+        stage = stage_of('mouse-look')
         # look-speed (the settings file's) is clamped to 10..400: 0 turns as 10 does, 100000 as 400
-        for name, flags, toggle, speed in (('on', 'skip-intro,mouse-look', 1, None),
-                                           ('untoggled', 'skip-intro,mouse-look', 0, None),
-                                           ('inverted', 'skip-intro,mouse-look,invert-look', 1, None),
-                                           ('speed0', 'skip-intro,mouse-look', 1, '0'), ('speed10', 'skip-intro,mouse-look', 1, '10'),
-                                           ('speedhuge', 'skip-intro,mouse-look', 1, '100000'),
-                                           ('speed400', 'skip-intro,mouse-look', 1, '400')):
-            shots[name] = shot_run(work, stage, 'look-' + name, flags,
-                                   (['9000 key grave'] if toggle else []) + ['9500 look 200 0', '10000 look 0 -40'], 12000,
-                                   f'look-speed={speed}\n' if speed is not None else None)
+        runs = (('on', 'skip-intro,mouse-look', 1, None),
+                ('untoggled', 'skip-intro,mouse-look', 0, None),
+                ('inverted', 'skip-intro,mouse-look,invert-look', 1, None),
+                ('speed0', 'skip-intro,mouse-look', 1, '0'), ('speed10', 'skip-intro,mouse-look', 1, '10'),
+                ('speedhuge', 'skip-intro,mouse-look', 1, '100000'),
+                ('speed400', 'skip-intro,mouse-look', 1, '400'))
+        # side by side, but one after another when recording (live runs)
+        shots = dict(zip((r[0] for r in runs), pmap(lambda r: shot_run(
+            work, stage, 'look-' + r[0], r[1], (['9000 key grave'] if r[2] else []) + ['9500 look 200 0', '10000 look 0 -40'],
+            12000, f'look-speed={r[3]}\n' if r[3] is not None else None), runs, serial=RECORDING)))
         # the 3D view is about a quarter of the screen, so a turned view differs by about that
         check('mouse-look: after the ` key the mouse turns the view (unlike the same motion without it)',
               differ(shots['on'], shots['untoggled']) > 0.15, f'differs by {differ(shots["on"], shots["untoggled"]):.3f}')
@@ -562,130 +672,150 @@ def keys():
     if not os.path.isdir(enh_dir('modern-keys')): return
     work = tempfile.mkdtemp(prefix='enhcheck-')
     try:
-        stage = stage_of('modern-keys', work)
-        shots = {}
-        def shot(name, flags, lines, after=12000):
+        stage = stage_of('modern-keys')
+        shots, wanted = {}, {}
+        def shot(name, flags, lines, after=12000, env=None):
+            if getattr(_tl, 'planning', False):      # the first pass: only listing them
+                wanted.setdefault(name, (name, flags, lines, after, env))
+                return b''
             if name not in shots:                   # a name is one recording: reused
-                shots[name] = shot_run(work, stage, 'keys-' + name, flags, lines, after)
+                shots[name] = shot_run(work, stage, 'keys-' + name, flags, lines, after, env=env)
             return shots[name]
-        mk = 'skip-intro,modern-keys'
-        still = shot('still', mk, [])
-        # each moved key must do what the original's key for that movement does: closer to it
-        # (held as long, without the flag) than to what the same key does without the flag
-        hold = lambda k: [f'9000 down {k}', f'10500 up {k}']
-        for key, orig, what in (('s', 'x', 'backs'), ('a', 'z', 'slides left'), ('d', 'c', 'slides right'),
-                                ('left', 'a', 'turns left'), ('x', 's', 'walks')):
-            got = shot('k-' + key, mk, hold(key))
-            same = shot('o-' + orig, 'skip-intro', hold(orig))
-            other = shot('o-' + key, 'skip-intro', hold(key))
-            check(f'modern-keys: {key} {what} (as the original {orig})', differ(got, same) < differ(got, other),
-                  f'from the original {orig} {differ(got, same):.3f}, from the original {key} {differ(got, other):.3f}')
-        # Shift and Ctrl are the fly keys, which do nothing on the ground (UltimaHacks' interpretScancode),
-        # so Shift+W runs as W does
-        sw = shot('k-shift-w', mk, ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
-        w = shot('k-w', mk, hold('w'))
-        check('modern-keys: Shift+W runs as W does (Shift flies only when flying)', differ(sw, w) < differ(sw, still),
-              f'from W {differ(sw, w):.3f}, from standing {differ(sw, still):.3f}')
-        # a lone Shift (held a moment, as a press is) jumps, as the original's J: the jump shows for a
-        # moment only, so several moments are taken; at one where J is in the air, Shift is too
-        seen = []
-        for t in (9100, 9200, 9300, 9400):
-            js = shot(f'k-shift{t}', mk, ['9000 down shift', '9300 up shift'], t)
-            jj = shot(f'o-j{t}', 'skip-intro', ['9000 key j'], t)
-            j0 = shot(f'still-{t}', mk, [], t)
-            if differ(jj, j0) > 0:
-                seen.append((t, differ(js, jj), differ(js, j0)))
-        # (the two jumps can start a frame apart, so at one moment one may have landed: any moment)
-        check('modern-keys: Shift jumps (as the original J)', seen and any(a < b for _, a, b in seen),
-              f'moments J was in the air, (from J, from standing): {seen}')
-        # the new actions: each changes the screen where the same key without the flag does not
-        # (the map most of it, a panel a tenth, a few lines of text in the scroll 0.4% to 2%;
-        # the same script twice gives the same screen here, measured)
-        for key, what, least in (('z', 'opens the map', 0.10), ('r', 'flips to the rune bag', 0.02),
-                                 ('f', 'flips to the character panel', 0.02), ('up', 'pitches the view', 0.02),
-                                 ('g', 'clicks the compass (its lines in the scroll)', 0.002),
-                                 ('h', 'clicks the flasks (their lines in the scroll)', 0.002),
-                                 ('q', 'looks at what is under the cursor (a line in the scroll)', 0.002)):
-            on = shot('a-' + key, mk, [f'9000 key {key}'])
-            off = shot('o1-' + key, 'skip-intro', [f'9000 key {key}'])
-            check(f'modern-keys: {key} {what}', differ(on, off) > least,
-                  f'from the flag off {differ(on, off):.4f} (at least {least})')
-        m1 = shot('m-z', mk, ['9000 key z'])
-        m1b = shot('m-z2', mk, ['9000 key z', '10000 key 4'])        # a key the map ignores
-        m2 = shot('m-zs', mk, ['9000 key z', '10000 key s'])
-        check('modern-keys: S on the map shows the next level (its label at least)', differ(m1, m2) > differ(m1, m1b),
-              f'from the first level {differ(m1, m2):.4f}, a repeat {differ(m1, m1b):.4f}')
-        mz = shot('m-zz', mk, ['9000 key z', '10000 key z'])
-        # (UW2's map screen itself varies between runs, by about 0.034: half as much again allowed)
-        check('modern-keys: Z on the map does nothing (bound for the view only)', differ(m1, mz) <= differ(m1, m1b) * 1.5 + 0.001,
-              f'from the map {differ(m1, mz):.4f}, a repeat {differ(m1, m1b):.4f}')
-        if R.RC.port_name == 'uw2port':                 # UW2's worlds: D the previous, A the next
-            md = shot('m-zd', mk, ['9000 key z', '10000 key d'])
-            ma = shot('m-za', mk, ['9000 key z', '10000 key a'])
-            check('modern-keys: D and A on the map show the previous and next world', differ(m1, md) > differ(m1, m1b)
-                  and differ(m1, ma) > differ(m1, m1b) and differ(md, ma) > 0,    # unvisited worlds: only the gem's lit facet tells them apart
-                  f'D {differ(m1, md):.4f}, A {differ(m1, ma):.4f}, D against A {differ(md, ma):.4f}, a repeat {differ(m1, m1b):.4f}')
-        # the attack keys act in fight mode (the icon of deal_with_icons' mode 1: F5 in UW1, F1 in
-        # UW2); Space is the last type, slash at first: as ;
-        fk = {'uw2port': 'f1'}.get(R.RC.port_name, 'f5')
-        fight = lambda k: [f'9000 key {fk}'] + ([f'9500 down {k}', f'10500 up {k}'] if k else [])
-        sp, semi, f5 = shot('f-space', mk, fight('space'), 11000), shot('f-semi', mk, fight(';'), 11000), shot('f-none', mk, fight(None), 11000)
-        # each against fight mode alone (Space and ; are separate recordings, so their swings are
-        # caught at frames that need not match): both swing
-        check('modern-keys: Space swings, as ; does', differ(sp, f5) > 0.002 and differ(semi, f5) > 0.002,
-              f'Space from fight mode alone {differ(sp, f5):.4f}, ; from it {differ(semi, f5):.4f}')
-        # rune-keys: the staged player has no runes (both games), so every rune key is refused and
-        # leaves the screen as it was; that a rune the player has goes on the shelf was shown once by
-        # hand with the runes granted (the commit says so). Ctrl and Alt together hold movement.
-        rk = 'skip-intro,rune-keys'
-        chord = lambda keys: ['9000 down ctrl', '9050 down alt'] + [f'{9100 + 200 * i} key {k}' for i, k in enumerate(keys)] + \
-                             [f'{9200 + 200 * len(keys)} up alt', f'{9250 + 200 * len(keys)} up ctrl']
-        base = shot('r-none', rk, chord([]))
-        base2 = shot('r-none2', rk, chord(['f12']))                # a key nothing binds: the repeat noise
-        got = shot('r-lack', rk, chord(['a', 'b', 'c']))
-        check('rune-keys: runes the player lacks are refused (the screen as it was)', differ(got, base) <= differ(base, base2),
-              f'{differ(got, base):.4f}, a repeat {differ(base, base2):.4f}')
-        both = 'skip-intro,modern-keys,rune-keys'
-        got = shot('r-ctrlaltw', both, ['9000 down ctrl', '9050 down alt', '9100 down w', '10500 up w', '10600 up alt', '10650 up ctrl'])
-        b0 = shot('r-none-both', both, chord([]))
-        check('rune-keys: Ctrl+Alt+W does not move (with modern-keys, where Ctrl alone would not stop it)',
-              differ(got, b0) <= max(differ(base, base2), 0.01), f'{differ(got, b0):.4f}')
-        # the runes the player has: the test switch <PORT>_GRANT_RUNES gives every rune at the first
-        # rune key (the staged player has none)
-        grant = R.RC.port_name.upper() + '_GRANT_RUNES'
-        os.environ[grant] = '1'
-        try:
-            g0 = shot('g-none', rk, chord(['f12']))
-            g1 = shot('g-a', rk, chord(['a']))
-            g4 = shot('g-abcd', rk, chord(['a', 'b', 'c', 'd']))
-            g3 = shot('g-bcd', rk, chord(['b', 'c', 'd']))
-            gc = shot('g-a-bs', rk, chord(['a', 'backspace']))
-        finally:
-            os.environ.pop(grant, None)
-        check('rune-keys: a rune the player has goes on the shelf', differ(g1, g0) > max(differ(base, base2), 0.0005),
-              f'{differ(g1, g0):.4f}')
-        check('rune-keys: a fourth rune pushes the oldest off (as the last three)', differ(g4, g3) <= differ(base, base2),
-              f'{differ(g4, g3):.4f}')
-        check('rune-keys: Backspace clears the shelf', differ(gc, g0) <= differ(base, base2), f'{differ(gc, g0):.4f}')
+        # the checks run twice: first with every check and every screen a blank (no check
+        # counted, no port run), which lists the screens they ask for; those are then replayed
+        # side by side, and the second pass checks them (a screen the first pass missed, as one
+        # asked for only on some outcome would be, is replayed when the second asks for it).
+        # Recording runs live, so one at a time, in the second pass alone.
+        if not RECORDING:
+            _tl.planning = True
+            try:
+                keys_checks(shot)
+            finally:
+                _tl.planning = False
+            for name, got in zip(wanted, pmap(lambda w: shot_run(work, stage, 'keys-' + w[0], *w[1:4], env=w[4]),
+                                              wanted.values())):
+                shots[name] = got
+        keys_checks(shot)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def keys_checks(shot):
+    """keys' checks, with shot(name, flags, lines, after=12000, env=None) giving each screen."""
+    mk = 'skip-intro,modern-keys'
+    still = shot('still', mk, [])
+    # each moved key must do what the original's key for that movement does: closer to it
+    # (held as long, without the flag) than to what the same key does without the flag
+    hold = lambda k: [f'9000 down {k}', f'10500 up {k}']
+    for key, orig, what in (('s', 'x', 'backs'), ('a', 'z', 'slides left'), ('d', 'c', 'slides right'),
+                            ('left', 'a', 'turns left'), ('x', 's', 'walks')):
+        got = shot('k-' + key, mk, hold(key))
+        same = shot('o-' + orig, 'skip-intro', hold(orig))
+        other = shot('o-' + key, 'skip-intro', hold(key))
+        check(f'modern-keys: {key} {what} (as the original {orig})', differ(got, same) < differ(got, other),
+              f'from the original {orig} {differ(got, same):.3f}, from the original {key} {differ(got, other):.3f}')
+    # Shift and Ctrl are the fly keys, which do nothing on the ground (UltimaHacks' interpretScancode),
+    # so Shift+W runs as W does
+    sw = shot('k-shift-w', mk, ['9000 down shift', '9100 down w', '10500 up w', '10600 up shift'])
+    w = shot('k-w', mk, hold('w'))
+    check('modern-keys: Shift+W runs as W does (Shift flies only when flying)', differ(sw, w) < differ(sw, still),
+          f'from W {differ(sw, w):.3f}, from standing {differ(sw, still):.3f}')
+    # a lone Shift (held a moment, as a press is) jumps, as the original's J: the jump shows for a
+    # moment only, so several moments are taken; at one where J is in the air, Shift is too
+    seen = []
+    for t in (9100, 9200, 9300, 9400):
+        js = shot(f'k-shift{t}', mk, ['9000 down shift', '9300 up shift'], t)
+        jj = shot(f'o-j{t}', 'skip-intro', ['9000 key j'], t)
+        j0 = shot(f'still-{t}', mk, [], t)
+        if differ(jj, j0) > 0:
+            seen.append((t, differ(js, jj), differ(js, j0)))
+    # (the two jumps can start a frame apart, so at one moment one may have landed: any moment)
+    check('modern-keys: Shift jumps (as the original J)', seen and any(a < b for _, a, b in seen),
+          f'moments J was in the air, (from J, from standing): {seen}')
+    # the new actions: each changes the screen where the same key without the flag does not
+    # (the map most of it, a panel a tenth, a few lines of text in the scroll 0.4% to 2%;
+    # the same script twice gives the same screen here, measured)
+    for key, what, least in (('z', 'opens the map', 0.10), ('r', 'flips to the rune bag', 0.02),
+                             ('f', 'flips to the character panel', 0.02), ('up', 'pitches the view', 0.02),
+                             ('g', 'clicks the compass (its lines in the scroll)', 0.002),
+                             ('h', 'clicks the flasks (their lines in the scroll)', 0.002),
+                             ('q', 'looks at what is under the cursor (a line in the scroll)', 0.002)):
+        on = shot('a-' + key, mk, [f'9000 key {key}'])
+        off = shot('o1-' + key, 'skip-intro', [f'9000 key {key}'])
+        check(f'modern-keys: {key} {what}', differ(on, off) > least,
+              f'from the flag off {differ(on, off):.4f} (at least {least})')
+    m1 = shot('m-z', mk, ['9000 key z'])
+    m1b = shot('m-z2', mk, ['9000 key z', '10000 key 4'])        # a key the map ignores
+    m2 = shot('m-zs', mk, ['9000 key z', '10000 key s'])
+    check('modern-keys: S on the map shows the next level (its label at least)', differ(m1, m2) > differ(m1, m1b),
+          f'from the first level {differ(m1, m2):.4f}, a repeat {differ(m1, m1b):.4f}')
+    mz = shot('m-zz', mk, ['9000 key z', '10000 key z'])
+    # (UW2's map screen itself varies between runs, by about 0.034: half as much again allowed)
+    check('modern-keys: Z on the map does nothing (bound for the view only)', differ(m1, mz) <= differ(m1, m1b) * 1.5 + 0.001,
+          f'from the map {differ(m1, mz):.4f}, a repeat {differ(m1, m1b):.4f}')
+    if R.RC.port_name == 'uw2port':                 # UW2's worlds: D the previous, A the next
+        md = shot('m-zd', mk, ['9000 key z', '10000 key d'])
+        ma = shot('m-za', mk, ['9000 key z', '10000 key a'])
+        check('modern-keys: D and A on the map show the previous and next world', differ(m1, md) > differ(m1, m1b)
+              and differ(m1, ma) > differ(m1, m1b) and differ(md, ma) > 0,    # unvisited worlds: only the gem's lit facet tells them apart
+              f'D {differ(m1, md):.4f}, A {differ(m1, ma):.4f}, D against A {differ(md, ma):.4f}, a repeat {differ(m1, m1b):.4f}')
+    # the attack keys act in fight mode (the icon of deal_with_icons' mode 1: F5 in UW1, F1 in
+    # UW2); Space is the last type, slash at first: as ;
+    fk = {'uw2port': 'f1'}.get(R.RC.port_name, 'f5')
+    fight = lambda k: [f'9000 key {fk}'] + ([f'9500 down {k}', f'10500 up {k}'] if k else [])
+    sp, semi, f5 = shot('f-space', mk, fight('space'), 11000), shot('f-semi', mk, fight(';'), 11000), shot('f-none', mk, fight(None), 11000)
+    # each against fight mode alone (Space and ; are separate recordings, so their swings are
+    # caught at frames that need not match): both swing
+    check('modern-keys: Space swings, as ; does', differ(sp, f5) > 0.002 and differ(semi, f5) > 0.002,
+          f'Space from fight mode alone {differ(sp, f5):.4f}, ; from it {differ(semi, f5):.4f}')
+    # rune-keys: the staged player has no runes (both games), so every rune key is refused and
+    # leaves the screen as it was; that a rune the player has goes on the shelf was shown once by
+    # hand with the runes granted (the commit says so). Ctrl and Alt together hold movement.
+    rk = 'skip-intro,rune-keys'
+    chord = lambda keys: ['9000 down ctrl', '9050 down alt'] + [f'{9100 + 200 * i} key {k}' for i, k in enumerate(keys)] + \
+                         [f'{9200 + 200 * len(keys)} up alt', f'{9250 + 200 * len(keys)} up ctrl']
+    base = shot('r-none', rk, chord([]))
+    base2 = shot('r-none2', rk, chord(['f12']))                # a key nothing binds: the repeat noise
+    got = shot('r-lack', rk, chord(['a', 'b', 'c']))
+    check('rune-keys: runes the player lacks are refused (the screen as it was)', differ(got, base) <= differ(base, base2),
+          f'{differ(got, base):.4f}, a repeat {differ(base, base2):.4f}')
+    both = 'skip-intro,modern-keys,rune-keys'
+    got = shot('r-ctrlaltw', both, ['9000 down ctrl', '9050 down alt', '9100 down w', '10500 up w', '10600 up alt', '10650 up ctrl'])
+    b0 = shot('r-none-both', both, chord([]))
+    check('rune-keys: Ctrl+Alt+W does not move (with modern-keys, where Ctrl alone would not stop it)',
+          differ(got, b0) <= max(differ(base, base2), 0.01), f'{differ(got, b0):.4f}')
+    # the runes the player has: the test switch <PORT>_GRANT_RUNES gives every rune at the first
+    # rune key (the staged player has none)
+    grant = {R.RC.port_name.upper() + '_GRANT_RUNES': '1'}
+    g0 = shot('g-none', rk, chord(['f12']), env=grant)
+    g1 = shot('g-a', rk, chord(['a']), env=grant)
+    g4 = shot('g-abcd', rk, chord(['a', 'b', 'c', 'd']), env=grant)
+    g3 = shot('g-bcd', rk, chord(['b', 'c', 'd']), env=grant)
+    gc = shot('g-a-bs', rk, chord(['a', 'backspace']), env=grant)
+    check('rune-keys: a rune the player has goes on the shelf', differ(g1, g0) > max(differ(base, base2), 0.0005),
+          f'{differ(g1, g0):.4f}')
+    check('rune-keys: a fourth rune pushes the oldest off (as the last three)', differ(g4, g3) <= differ(base, base2),
+          f'{differ(g4, g3):.4f}')
+    check('rune-keys: Backspace clears the shelf', differ(gc, g0) <= differ(base, base2), f'{differ(gc, g0):.4f}')
+
+
 def main(argv):
+    global JOBS, _slots, RECORDING
+    argv = list(argv)
+    for i, a in enumerate(argv):
+        if a == '-j' and i + 1 < len(argv) and argv[i + 1].isdigit():
+            JOBS = max(1, int(argv[i + 1])); del argv[i:i + 2]; break
+        if a.startswith('-j') and a[2:].isdigit():
+            JOBS = max(1, int(a[2:])); del argv[i]; break
+    _slots = threading.BoundedSemaphore(JOBS)
     cmd = argv[0] if argv else 'selftest'
-    if cmd == 'selftest': selftest()
-    elif cmd == 'registry': registry()
-    elif cmd == 'script': script()
-    elif cmd == 'coverage': coverage()
-    elif cmd == 'holes': holes()
-    elif cmd == 'looking': looking()
-    elif cmd == 'keys': keys()
+    one = {'selftest': selftest, 'registry': registry, 'script': script, 'coverage': coverage, 'holes': holes,
+           'looking': looking, 'keys': keys, 'presentation': presentation}
+    if cmd in one: run_groups([(cmd, one[cmd])])
     elif cmd == 'checks' and argv[1:2] == ['record']:
-        global RECORDING
         RECORDING = True
-        looking(); keys()
-    elif cmd == 'presentation': presentation()
-    elif cmd == 'baseline': baseline(argv[1:])
+        run_groups([('looking', looking)]); run_groups([('keys', keys)])     # live: one after the other
+    elif cmd == 'baseline': run_groups([('baseline', lambda: baseline(argv[1:]))])
     elif cmd == 'all':
         d = tempfile.mkdtemp(prefix='enhcheck-')
         rc, out = port(d, '--enhance', 'list'); shutil.rmtree(d, ignore_errors=True)
@@ -697,8 +827,9 @@ def main(argv):
             check('the port lists its enhancements (--enhance list), as tests/replay/enhanced says it has some',
                   False, f'exit {rc}: {out[-300:]}')
         else:
-            selftest(); registry(); script(); presentation(); coverage(); holes(); looking()
-            keys(); baseline(['check'])
+            run_groups([('selftest', selftest), ('registry', registry), ('script', script),
+                        ('presentation', presentation), ('coverage', coverage), ('holes', holes),
+                        ('looking', looking), ('keys', keys), ('baseline', lambda: baseline(['check']))])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')

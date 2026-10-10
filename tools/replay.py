@@ -600,7 +600,10 @@ def exit_after(cmd):
     return cmd
 
 
-def run_port(rec, out, extra=(), stage=None, quiet=False):
+def run_port(rec, out, extra=(), stage=None, quiet=False, env=None):
+    """Replays rec in the port into out. env: variables set (None: removed) for this run alone,
+    on top of port_env(), so that runs side by side (tools/enhcheck.py) can each have their own
+    test switches."""
     extra = list(extra)
     debug = '--debug' in extra
     if debug: extra.remove('--debug')
@@ -618,7 +621,11 @@ def run_port(rec, out, extra=(), stage=None, quiet=False):
         shutil.copy(cfg, dst)
     cmd = [exe, RC.port_data_flag, port_data(out), RC.port_home_flag, home] + RC.port_args + \
           [RC.port_replay_flag, os.path.abspath(rec)] + list(extra)
-    r = subprocess.run(exit_after(cmd), capture_output=True, text=True, errors='replace', env=port_env())
+    penv = port_env()
+    for k, v in (env or {}).items():
+        if v is None: penv.pop(k, None)
+        else: penv[k] = v
+    r = subprocess.run(exit_after(cmd), capture_output=True, text=True, errors='replace', env=penv)
     open(os.path.join(out, 'port.log'), 'w').write(r.stdout + r.stderr)
     for f in ('STATE.OUT',):
         if os.path.exists(os.path.join(out, f)): os.remove(os.path.join(out, f))
