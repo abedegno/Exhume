@@ -44,6 +44,18 @@ async function litPixels(p) {
     const x = document.createElement('canvas'); x.width = i.width; x.height = i.height; const k = x.getContext('2d'); k.drawImage(i, 0, 0);
     const d = k.getImageData(0, 0, x.width, x.height).data; let n = 0; for (let j = 0; j < d.length; j += 4) n += d[j] + d[j + 1] + d[j + 2] > 30; return n; }, png);
 }
+// The rows of the page's picture with a pixel brighter than black in the middle third of its
+// width (the page's buttons are at the right): the first and last such row's span, and the
+// viewport's height
+async function litSpan(p) {
+  const png = await p.screenshot({ encoding: 'base64' });
+  return p.evaluate(async src => { const i = new Image(); i.src = 'data:image/png;base64,' + src; await i.decode();
+    const x = document.createElement('canvas'); x.width = i.width; x.height = i.height; const k = x.getContext('2d'); k.drawImage(i, 0, 0);
+    const d = k.getImageData(0, 0, x.width, x.height).data; let first = -1, last = -1;
+    for (let y = 0; y < x.height; y++) for (let c = Math.floor(x.width / 3); c < Math.floor(2 * x.width / 3); c++) {
+      const j = 4 * (y * x.width + c); if (d[j] + d[j + 1] + d[j + 2] > 30) { if (first < 0) first = y; last = y; break; } }
+    return { first, last, span: first < 0 ? 0 : last - first + 1, height: x.height }; }, png);
+}
 const cases = {
   async boot() {  // the service worker supplies the headers: after its one reload the page is isolated and offers both games
     const p = await page(); await p.goto(url, { waitUntil: 'networkidle0' });
@@ -52,16 +64,33 @@ const cases = {
     for (const g of ['uw1', 'uw2']) check(!!(await p.$(`#play-${g}`)), `boot: a button for ${g}`);
     await p.close();
   },
-  async start() {  // a click starts each game: a few seconds in, the canvas is not blank
+  async start() {  // a click starts each game: a few seconds in, the canvas is not blank, filling the window's height at 4:3
     for (const g of ['uw1', 'uw2']) {
-      const p = await page(); await p.goto(url, { waitUntil: 'networkidle0' });
+      // a fresh context: a first visit, whose home the page seeds (settings-at-start=0, integer=0)
+      const ctx = await browser.createBrowserContext(); const p = await page(ctx); const log = []; p.on('console', m => log.push(m.text()));
+      // every navigator.storage.persist() the page makes (Safari deletes a site's IndexedDB after 7 days without a visit unless it is persistent)
+      await p.evaluateOnNewDocument(() => { window.__persist = 0; const f = StorageManager.prototype.persist;
+        StorageManager.prototype.persist = function () { window.__persist++; return f.call(this); }; });
+      await p.goto(url, { waitUntil: 'networkidle0' });
       await p.waitForFunction(() => window.crossOriginIsolated === true, { timeout: 20000 });
       await p.click(`#play-${g}`);
       await new Promise(r => setTimeout(r, 15000));
       const lit = await litPixels(p);
       check(lit > 10000, `start: ${g} draws its title (${lit} lit pixels)`);
+      check(await p.evaluate(() => window.__persist) > 0 && log.some(l => /^storage: /.test(l)), `start: ${g} asks the browser to keep the saves (navigator.storage.persist), and logs the answer`,
+            log.filter(l => /storage/.test(l)).join(' | '));
+      // the picture fills the window's height (1280x900: 1200x900 at 4:3), not whole-number scaling's
+      // 960x720: the lit rows' span, in the middle third of the width (clear of the page's buttons)
+      const span = await litSpan(p);
+      check(span.span >= 0.95 * span.height, `start: ${g}'s picture fills the window's height (${span.span} of ${span.height} rows lit)`, JSON.stringify(span));
+      // the settings screen's rows on the web: none that cannot work in a browser (the game folder,
+      // the MT-32 ROMs: no folder picker; Fullscreen and Window scale: the page's)
+      const tabs = await p.evaluate(() => { const M = window.__exhumeModule; return [0, 1, 2, 4].map(t => M.UTF8ToString(M._web_test_settings(t))); });
+      const all = tabs.join('|');
+      check(!/Game folder|MT-32 ROMs|Fullscreen|Window scale/.test(all) && tabs[3] === 'Record sessions|Show this at start' && /Volume/.test(tabs[0]) && /Whole-number scaling/.test(tabs[2]),
+            `start: ${g}'s settings screen offers only the rows that work on the web`, JSON.stringify(tabs));
       await p.screenshot({ path: path.join(site, `..`, `webcheck-${g}.png`) });
-      await p.close();
+      await ctx.close();
     }
   },
   async data() {  // with the data packed (web/pack.sh), each game reaches its own title screen, not the port's folder message
@@ -118,8 +147,16 @@ const cases = {
     await new Promise(r => setTimeout(r, 500));
     check(log.some(l => /settings: (open|shown)/.test(l)), 'controls: the gear opens the settings screen', log.slice(-5).join(' | '));
     check(await p.evaluate(() => document.pointerLockElement === null), 'controls: the gear frees the pointer');
+    const gone = p.waitForNavigation({ timeout: 30000, waitUntil: 'networkidle0' }).then(() => true).catch(() => false);
     await p.evaluate(() => window.__exhumeModule._exhume_quit && window.__exhumeModule._exhume_quit());
     await p.waitForSelector('#menu:not([hidden])', { timeout: 10000 }).then(() => check(true, 'controls: a game that ends returns to the menu')).catch(() => check(false, 'controls: a game that ends returns to the menu'));
+    // the page reloads itself for the next game: the menu after the reload still says what happened, once
+    const reloaded = await gone; const status = () => p.evaluate(() => document.getElementById('status').textContent);
+    const said = await status();
+    check(reloaded && said === 'The game has ended.', 'controls: after its reload the menu says the game has ended', JSON.stringify({ reloaded, said }));
+    await Promise.all([p.waitForNavigation({ waitUntil: 'networkidle0' }), p.evaluate(() => location.reload())]);
+    const again = await status();
+    check(again === '', 'controls: the message is shown once (not after another reload)', JSON.stringify(again));
     await ctx.close();
   },
   async saves() {  // the home (settings, saved games, recordings) kept in IndexedDB: written back as it changes, there after a reload
@@ -141,9 +178,10 @@ const cases = {
       } catch { db.close(); ok(null); } }; }), home, f);
     await p.goto(url, { waitUntil: 'networkidle0' });
     check(await play(), 'saves: uw1 draws its title');
-    // a setting changed through the settings screen (port_config_set): the gear, Down to Volume, Left (100 to 90)
+    // a setting changed through the settings screen (port_config_set): the gear, Down to Volume
+    // (Music, Speech, Volume: the web has no MT-32 ROMs row), Left (100 to 90)
     await p.$eval('#gear', b => b.click()); await sleep(500);
-    for (const k of ['ArrowDown', 'ArrowDown', 'ArrowDown', 'ArrowLeft']) { await p.keyboard.press(k); await sleep(150); }
+    for (const k of ['ArrowDown', 'ArrowDown', 'ArrowLeft']) { await p.keyboard.press(k); await sleep(150); }
     await p.keyboard.press('Escape');
     check(/volume=90/.test(await read(`${home}/uw1port.cfg`) || ''), 'saves: the settings screen writes volume=90', JSON.stringify(await read(`${home}/uw1port.cfg`)));
     await sleep(2000);

@@ -3,8 +3,10 @@ a window, recording on (no --no-recording), in a fresh home directory. Each sess
 folder of its own, recordings/YYYYMMDD-HHMMSS, holding its RECORD.OUT and stage/ (the home
 directory's files as the session began); stage/ must leave out recordings/ and the RECORDIN/
 that the ports' 1.0.0 to 1.2.1 wrote (their recordings went to RECORDIN/YYYYMMDD/RECORD.OUT, one
-per day, through the game's 8.3 file names), and an old RECORDIN/ is left as it was. After
-seven sessions the newest five are kept.
+per day, through the game's 8.3 file names), and an old RECORDIN/ is left as it was. With seven
+session folders the newest five are kept: four older ones (stamped 2000-01-01, each with a file and
+a stage/ in it) are planted after two real sessions, and a third session must leave the newest
+five, two of the planted ones among them as they were.
 
     python3 tools/blackboxcheck.py [--config PATH]
 
@@ -88,10 +90,23 @@ def main(argv):
         os.makedirs(old)
         open(os.path.join(old, 'RECORD.OUT'), 'wb').write(b'an old recording')
         before = tree(os.path.join(home, 'RECORDIN'))
-        for _ in range(5): outs.append(session(home))
+        # four older sessions' folders, planted rather than recorded (a session takes seconds): with
+        # the two real ones and the third session's, seven, of which the two oldest planted must go
+        real = sessions(home)
+        planted = [f'20000101-00000{i}' for i in range(1, 5)]
+        for n in planted:
+            os.makedirs(os.path.join(home, 'recordings', n, 'stage'))
+            open(os.path.join(home, 'recordings', n, 'MARKER'), 'w').write(n)
+            open(os.path.join(home, 'recordings', n, 'stage', 'MARKER'), 'w').write(n)
+        kept_before = {n: tree(os.path.join(home, 'recordings', n)) for n in planted[2:]}
+        outs.append(session(home))
         names = sessions(home)
-        check(f'seven sessions: the newest {KEEP} are kept', len(names) == KEEP and all(STAMP.match(n) for n in names),
-              (names, outs[-1][1][-400:]))
+        check(f'seven sessions: the newest {KEEP} are kept (the two oldest planted ones gone)',
+              len(names) == KEEP and all(STAMP.match(n) for n in names) and names[:4] == planted[2:] + real
+              and names[4] not in planted + real, (names, outs[-1][1][-400:]))
+        check('the planted sessions kept are as they were',
+              all(tree(os.path.join(home, 'recordings', n)) == t for n, t in kept_before.items()),
+              {n: sorted(tree(os.path.join(home, 'recordings', n))) for n in planted[2:]})
         check('an old RECORDIN/ is left as it was', tree(os.path.join(home, 'RECORDIN')) == before,
               sorted(tree(os.path.join(home, 'RECORDIN'))))
         if names:

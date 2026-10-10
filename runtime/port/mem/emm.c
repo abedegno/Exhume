@@ -5,9 +5,11 @@
    one handle, and a 64 KB page frame of four 16 KB slots that is a region of the paragraph
    map at the segment the project gives (UW2: E000h). Mapping a page into a slot copies the
    page that was there back to the store and copies the new one in, so the frame holds exactly
-   what DOS's would, and the game's own record of what is mapped stays true. The frame is
-   mapped twice in a row (frame.c), so a pointer run past its end wraps to its start as a far
-   pointer's offset does. */
+   what DOS's would, and the game's own record of what is mapped stays true. On the desktop the
+   frame is mapped twice in a row (frame.c), so a pointer run past its end wraps to its start as
+   a far pointer's offset does; with PORT_FRAME_SINGLE (the web build, where WebAssembly cannot
+   map memory twice, or -DPORT_FRAME_SINGLE on the desktop) it is mapped once, and the wrap is
+   port_ems_add's and port_ems_wrap's (below), where the game's C asks for it. */
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

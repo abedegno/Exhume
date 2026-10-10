@@ -370,6 +370,23 @@ static int tab_row(int tab, int k)
     return -1;
 }
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* tools/webcheck.mjs's start case: the labels of the rows on tab TAB, as the screen offers them,
+   "|" between them (the rows a browser cannot use, settab.c's WEB_HIDDEN, are on none). Nothing
+   calls it but the check. */
+EMSCRIPTEN_KEEPALIVE const char *web_test_settings(int tab)
+{
+    static char out[512];
+    size_t len = 0;
+    int k, r;
+    out[0] = 0;
+    for (k = 0; (r = tab_row(tab, k)) >= 0; k++)
+        len += (size_t)snprintf(out + len, len < sizeof out ? sizeof out - len : 0, "%s%s", k ? "|" : "", rows[r].label);
+    return out;
+}
+#endif
+
 static void scroll_to_sel(void)
 {
     if (sel < 0) return;

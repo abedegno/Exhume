@@ -156,7 +156,9 @@ static int host_flags(int access)
 static int open_host(const char *path, const char *host, int access, int fl)
 {
     int fd = open(host, fl, 0644);
-    port_log("open(\"%s\", %04X) -> %s = %d\n", path, access, host, fd);
+    /* a host path (bc_open_host) is its own host file: named once */
+    if (path == host) port_log("open(\"%s\", %04X) = %d\n", host, access, fd);
+    else port_log("open(\"%s\", %04X) -> %s = %d\n", path, access, host, fd);
     if (fd >= 0 && fd < MAXFD) {
         fd_text[fd] = !(access & B_BINARY);
         fd_eof[fd] = 0;
