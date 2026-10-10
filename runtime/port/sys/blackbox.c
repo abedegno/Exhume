@@ -18,8 +18,17 @@
      BLACKBOX_KEEP       the sessions kept, this one included (5)
      BLACKBOX_SKIP       more top-level names of the home directory that stage/ leaves out, as
                          string literals separated by commas: the port's own settings file and
-                         logs (UW2: "uw2port.cfg"); recordings/ and the replay harness's files
-                         (STATE.OUT, RECORD.OUT, REPLAY.IN, TRACE.OUT) are always left out
+                         logs (UW2: "uw2port.cfg"); recordings/, RECORDIN/ and the replay
+                         harness's files (STATE.OUT, RECORD.OUT, REPLAY.IN, TRACE.OUT) are always
+                         left out, in any case
+
+   The recording's name is a host path, which replay.c opens as it is (borland.c's
+   bc_open_host). The black box of Underworld Exhumed's UW1 1.0.0 and UW2 1.2.1 gave it a DOS
+   path, RECORDINGS\YYYYMMDD-HHMMSS\RECORD.OUT, which the game's file names cut to 8.3: every
+   session of a day went to RECORDIN/YYYYMMDD/RECORD.OUT, each overwriting the last, never
+   pruned, and copied into each later session's stage/. An old RECORDIN/ is left where it is,
+   the player's own files, but kept out of stage/.
+
    The port's main calls port_blackbox_start(home) before the game starts, for a player's run
    only: one with a window, neither recording nor replaying a test, and with an option to turn
    it off (UW2: --no-recording); runtime/README.md has the wiring. */
@@ -27,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 #ifdef _WIN32
@@ -47,7 +57,7 @@ extern const char *rp_blackbox_name;
 void rp_blackbox_close(int crashed);
 
 static const char *const skip[] = {
-    "recordings", "STATE.OUT", "RECORD.OUT", "REPLAY.IN", "TRACE.OUT",
+    "recordings", "RECORDIN", "STATE.OUT", "RECORD.OUT", "REPLAY.IN", "TRACE.OUT",
 #ifdef BLACKBOX_SKIP
     BLACKBOX_SKIP,
 #endif
@@ -84,7 +94,7 @@ static int copy_tree(const char *from, const char *to, int top)
     while ((e = readdir(d)) != NULL) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         for (i = 0; top && i < sizeof skip / sizeof *skip; i++)
-            if (!strcmp(e->d_name, skip[i])) break;
+            if (!strcasecmp(e->d_name, skip[i])) break;
         if (top && i < sizeof skip / sizeof *skip) continue;
         snprintf(a, sizeof a, "%s/%s", from, e->d_name);
         snprintf(b, sizeof b, "%s/%s", to, e->d_name);
@@ -143,7 +153,7 @@ static void prune(const char *dir)
    being recorded. */
 int port_blackbox_start(const char *home)
 {
-    static char dospath[64];
+    static char record[1300];
     char dir[1100], session[1200], stage[1300];
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
@@ -156,13 +166,13 @@ int port_blackbox_start(const char *home)
     if (mkdir(session, 0755) != 0 && !is_dir(session)) return 1;
     snprintf(stage, sizeof stage, "%s/stage", session);
     if (copy_tree(home, stage, 1)) fprintf(stderr, PORT_NAME ": the session's starting files were not all copied\n");
-    /* replay.c opens the recording as the game opens its files, by a DOS path that the port's
-       file layer looks up in the home directory without case */
-    snprintf(dospath, sizeof dospath, "RECORDINGS\\%s\\RECORD.OUT", stamp);
-    rp_blackbox_name = dospath;
+    /* a host path, which replay.c opens as it is: not a DOS one, which the game's 8.3 file
+       names would cut to RECORDIN\YYYYMMDD (the header's note) */
+    snprintf(record, sizeof record, "%s/RECORD.OUT", session);
+    rp_blackbox_name = record;
     rp_blackbox = 1;
     rp_request = 1;                     /* RP_RECORD */
-    fprintf(stderr, PORT_NAME ": recording this session to %s/RECORD.OUT\n", session);
+    fprintf(stderr, PORT_NAME ": recording this session to %s\n", record);
     return 0;
 }
 

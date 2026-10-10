@@ -189,19 +189,21 @@ struct Stream {
 int16 rp_request = RP_AUTO;             /* the port sets it before the game starts */
 #ifndef __TURBOC__
 /* The port's black box (runtime/port/sys/blackbox.c): every player's session is recorded,
-   with no state dumps and no stop at RP_STOP_SCAN, to the name blackbox.c gives, so that a
-   crash can be replayed. */
+   with no state dumps and no stop at RP_STOP_SCAN, to the file blackbox.c names, so that a
+   crash can be replayed. Its name is a host path (recordings/YYYYMMDD-HHMMSS/RECORD.OUT in the
+   home directory), opened as it is: as a DOS path the game's 8.3 names cut it to
+   RECORDIN/YYYYMMDD, a folder blackbox.c neither made nor prunes. */
 int16 rp_blackbox;
 const char *rp_blackbox_name;
 #define BLACKBOX rp_blackbox
-#define RECORD_NAME (rp_blackbox ? rp_blackbox_name : "RECORD.OUT")
+#define OPEN_RECORD(fl, mode) (rp_blackbox ? bc_open_host(rp_blackbox_name, fl, mode) : open("RECORD.OUT", fl, mode))
 /* a black box recording has no last call: live play can make tens of millions of hook calls
    a second (UW2: some 30 million, so the 32-bit count wraps every two minutes or so), and a
    replay of one runs on to the end of its streams (or into the code that crashed) */
 #define NO_STOP (stop_at == 0xFFFFFFFFUL)
 #else
 #define BLACKBOX 0
-#define RECORD_NAME "RECORD.OUT"
+#define OPEN_RECORD(fl, mode) open("RECORD.OUT", fl, mode)
 #define NO_STOP 0
 #endif
 static int16 rp_mode = -1;              /* RP_OFF, RP_RECORD or RP_REPLAY once started */
@@ -601,7 +603,7 @@ static void rp_start_on(void)
             return;
     }
     if (rp_mode == RP_OFF) {
-        log_fd = open(RECORD_NAME, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0x180);
+        log_fd = OPEN_RECORD(O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0x180);
         if (log_fd < 0) return;
         rp_mode = RP_RECORD;
 #ifndef __TURBOC__

@@ -118,6 +118,7 @@ extern uint16_t port_si, port_di, port_bp, port_sp, port_cs, port_ds, port_es, p
    own LCG, RAND_MAX 7FFFh), clock at 18.2 Hz, and time and rand under the replay harness's
    control. Function-like, so only calls are renamed. */
 int bc_open(const char *path, int access, ...);
+int bc_open_host(const char *host, int access, ...);  /* a host path: the port's own files (borland.c) */
 int bc_creat(const char *path, int mode);
 int bc_read(int fd, void *buf, unsigned n);
 int bc_write(int fd, const void *buf, unsigned n);

@@ -177,13 +177,18 @@ const cases = {
           log.filter(l => /^web:|presents,/.test(l)).join(' | '));
     check(await play(), 'saves: uw1 draws its title after the game ended');
     check(await read(`${home}/SAVE4/WEBCHECK2.DAT`) === 'kept at the end', 'saves: a file written before the game ended is there after');
-    // every RECORD.OUT in the home, wherever the black box put it (a session's start copies the
-    // home, the last session's recording with it, into its own folder), with its header's count
+    // every RECORD.OUT in the home, with its header's count: the ended session's is its own,
+    // recordings/YYYYMMDD-HHMMSS/RECORD.OUT, not a copy in a later session's stage/ (which leaves
+    // recordings/ out), and there is no RECORDIN/ (1.0.0's recordings, one a day, through the
+    // game's 8.3 names: each session of the day overwrote the last, and stage/ copied it)
     const heads = await p.evaluate(h => { const F = window.__exhumeModule.FS, out = [];
       const walk = d => { for (const n of F.readdir(d)) { if (n === '.' || n === '..') continue; const f = `${d}/${n}`;
         if (F.isDir(F.stat(f).mode)) walk(f); else if (n === 'RECORD.OUT') { const b = F.readFile(f); out.push([f.slice(h.length + 1), b.length, [...b.subarray(8, 12)].map(x => x.toString(16)).join(' ')]); } } };
       walk(h); return out; }, home);
-    check(heads.some(([, n, c]) => n > 12 && c === 'ff ff ff ff'), 'saves: the ended session\'s recording was closed and kept', JSON.stringify(heads));
+    check(heads.some(([f, n, c]) => /^recordings\/\d{8}-\d{6}\/RECORD\.OUT$/.test(f) && n > 12 && c === 'ff ff ff ff'),
+          'saves: the ended session\'s recording was closed and kept, in its own folder under recordings/', JSON.stringify(heads));
+    check(heads.length > 0 && heads.every(([f]) => /^recordings\/\d{8}-\d{6}\/RECORD\.OUT$/.test(f)),
+          'saves: every recording is in a session\'s folder under recordings/ (none in RECORDIN/ or a stage/)', JSON.stringify(heads));
     await ctx.close();
   },
   async refused() {  // a browser that refuses the service worker (cookies and site data blocked): a message and no game to click

@@ -140,22 +140,58 @@ union port_reg16 port_ax, port_bx, port_cx, port_dx;
 uint16_t port_si, port_di, port_bp, port_sp = 0x1000, port_cs, port_ds = PORT_DGROUP_PARA + PORT_LOAD_SEG,
          port_es, port_ss = PORT_DGROUP_PARA + PORT_LOAD_SEG, port_flags;
 
+/* Borland's open flags (B_RDWR and the rest) as the host's */
+static int host_flags(int access)
+{
+    int fl = ((access & B_RDWR) ? O_RDWR : (access & B_WRONLY) ? O_WRONLY : O_RDONLY) | HOST_BINARY;
+    if (access & B_CREAT) fl |= O_CREAT;
+    if (access & B_TRUNC) fl |= O_TRUNC;
+    if (access & B_EXCL) fl |= O_EXCL;
+    if (access & B_APPEND) fl |= O_APPEND;
+    return fl;
+}
+
+/* Opens the host file host as handle I/O on it expects (text mode, write-behind); path is the
+   name the caller gave, for the log. */
+static int open_host(const char *path, const char *host, int access, int fl)
+{
+    int fd = open(host, fl, 0644);
+    port_log("open(\"%s\", %04X) -> %s = %d\n", path, access, host, fd);
+    if (fd >= 0 && fd < MAXFD) {
+        fd_text[fd] = !(access & B_BINARY);
+        fd_eof[fd] = 0;
+        fd_wrote[fd] = (fl & (O_RDWR | O_WRONLY)) && (fl & (O_CREAT | O_TRUNC));    /* a new or emptied file */
+        free(fd_cow[fd]);
+        fd_cow[fd] = NULL;
+#ifdef PORT_WRITE_BEHIND
+        wb_stop(fd);                    /* a handle number used before */
+        if ((fl & (O_RDWR | O_WRONLY)) == O_WRONLY) wb_start(fd);
+#endif
+    }
+    return fd;
+}
+
+/* bc_open for a host path, not a DOS one: the port's own files that are not the game's, whose
+   names DOS could not hold (the black box's recordings/YYYYMMDD-HHMMSS/RECORD.OUT, which the
+   game's 8.3 names would cut to RECORDIN/YYYYMMDD; replay.c opens it so). The mode, given with
+   B_CREAT, is ignored, as bc_open ignores it. */
+int bc_open_host(const char *host, int access, ...)
+{
+    return open_host(host, host, access, host_flags(access));
+}
+
 int bc_open(const char *path, int access, ...)
 {
     char host[1024];
     struct stat st;
-    int fl, fd, mode = 0644, how;
+    int fl, fd, how;
     if (access & B_CREAT) {
         va_list ap;
         va_start(ap, access);
         (void)va_arg(ap, int);
         va_end(ap);
     }
-    fl = ((access & B_RDWR) ? O_RDWR : (access & B_WRONLY) ? O_WRONLY : O_RDONLY) | HOST_BINARY;
-    if (access & B_CREAT) fl |= O_CREAT;
-    if (access & B_TRUNC) fl |= O_TRUNC;
-    if (access & B_EXCL) fl |= O_EXCL;
-    if (access & B_APPEND) fl |= O_APPEND;
+    fl = host_flags(access);
     how = (access & (B_CREAT | B_TRUNC)) == (B_CREAT | B_TRUNC) ? PLAT_CREATE
         : (fl & (O_RDWR | O_WRONLY)) || (access & B_CREAT) ? PLAT_WRITE : PLAT_READ;
     /* A file opened to change but only read so far stays in the data root: it is copied into
@@ -176,20 +212,7 @@ int bc_open(const char *path, int access, ...)
         }
     }
     if (plat_resolve(path, how, host, sizeof host)) { errno = ENOENT; return -1; }
-    fd = open(host, fl, mode);
-    port_log("open(\"%s\", %04X) -> %s = %d\n", path, access, host, fd);
-    if (fd >= 0 && fd < MAXFD) {
-        fd_text[fd] = !(access & B_BINARY);
-        fd_eof[fd] = 0;
-        fd_wrote[fd] = (fl & (O_RDWR | O_WRONLY)) && (fl & (O_CREAT | O_TRUNC));    /* a new or emptied file */
-        free(fd_cow[fd]);
-        fd_cow[fd] = NULL;
-#ifdef PORT_WRITE_BEHIND
-        wb_stop(fd);                    /* a handle number used before */
-        if ((fl & (O_RDWR | O_WRONLY)) == O_WRONLY) wb_start(fd);
-#endif
-    }
-    return fd;
+    return open_host(path, host, access, fl);
 }
 
 /* The first write to a file still read from the data root: copy it into the home directory
