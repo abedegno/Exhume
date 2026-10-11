@@ -95,8 +95,11 @@ class Map:
     def symdef_entries(self, exclude, extra):
         out = []
         for r in self.functions + self.data:
-            if r.name in exclude: continue
-            out.append((r.addr, 'T' if r.name in self.code_names else 'D', r.name))
+            kind = 'T' if r.name in self.code_names else 'D'
+            if r.name not in exclude: out.append((r.addr, kind, r.name))
+            # a renamed row keeps its placeholder as an alias, so older sources still link
+            alias = (('sub_' if kind == 'T' else 'g_' if r.addr >= 0x20000000 else 'c_') + f'{r.addr:08X}')
+            if placeholder(r.name) is None and alias not in exclude: out.append((r.addr, kind, alias))
         for name, addr in extra.items():
             if name in exclude or name in self.by_name: continue
             out.append((addr, 'D' if addr >= 0x20000000 else 'T', name))

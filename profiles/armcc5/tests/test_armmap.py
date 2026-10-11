@@ -87,6 +87,14 @@ class ArmmapTest(unittest.TestCase):
         src = armmap.pad_source([('i.a', 0x08000002, 4), ('i.b', 0x08000012, 4)])
         self.assertIn('section(".pad1")', src); self.assertIn('section(".pad2")', src)
 
+    def test_a_renamed_row_keeps_its_placeholder_as_an_alias(self):
+        # a source written before the rename still calls sub_08004120 / reads g_20000210
+        m = armmap.Map([Row(0x08004120, 0x30, 'CAN_Transmit', 'lib', '')], [Row(0x20000210, 8, 'g_tx', 'rw', '')])
+        e = m.symdef_entries(exclude=set(), extra={})
+        self.assertIn((0x08004120, 'T', 'sub_08004120'), e)
+        self.assertIn((0x20000210, 'D', 'g_20000210'), e)
+        self.assertNotIn((0x08004120, 'T', 'sub_08004120'), m.symdef_entries(exclude={'sub_08004120'}, extra={}))
+
     def test_scatter(self):
         text, regions = armmap.scatter_text('t.o', [('i.timer_tick', 0x08004120, 0x30), ('.data', 0x20000210, 8)])
         self.assertIn('LR_1 0x08004120 {', text)
