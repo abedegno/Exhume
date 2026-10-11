@@ -91,3 +91,19 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - armcc can rematerialise a constant from a known register (`lsls r5,r1,#5` for 0x100 from 8).
 - `if (!(x & 2)) r = 1; else r = 0;` puts `r = 1` after the return; `if (x & 2) r = 0; else r = 1;`
   keeps it inline.
+- armcc's default `--data_reorder` sorts a file's `.data` by size, smallest first (equal sizes keep
+  definition order). Where the original's RAM order isn't sorted by size, the file was built with
+  `--no_data_reorder` (an `/* opts: */` line).
+- Type-based aliasing decides reloads: declared as a struct, a count stays live in a register
+  across unrelated u16 stores; declared as a `u16[]`, every u16 store may alias it and it is
+  reloaded. When the original reloads a global after an unrelated store, try a plain array type.
+- A separate small array global gets its own base register; a scalar can be reached from the
+  section anchor (`subs r2,r5,#4; ... [r2,#0xc]`).
+- An address-taken `u16` local is stored with a 32-bit `str` and read with `ldrh`; stack slots go
+  in reverse declaration order (the first address-taken local gets the highest offset).
+- `buf[n++]` after `n = 0` (constant-propagated) still changes code: a copied base, a hoisted
+  constant in a callee-saved register; literal indices are shorter.
+- `*p++` gives a post-indexed `ldrb r,[r1],#1`; `x = *p; p++;` gives `ldrb` then `adds`.
+- MicroLIB's library members (printf8.o's `_printf_core` and friends) in a real image can come from
+  a different MDK release than the compiler: same algorithm, different register allocation. They
+  can't be matched from C; the gate needs that release's `mc_w.l`.
