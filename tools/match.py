@@ -50,6 +50,10 @@ def code_segment(cfg, segs):
 def main(argv):
     path, a = config.pop_config(argv)
     cfg = config.load(path)
+    if cfg.object_model == 'linked-image':
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        import armmatch
+        return armmatch.main(cfg, a)
     if not a or a[0].startswith('-'): sys.exit(__doc__)
     src = a[0]; stem = cfg.stem(src)
     seg, opts = cfg.directives(src)

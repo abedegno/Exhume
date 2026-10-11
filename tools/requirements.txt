@@ -3,3 +3,5 @@
 # runs original code for tools/fuzzasm.py and tools/ailcheck.py, development tools only (GPL-2.0).
 iced-x86==1.21.0
 unicorn==2.1.4
+# capstone decodes Thumb-2 for the armcc5 profile's match reports
+capstone==5.0.9

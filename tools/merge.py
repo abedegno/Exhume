@@ -21,6 +21,10 @@ def run(tool, args):
 
 def main(argv):
     path, a = config.pop_config(argv); cfg = config.load(path)
+    if cfg.object_model == 'linked-image':
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        import armmerge
+        return armmerge.main(cfg, a)
     if not a: sys.exit(__doc__)
     src = a[0]; seg = cfg.directives(src)[0]
     extra = ['--config', cfg.file]

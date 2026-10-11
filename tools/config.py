@@ -85,6 +85,8 @@ class Config:
         self.overlay_re = re.compile(b['overlay_segment']) if b.get('overlay_segment') else None
         self.listing = os.path.join(self.root, b['listing']) if b.get('listing') else None
         self.listing_para_bias = b.get('listing_para_bias', 0)
+        # a linked-image profile's target: an Intel HEX or raw image ([binary] image)
+        self.image = os.path.join(self.root, b['image']) if b.get('image') else None
         self.listing_stub_prefix = b.get('listing_stub_prefix', 'stub')
         # load paragraphs of listing segments whose names carry none (UW1's seg051, seg004)
         self.listing_segments = {k: int(v) for k, v in b.get('listing_segments', {}).items()}
@@ -97,6 +99,9 @@ class Config:
         prof_c = self.profile.get('c', {}); prof_a = self.profile.get('asm', {})
         self.c_opts = t.get('c_opts', prof_c.get('default_opts', ''))
         self.asm_opts = t.get('asm_opts', prof_a.get('default_opts', ''))
+        # how match/merge/gate see a build: "omf-masked" (Borland: masked objects, then verify) or
+        # "linked-image" (armcc5: link at the real addresses, compare finished bytes)
+        self.object_model = self.profile.get('link', {}).get('object_model', 'omf-masked')
         # the DOS the toolchain runs in (tools/dosbackend.mjs) and how many sessions at once
         # (tools/dosbatch.py); the environment's EXHUME_DOS and EXHUME_DOS_SESSIONS win, and
         # setting them here passes the choice to every tool and DOS run this one starts
