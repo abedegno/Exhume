@@ -138,3 +138,8 @@ Evidence is a matched function in a real firmware or a test in tests/.
   `cmp #0x41; blo; cmp #0x46; bhi`.
 - `if (b == 0) {...} else if (w == 0) clear;` puts the clear out of line (`cbz` and `b`); the
   inverted form puts it inline with `cbnz`.
+- `u8 *dst = p->buf; dst += 3;` keeps two adds; `&p->buf[3]` folds into one.
+- A union local `{ u16 w; u8 b[2]; }` to split a word goes through the stack (`str; ldrb [sp,#1]`).
+- `dst[n] = x; n++;` updates n in place; `dst[n++] = x;` takes a new register for n+1.
+- `arr[a - 1]` with a u8 `a` gives `subs` without `uxtb`; `a--` first adds the `uxtb`.
+- Branch order decides layout: the arm tested first (`if (p->err != 0)`) goes inline.
