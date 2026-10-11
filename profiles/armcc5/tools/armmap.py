@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 HEADER = 'addr\tsize\tname\tkind\tfile'
 _PH = re.compile(r'^(sub|g|c)_([0-9A-Fa-f]{8})$')
-_AT = re.compile(r'/\*\s*at:\s*(.*?)\*/|^\s*;\s*at:\s*(.*)$', re.S | re.M)       # C comment, or an assembler ; line
+_AT = re.compile(r'/\*\s*at:\s*(.*?)\*/|^[ \t]*;[ \t]*at:([^\n]*)', re.S | re.M)       # C comment, or an assembler ; line
 _ATENTRY = re.compile(r'([A-Za-z_]\w*)\s+(0x[0-9A-Fa-f]+)')
-_DROPPED = re.compile(r'/\*\s*dropped:\s*(.*?)\*/|^\s*;\s*dropped:\s*(.*)$', re.S | re.M)
+_DROPPED = re.compile(r'/\*\s*dropped:\s*(.*?)\*/|^[ \t]*;[ \t]*dropped:([^\n]*)', re.S | re.M)
 
 
 @dataclass
@@ -63,7 +63,7 @@ def dropped(text):
     return out
 
 
-_UNUSED = re.compile(r'/\*\s*unused:\s*dropped\s*\*/|^\s*;\s*unused:\s*dropped\s*$', re.M)
+_UNUSED = re.compile(r'/\*\s*unused:\s*dropped\s*\*/|^[ \t]*;[ \t]*unused:[ \t]*dropped[ \t]*$', re.M)
 
 
 def unused_dropped(text):

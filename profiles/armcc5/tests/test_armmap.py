@@ -20,6 +20,9 @@ class ArmmapTest(unittest.TestCase):
         t = '/* dropped: s_unused, t_old */\nint x;\n/* dropped: u_dead */'
         self.assertEqual(armmap.dropped(t), {'s_unused', 't_old', 'u_dead'})
 
+    def test_at_in_an_assembly_file_stops_at_the_line_end(self):
+        self.assertEqual(armmap.annotations('; at: a 0x10\n  b 0x20\n'), {'a': 0x10})
+
     def test_dropped_in_an_assembly_file(self):
         self.assertEqual(armmap.dropped('; dropped: __heap_base, __heap_limit\n  AREA x\n'), {'__heap_base', '__heap_limit'})
 
