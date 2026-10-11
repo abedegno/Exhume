@@ -56,6 +56,12 @@ merge, commit, or edit shared files.
 - **Strings and small tables** a function reaches with `adr` belong to that function: write them
   as literals in it.
 - `static` helpers are fine when a function is only called from inside your unit.
+- **No assembly stand-ins.** Every function is C. No `__asm` functions, no GNU `asm(...)`, no
+  `__asm { }` forcing ordinary instructions, no data placed in code sections, no `register ...
+  __asm("rN")` variables. An inline `__asm { MSR ... }` (or MRS, CPSID, WFI and the like) for one
+  special-register instruction with no C equivalent is fine. If the map's rows look wrong (a
+  function split into several rows, a trampoline or literal pool with its own row), report the
+  addresses and match the rest: the map gets fixed, the source doesn't work around it.
 
 ## How armcc 5.06u7 at -O1 -Otime behaves (short version; compiler.md has the evidence)
 
