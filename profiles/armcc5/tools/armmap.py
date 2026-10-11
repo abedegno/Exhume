@@ -115,16 +115,19 @@ def _kind(section):
 
 
 def groups(placements):
-    """Placements (section, addr, size) in address order, grouped where one section starts where
-    the one before it ends (or after 1-3 bytes of padding, when it starts 4-aligned): one region
-    holds a group, so armlink never rounds one section's region up over the next."""
+    """Placements (section, addr, size) in address order, grouped where a section starts off a
+    4-byte boundary exactly where the one before it ends: one region holds the group (its first
+    section pinned +FIRST), so armlink never rounds one section's region up over the next. Every
+    other section has a region of its own, so names never decide placement."""
     out = []
     for sec, addr, size in sorted(placements, key=lambda p: p[1]):
         if out:
             psec, paddr, psize = out[-1][-1]
             end = paddr + (psize or 0)
             same_space = (addr >= 0x20000000) == (paddr >= 0x20000000)
-            if same_space and (addr == end or 0 < addr - end < 4 and addr % 4 == 0):
+            # only a section that starts off a 4-byte boundary right where the one before ends
+            # needs that one's region (armlink rounds a region's end up to 4)
+            if same_space and addr % 4 and addr == end:
                 out[-1].append((sec, addr, size)); continue
         out.append([(sec, addr, size)])
     return out
@@ -163,8 +166,9 @@ def scatter_text(obj_name, placements):
     lines, regions, k = [], {}, 0
     for i, g in enumerate(groups(placements), 1):
         regions[f'ER_{i}'] = [(sec, addr) for sec, addr, _ in g]
-        sel = ' '.join(f'{obj_name}({sec})' for sec, _, _ in g)
         first = g[0][1]
+        pin = len(g) > 1 and not first % 4          # an unaligned group's pad is already +FIRST
+        sel = ' '.join(f'{obj_name}({sec}{", +FIRST" if k == 0 and pin else ""})' for k, (sec, _, _) in enumerate(g))
         if first % 4:
             k += 1
             lines += [f'LR_{i} 0x{0x0E000000 + 0x10000 * k:08X} {{',

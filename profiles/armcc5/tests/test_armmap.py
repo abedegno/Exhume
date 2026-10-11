@@ -62,13 +62,18 @@ class ArmmapTest(unittest.TestCase):
         self.assertIn('zero_init)) unsigned char exhume_pad2[1]', src2)
         self.assertEqual(regions, {'ER_1': [('i.f', 0x08004120)], 'ER_2': [('.data', 0x2000001A)]})
 
-    def test_adjacent_sections_share_one_region(self):
-        # sub_a ends where sub_b starts (2-aligned): one region holds both, in order, so armlink
-        # doesn't round sub_a's region up over sub_b
+    def test_a_2_aligned_follower_shares_its_predecessors_region(self):
+        # i.b starts 2-aligned straight after i.a: one region holds both, i.a pinned first, so
+        # armlink doesn't round i.a's region up over i.b (and doesn't reorder them by name)
         text, regions = armmap.scatter_text('t.o', [('i.a', 0x08000028, 0x26), ('i.b', 0x0800004E, 0x1A), ('i.c', 0x08000100, 8)])
-        self.assertIn('ER_1 0x08000028 FIXED { t.o(i.a) t.o(i.b) }', text)
+        self.assertIn('ER_1 0x08000028 FIXED { t.o(i.a, +FIRST) t.o(i.b) }', text)
         self.assertEqual(regions['ER_1'], [('i.a', 0x08000028), ('i.b', 0x0800004E)])
         self.assertEqual(regions['ER_2'], [('i.c', 0x08000100)])
+
+    def test_4_aligned_neighbours_keep_their_own_regions(self):
+        # adjacent but 4-aligned: separate regions, so names never decide their order
+        text, regions = armmap.scatter_text('t.o', [('i.main', 0x08000010, 0x10), ('i.sub_08000020', 0x08000020, 0x10)])
+        self.assertEqual(len(regions), 2)
 
     def test_each_unaligned_group_gets_its_own_load_region(self):
         text, regions = armmap.scatter_text('t.o', [('i.a', 0x0800004E, 0x1A), ('i.b', 0x0800008E, 0x1A)])
