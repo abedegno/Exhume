@@ -2,8 +2,9 @@
 
 One container per (toolchain home, project root): the root is mounted at /work and the home
 (the directory holding ARM/ARMCC and ARM/sw, from setup-mdk.sh) at /tc. Tools run by
-`docker exec`, so builds can run side by side. Objects are Keil's MDK-Lite "ORC" format and
-are only ever read by Keil's fromelf and armlink."""
+`docker exec`, so builds can run side by side. With runner 'wine' (EXHUME_ARMCC_RUNNER=wine, for
+a host with Wine and no Docker) the tools run under the host's Wine on host paths instead. Objects
+are Keil's MDK-Lite "ORC" format and are only ever read by Keil's fromelf and armlink."""
 import fcntl, hashlib, os, re, subprocess, tempfile
 from dataclasses import dataclass
 
@@ -81,15 +82,17 @@ def parse_symbols(text):
 
 
 class Toolchain:
-    def __init__(self, home, root, image='armcc-wine'):
+    def __init__(self, home, root, image='armcc-wine', runner=None):
         self.home = os.path.realpath(home); self.root = os.path.realpath(root); self.image = image
+        self.runner = runner or os.environ.get('EXHUME_ARMCC_RUNNER', 'docker')
         if not os.path.isfile(os.path.join(self.home, 'ARM', 'ARMCC', 'bin', 'armcc.exe')):
             raise SystemExit(f'{self.home}: no ARM/ARMCC/bin/armcc.exe (run profiles/armcc5/setup-mdk.sh)')
         self.name = 'armcc5-' + hashlib.sha1(f'{self.home}|{self.root}'.encode()).hexdigest()[:10]
         self._started = False
 
     def inside(self, host):
-        """The container's path for a host path under the project root."""
+        """The container's path for a host path under the project root (the host path under Wine)."""
+        if self.runner == 'wine': return os.path.realpath(host)
         rel = os.path.relpath(os.path.realpath(host), self.root)
         if rel.startswith('..'): raise ValueError(f'{host} is outside {self.root}')
         return '/work' if rel == '.' else '/work/' + rel.replace(os.sep, '/')
@@ -97,7 +100,7 @@ class Toolchain:
     def start(self):
         """Start this root's container unless it runs. A lock file makes concurrent cold starts
         (buildd jobs, threads) wait for one another instead of removing each other's container."""
-        if self._started: return
+        if self._started or self.runner == 'wine': return
         with open(os.path.join(tempfile.gettempdir(), self.name + '.lock'), 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             r = subprocess.run(['docker', 'inspect', '-f', '{{.State.Running}}', self.name], capture_output=True, text=True)
@@ -115,9 +118,15 @@ class Toolchain:
         """(exit status, output) of one Keil tool. Exit status above 1 is a crash (Rosetta
         kills an x86 process now and then): retried twice. 0 and 1 are the tool's own answer."""
         self.start()
-        cmd = ['docker', 'exec', '-w', self.inside(cwd), self.name, 'wine', f'/tc/ARM/ARMCC/bin/{tool}.exe'] + args
+        if self.runner == 'wine':
+            cmd = ['wine', os.path.join(self.home, 'ARM', 'ARMCC', 'bin', f'{tool}.exe')] + args
+            kw = dict(cwd=cwd, env=dict(os.environ, ARM_TOOL_VARIANT='mdk_lite', WINEDEBUG='-all',
+                      ARM_PRODUCT_PATH='Z:' + self.home.replace('/', '\\') + '\\ARM\\sw\\mappings'))
+        else:
+            cmd = ['docker', 'exec', '-w', self.inside(cwd), self.name, 'wine', f'/tc/ARM/ARMCC/bin/{tool}.exe'] + args
+            kw = {}
         for attempt in range(3):
-            r = subprocess.run(cmd, capture_output=True, text=True)
+            r = subprocess.run(cmd, capture_output=True, text=True, **kw)
             out = clean(r.stdout + r.stderr)
             if r.returncode in (0, 1): return r.returncode, out
         return r.returncode, out
@@ -161,6 +170,7 @@ class Toolchain:
 
     def stop(self):
         """Remove this root's container (tests with throwaway roots call it)."""
+        if self.runner == 'wine': return
         subprocess.run(['docker', 'rm', '-f', self.name], capture_output=True)
         self._started = False
 

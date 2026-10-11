@@ -93,5 +93,37 @@ class ToolchainTest(unittest.TestCase):
             self.tc.stop(); shutil.rmtree(root, ignore_errors=True)
 
 
+class NativeWineTest(unittest.TestCase):
+    """runner='wine': no container; Keil's tools run under the host's Wine with host paths."""
+    def setUp(self):
+        self.home = tempfile.mkdtemp(); self.root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.home, 'ARM', 'ARMCC', 'bin'))
+        open(os.path.join(self.home, 'ARM', 'ARMCC', 'bin', 'armcc.exe'), 'w').close()
+
+    def tearDown(self):
+        shutil.rmtree(self.home); shutil.rmtree(self.root)
+
+    def test_runs_wine_on_the_host_with_host_paths(self):
+        from unittest import mock
+        tc = armtc.Toolchain(self.home, self.root, runner='wine')
+        src = os.path.join(self.root, 'a.c')
+        self.assertEqual(tc.inside(src), os.path.realpath(src))
+        done = subprocess.CompletedProcess([], 0, 'ok', '')
+        with mock.patch.object(armtc.subprocess, 'run', return_value=done) as run:
+            self.assertEqual(tc.run('armcc', ['--vsn'], self.root), (0, 'ok'))
+        cmd = run.call_args.args[0]; kw = run.call_args.kwargs
+        home = os.path.realpath(self.home)
+        self.assertEqual(cmd, ['wine', os.path.join(home, 'ARM', 'ARMCC', 'bin', 'armcc.exe'), '--vsn'])
+        self.assertEqual(kw['cwd'], self.root)
+        self.assertEqual(kw['env']['ARM_TOOL_VARIANT'], 'mdk_lite')
+        self.assertEqual(kw['env']['ARM_PRODUCT_PATH'], 'Z:' + home.replace('/', '\\') + '\\ARM\\sw\\mappings')
+        self.assertFalse(any('docker' in str(c) for c in run.call_args_list))
+
+    def test_runner_comes_from_the_environment(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {'EXHUME_ARMCC_RUNNER': 'wine'}):
+            self.assertEqual(armtc.Toolchain(self.home, self.root).runner, 'wine')
+
+
 if __name__ == '__main__':
     unittest.main()
