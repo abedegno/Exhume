@@ -146,3 +146,8 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - A builder with constant indices may still have used a running index (`n = 14; ...; txlen =
   n - 14;`): the folded constant is loaded early. A literal at the end loads late.
 - A value both clamped and split into bytes needs one `u32` local, or the multiply is redone.
+- `(u16field + 5) / 10` with the value in r1 and 0xCCCCCCCD in r0 needs
+  `u32 k; k = g.f; v = (k + 5) / 10;`; other spellings swap the registers or load order.
+- A byte built from 1-bit bitfields after `dst.all = 0;` forwards the zero (`mov r2,rZero; lsrs;
+  bfi; bfi; strb`, no load). A union used inside a `__packed` struct must itself be `__packed`.
+- The zero-assignment order rule applies to mixed widths too: `i = 0; mask = 0; for (; ...)`.
