@@ -114,14 +114,31 @@ def _kind(section):
     return 'rw' if section == '.data' else 'zi' if section == '.bss' else 'ro'
 
 
+def groups(placements):
+    """Placements (section, addr, size) in address order, grouped where one section starts where
+    the one before it ends (or after 1-3 bytes of padding, when it starts 4-aligned): one region
+    holds a group, so armlink never rounds one section's region up over the next."""
+    out = []
+    for sec, addr, size in sorted(placements, key=lambda p: p[1]):
+        if out:
+            psec, paddr, psize = out[-1][-1]
+            end = paddr + (psize or 0)
+            same_space = (addr >= 0x20000000) == (paddr >= 0x20000000)
+            if same_space and (addr == end or 0 < addr - end < 4 and addr % 4 == 0):
+                out[-1].append((sec, addr, size)); continue
+        out.append([(sec, addr, size)])
+    return out
+
+
 def pad_source(placements):
-    """C for the pads the unaligned placements need, one section each (a section can be placed
-    once): pad k for the k-th unaligned placement, as many bytes as its address is past a 4-byte
-    boundary, and of its kind: armlink starts an execution region's RW part after its RO part on
-    a 4-byte boundary, so the pad must match."""
+    """C for the pads the unaligned groups need, one section each (a section can be placed
+    once): pad k for the k-th group that starts off a 4-byte boundary, as many bytes as it is past
+    one, and of its first section's kind: armlink starts an execution region's RW part after its
+    RO part on a 4-byte boundary, so the pad must match."""
     lines = ['/* exhume: pads for sections on addresses that are not 4-aligned */']
     k = 0
-    for section, addr in placements:
+    for g in groups(placements):
+        section, addr, _ = g[0]
         if not addr % 4: continue
         k += 1; n = addr % 4; kind = _kind(section)
         if kind == 'ro':
@@ -137,21 +154,21 @@ PAD_OBJ = 'exhume_pad.o'
 
 
 def scatter_text(obj_name, placements):
-    """One load and execution region per section, each FIXED at its address. armlink wants
-    regions on 4-byte boundaries, and a .data of halfwords can sit on 2: such a section goes in an
-    execution region at the aligned address below, after 1-3 bytes from exhume_pad.o (pad_source),
-    all in one load region out of the way (link with --datacompressor off). The pad bytes come
-    first in that region's output; the matcher drops them (addr % 4)."""
-    lines, regions, unaligned = [], {}, []
-    k = 0
-    for i, (section, addr) in enumerate(placements, 1):
-        regions[f'ER_{i}'] = section
-        if addr % 4:
+    """Regions for placements (section, addr, size). Each group of adjacent sections (groups())
+    is one execution region at its first address, FIXED, in its own load region; a group that
+    starts off a 4-byte boundary goes in a region at the aligned address below, after a pad
+    `+FIRST` (pad_source), in a load region of its own out of the way (link with
+    --datacompressor off). Returns (text, {region: [(section, addr), ...]}); a region's output
+    starts at its first address rounded down to 4."""
+    lines, regions, k = [], {}, 0
+    for i, g in enumerate(groups(placements), 1):
+        regions[f'ER_{i}'] = [(sec, addr) for sec, addr, _ in g]
+        sel = ' '.join(f'{obj_name}({sec})' for sec, _, _ in g)
+        first = g[0][1]
+        if first % 4:
             k += 1
-            unaligned.append(f'  ER_{i} 0x{addr & ~3:08X} {{ {PAD_OBJ}(.pad{k}, +FIRST) {obj_name}({section}) }}')
-            continue
-        lines += [f'LR_{i} 0x{addr:08X} {{', f'  ER_{i} 0x{addr:08X} FIXED {{ {obj_name}({section}) }}', '}']
-    if unaligned:
-        # the pads no section needs still have to go somewhere (the matcher links with --keep *)
-        lines += ['LR_UNALIGNED 0x0E000000 {'] + unaligned + ['}']
+            lines += [f'LR_{i} 0x{0x0E000000 + 0x10000 * k:08X} {{',
+                      f'  ER_{i} 0x{first & ~3:08X} {{ {PAD_OBJ}(.pad{k}, +FIRST) {sel} }}', '}']
+        else:
+            lines += [f'LR_{i} 0x{first:08X} {{', f'  ER_{i} 0x{first:08X} FIXED {{ {sel} }}', '}']
     return '\n'.join(lines) + '\n', regions

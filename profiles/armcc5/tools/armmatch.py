@@ -134,7 +134,9 @@ def match(cfg, src, dis=None):
     res.defined = defined
     if errors:
         res.lines += ['ERROR ' + e for e in errors]; res.lines.append('-- not linked'); return res
-    scatter, regions = armmap.scatter_text(os.path.basename(obj), placements)
+    size_of = {n: z for n, z in info.sections.values()}
+    sized = [(sec, a, size_of.get(sec) or 0) for sec, a in placements]
+    scatter, regions = armmap.scatter_text(os.path.basename(obj), sized)
     dead = armmap.dropped(text)
     blocked = pending = False
     if unplaced:
@@ -158,7 +160,7 @@ def match(cfg, src, dis=None):
     inputs = [obj, os.path.join(work, 'match.sym')]
     if any(a % 4 for _, a in placements):
         pad_obj = os.path.join(work, armmap.PAD_OBJ); pad_c = os.path.join(work, 'exhume_pad.c')
-        src_text = armmap.pad_source(placements)
+        src_text = armmap.pad_source(sized)
         old = open(pad_c).read() if os.path.exists(pad_c) else None
         if old != src_text or not os.path.exists(pad_obj):
             with open(pad_c, 'w') as f: f.write(src_text)
@@ -178,14 +180,14 @@ def match(cfg, src, dis=None):
     names = {}
     for s in info.symbols:
         if s.type == 'Code' and isinstance(s.sec, int): names[info.sections[s.sec][0]] = s.name
-    size_of = {n: z for n, z in info.sections.values()}
     sec_index = {n: i for i, (n, _) in info.sections.items()}
     code_sec = {n for i, (n, _) in info.sections.items() if is_code(info, i)}
     zi_sec = {n for i, (n, _) in info.sections.items() if is_zi(info, i)}
     good = total = 0; whole = True
-    for region, section in regions.items():
-        a = addr_of[section]
-        got = section_bytes(bins.get(region, b'')[a % 4:], size_of.get(section))
+    for region, members in regions.items():
+      rbase = members[0][1] & ~3
+      for section, a in members:
+        got = section_bytes(bins.get(region, b'')[a - rbase:], size_of.get(section))
         if section in zi_sec: got = bytes(size_of.get(section) or 0)     # fromelf writes no bytes for ZI
         label = names.get(section, section)
         if a >= RAM and ram is None:
