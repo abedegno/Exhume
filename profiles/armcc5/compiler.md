@@ -114,3 +114,9 @@ Evidence is a matched function in a real firmware or a test in tests/.
   branch.
 - `(s16)-u32field` gives `rsbs; sxth`; `-(s16)u32field` gives `sxth; rsbs`.
 - A checksum summed in a `u16` adds a `uxth` in the loop; in a `u32` it doesn't.
+- The declaration order of locals decides register allocation, even within one declarator list
+  (`u8 i, v, n;` matched where `u8 n, i, v;` was 368 bytes off).
+- `if (c) v = 2; else v = 0; p->buf[n] = v;` gives one store after the join; storing in each branch
+  keeps the constants in callee-saved registers.
+- A field of an ordinary struct is loaded once across byte stores to other memory; a field of a
+  `__packed` struct is reloaded. Which structs were packed shows in the reloads.
