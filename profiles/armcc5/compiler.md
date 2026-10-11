@@ -56,3 +56,18 @@ Evidence is a matched function in a real firmware or a test in tests/.
   (`ldr r1,=g` again); `g.state = N+1; g.buf[N] = c;` does not.
 - Two reads of one byte, one through a struct field and one through a byte-pointer cast, stay two
   loads; the same lvalue twice merges into one.
+- A file's own initialised globals are addressed relative to each other (`ldr r6,=g_A; add.w
+  r7,r6,#8` for g_B defined just after g_A); `extern` declarations each get their own literal. So
+  an `add` from another global's base means both were defined in the original file.
+- Bitfields on `u8` compile to `ldrb/bic/orr/strb` on the byte, on `u16` to `ldrh/strh` on the
+  halfword. A constant into a 2-bit field is `bic #3; add #n`; storing 3 is `orr #3`.
+- `if (x == 0) A; else B;` puts A out of line (after later code, through `b` trampolines);
+  `if (x) B; else A;` keeps the else inline.
+- Locals cached at the top of a large function push bases into high registers (wide encodings);
+  reading fields at each use lets armcc load once at entry with low registers.
+- A clamp into a `u32` then narrowed (`if (f > K) c = K; else c = f; t = c;`, `u16 t`) is
+  `cmp; bls; mov; uxth`; clamping straight into a `u16` adds a `b` and a `uxth` on one path.
+- `(u16)(x << 8) | b` stored to a u16 keeps `and.w r2, sl(=0xffff), r2, lsl #8`; without the cast
+  the mask goes.
+- `(u16field + 5) / 10` with signed int arithmetic still uses `umull` by 0xCCCCCCCD; the signed and
+  `+ 5u` forms schedule the literal load differently.

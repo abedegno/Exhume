@@ -36,9 +36,15 @@ merge, commit, or edit shared files.
   unsure, keep the placeholder.
 - **Other functions:** call them by their map name, with a prototype you work out from the call
   sites. Use `sub_XXXXXXXX` unless the map names them.
-- **Globals:** declare every global you use `extern`, with the map's name (`g_XXXXXXXX` for RAM,
-  `c_XXXXXXXX` for flash data) and a real type. Don't define data in this phase. Structs are
-  fine: one extern struct often explains many offsets from the same base.
+- **Globals:**
+  - **Define** the globals the original file defined, with their initial values from the RW image
+    (`map/data.tsv` says `rw` or `zi`). The sign is that armcc addresses a file's own globals
+    relative to each other: `ldr r6,=g_A; add.w r7,r6,#8` means g_B was defined in the same file,
+    straight after g_A. `extern` declarations can't reproduce that: each gets its own literal.
+  - Declare the rest `extern`, with the map's name (`g_XXXXXXXX` for RAM, `c_XXXXXXXX` for flash
+    data) and a real type. Structs are fine: one extern struct often explains many offsets from
+    the same base. The map's data sizes are guesses (the gap to the next address), so trust the
+    code's offsets.
 - **Strings and small tables** a function reaches with `adr` belong to that function: write them
   as literals in it.
 - `static` helpers are fine when a function is only called from inside your unit.
