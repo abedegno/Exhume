@@ -157,3 +157,9 @@ Evidence is a matched function in a real firmware or a test in tests/.
   mismatch is a swap or a reordered literal load, try the clamp forms across the whole function.
 - `g.buf[g.state++] = c;` reloads the struct base only when the known state is 1 or more; at state
   0 it doesn't (and a literal-index store there reuses another register for the 1).
+- `if (c) s.f = 1; else s.f = 2;` on a bitfield hoists the shared `ldrb; bic` above the branch;
+  the ternary gives `movs; ldrb; bfi; strb`.
+- Several fields loaded before any store (`ldrh` x6, then `subw; strh` pairs) need locals for each;
+  direct reads interleave loads and stores.
+- `u16 / 25` at -Otime is `(x+1) * 0xA3D7 >> 20` (`movw #0xa3d7; mla; lsrs #20`).
+- An extra u16 local for one value can fix register allocation hundreds of bytes away.
