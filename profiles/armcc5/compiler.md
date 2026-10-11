@@ -163,3 +163,8 @@ Evidence is a matched function in a real firmware or a test in tests/.
   direct reads interleave loads and stores.
 - `u16 / 25` at -Otime is `(x+1) * 0xA3D7 >> 20` (`movw #0xa3d7; mla; lsrs #20`).
 - An extra u16 local for one value can fix register allocation hundreds of bytes away.
+- A local `char s[8] = "...";` declared inside a switch case copies its `adr` constant there;
+  declared at function scope the copy moves to the prologue.
+- `a[0] = a[1] = 0;` stores a[1] first.
+- In one expression pair on a 5-bit value, `/10` used `movs #0xcd; muls; lsrs #11` while `%10`
+  still used `umull` with 0xCCCCCCCD.
