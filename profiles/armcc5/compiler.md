@@ -74,8 +74,8 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - How a clamp is written decides register allocation even when the instructions are the same:
   `v = f > K ? K : f;`, `if (f > K) c = K; else c = f;` and `if (v > K) v = K;` swap r0/r1 around
   it. When a mismatch is only a register swap near a clamp, try all three.
-- armcc keeps r1-r3 and ip live across a `bl` to a function defined earlier in the same file (it
-  knows the callee's register use); with only a prototype it saves them in r4-r10 instead. So a
+- armcc keeps r1-r3 and ip live across a `bl` to a function defined anywhere in the same file,
+  before or after the caller (it knows the callee's register use); with only a prototype it saves them in r4-r10 instead. So a
   caller that keeps r1-r3 live across a call shares its source file with the callee. `__weak`
   definitions switch this off.
 - `#pragma O0` inside an `-O1` file gives code neither command-line level gives
@@ -107,3 +107,10 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - MicroLIB's library members (printf8.o's `_printf_core` and friends) in a real image can come from
   a different MDK release than the compiler: same algorithm, different register allocation. They
   can't be matched from C; the gate needs that release's `mc_w.l`.
+- The reverse also shows: a caller that saves its bases in r4-r8 across a call to a function in
+  the same unit came from a different file; `__weak` on the callee reproduces that while both are
+  in one file.
+- `g.f = c ? A : 0;` gives one store after the join; `if (c) g.f = A; else g.f = 0;` stores in each
+  branch.
+- `(s16)-u32field` gives `rsbs; sxth`; `-(s16)u32field` gives `sxth; rsbs`.
+- A checksum summed in a `u16` adds a `uxth` in the loop; in a `u32` it doesn't.
