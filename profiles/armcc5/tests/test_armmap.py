@@ -20,6 +20,9 @@ class ArmmapTest(unittest.TestCase):
         t = '/* dropped: s_unused, t_old */\nint x;\n/* dropped: u_dead */'
         self.assertEqual(armmap.dropped(t), {'s_unused', 't_old', 'u_dead'})
 
+    def test_dropped_in_an_assembly_file(self):
+        self.assertEqual(armmap.dropped('; dropped: __heap_base, __heap_limit\n  AREA x\n'), {'__heap_base', '__heap_limit'})
+
     def test_tsv_round_trip(self):
         d = tempfile.mkdtemp(); p = os.path.join(d, 'functions.tsv')
         rows = [Row(0x08004150, 0x18, 'sub_08004150', 'code', ''), Row(0x08004120, 0x30, 'timer_tick', 'code', 'src/t.c')]

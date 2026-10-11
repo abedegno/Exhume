@@ -11,7 +11,7 @@ HEADER = 'addr\tsize\tname\tkind\tfile'
 _PH = re.compile(r'^(sub|g|c)_([0-9A-Fa-f]{8})$')
 _AT = re.compile(r'/\*\s*at:\s*(.*?)\*/|^\s*;\s*at:\s*(.*)$', re.S | re.M)       # C comment, or an assembler ; line
 _ATENTRY = re.compile(r'([A-Za-z_]\w*)\s+(0x[0-9A-Fa-f]+)')
-_DROPPED = re.compile(r'/\*\s*dropped:\s*(.*?)\*/', re.S)
+_DROPPED = re.compile(r'/\*\s*dropped:\s*(.*?)\*/|^\s*;\s*dropped:\s*(.*)$', re.S | re.M)
 
 
 @dataclass
@@ -59,7 +59,7 @@ def dropped(text):
     """Names a source marks /* dropped: a, b */: data the original's linker left out of the image
     because nothing referenced it, so it has no address and is never compared."""
     out = set()
-    for block in _DROPPED.findall(text): out.update(re.findall(r'[A-Za-z_]\w*', block))
+    for c_block, asm_line in _DROPPED.findall(text): out.update(re.findall(r'[A-Za-z_]\w*', c_block or asm_line))
     return out
 
 
