@@ -30,20 +30,24 @@ class ObjectInfo:
     sections: dict     # index -> (name, size or None)
     symbols: list
     align: dict = None  # index -> alignment in bytes
+    flags: dict = None  # index -> 'SHF_ALLOC + SHF_EXECINSTR' etc.
+    types: dict = None  # index -> 'SHT_PROGBITS', 'SHT_NOBITS' ...
 
 
-_SECT = re.compile(r"^\*\* Section #(\d+) '([^']+)'")
+_SECT = re.compile(r"^\*\* Section #(\d+) '([^']+)'(?: \((\w+)\))?(?: \[([^\]]*)\])?")
 _SIZE = re.compile(r'^\s*Size\s*:\s*(\d+) bytes(?: \(alignment (\d+)\))?')
 _SYM = re.compile(r'^\s*\d+\s+(\S+)\s+0x([0-9a-fA-F]+)\s+(Lc|Gb|Wk)\s+(\d+|Abs|Ref)\s+(\S+)\s+\S+(?:\s+0x([0-9a-fA-F]+))?\s*$')
 
 
 def parse_symbols(text):
     """Sections and symbols from `fromelf --text -s` of one object."""
-    sections, symbols, cur, align = {}, [], None, {}
+    sections, symbols, cur, align, flags, types = {}, [], None, {}, {}, {}
     for line in text.splitlines():
         m = _SECT.match(line)
         if m:
-            cur = int(m.group(1)); sections[cur] = (m.group(2), None); continue
+            cur = int(m.group(1)); sections[cur] = (m.group(2), None)
+            types[cur] = m.group(3) or ''; flags[cur] = m.group(4) or ''
+            continue
         m = _SIZE.match(line)
         if m and cur is not None and sections[cur][1] is None:
             sections[cur] = (sections[cur][0], int(m.group(1)))
@@ -59,7 +63,7 @@ def parse_symbols(text):
         if s.type == 'Sect' and isinstance(s.sec, int) and s.size is not None:
             n, z = sections.get(s.sec, (s.name, None))
             if z is None: sections[s.sec] = (n, s.size)
-    return ObjectInfo(sections, symbols, align)
+    return ObjectInfo(sections, symbols, align, flags, types)
 
 
 class Toolchain:
@@ -110,6 +114,13 @@ class Toolchain:
         rc, out = self.run('armcc', ['-c'] + opts.split() + [self.inside(src), '-o', self.inside(obj)], os.path.dirname(obj))
         return rc == 0 and os.path.exists(obj), out
 
+    def assemble(self, src, obj, opts):
+        os.makedirs(os.path.dirname(obj), exist_ok=True)
+        if os.path.exists(obj): os.remove(obj)
+        import shlex
+        rc, out = self.run('armasm', shlex.split(opts) + [self.inside(src), '-o', self.inside(obj)], os.path.dirname(obj))
+        return rc == 0 and os.path.exists(obj), out
+
     def symbols(self, obj):
         rc, out = self.run('fromelf', ['--text', '-s', self.inside(obj)], os.path.dirname(obj))
         if rc: raise RuntimeError(out)
@@ -118,7 +129,7 @@ class Toolchain:
     def link(self, inputs, scatter, axf):
         if os.path.exists(axf): os.remove(axf)
         args = ['--cpu', 'Cortex-M3', '--scatter', self.inside(scatter), '--no_startup', '--keep', '*',
-                '--datacompressor', 'off', '--diag_suppress', '6305,6314'] + [self.inside(i) for i in inputs] + ['-o', self.inside(axf)]
+                '--datacompressor', 'off', '--no_scanlib', '--diag_suppress', '6305,6314'] + [self.inside(i) for i in inputs] + ['-o', self.inside(axf)]
         rc, out = self.run('armlink', args, os.path.dirname(axf))
         return rc == 0 and os.path.exists(axf), out
 

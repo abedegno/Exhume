@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 HEADER = 'addr\tsize\tname\tkind\tfile'
 _PH = re.compile(r'^(sub|g|c)_([0-9A-Fa-f]{8})$')
-_AT = re.compile(r'/\*\s*at:\s*(.*?)\*/', re.S)
+_AT = re.compile(r'/\*\s*at:\s*(.*?)\*/|^\s*;\s*at:\s*(.*)$', re.S | re.M)       # C comment, or an assembler ; line
 _ATENTRY = re.compile(r'([A-Za-z_]\w*)\s+(0x[0-9A-Fa-f]+)')
 _DROPPED = re.compile(r'/\*\s*dropped:\s*(.*?)\*/', re.S)
 
@@ -50,8 +50,8 @@ def placeholder(name):
 
 def annotations(text):
     out = {}
-    for block in _AT.findall(text):
-        for name, addr in _ATENTRY.findall(block): out[name] = int(addr, 16)
+    for c_block, asm_line in _AT.findall(text):
+        for name, addr in _ATENTRY.findall(c_block or asm_line): out[name] = int(addr, 16)
     return out
 
 

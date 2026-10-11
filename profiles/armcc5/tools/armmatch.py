@@ -17,8 +17,18 @@ RAM = 0x20000000
 UNPLACED = 0x0F000000          # where data the map does not know is linked: no real address
 
 
-def allocatable(name):
+def allocatable(name, flags=None):
+    """A section the image holds: SHF_ALLOC when fromelf gave the flags, else armcc's names."""
+    if flags is not None: return 'SHF_ALLOC' in flags
     return name.startswith('i.') or name in ALLOC
+
+
+def is_code(info, idx):
+    return 'SHF_EXECINSTR' in ((info.flags or {}).get(idx) or '') or info.sections[idx][0].startswith('i.')
+
+
+def is_zi(info, idx):
+    return (info.types or {}).get(idx) == 'SHT_NOBITS' or info.sections[idx][0] == '.bss'
 
 
 def offset(sym):
@@ -34,14 +44,14 @@ def place(info, m, extra):
     the source marks all its symbols /* dropped: */ (data the original's armlink left out)."""
     placements, defined, errors, unplaced = [], {}, [], []
     for idx, (sname, _) in sorted(info.sections.items()):
-        if not allocatable(sname): continue
+        if not allocatable(sname, (info.flags or {}).get(idx) if info.flags else None): continue
         members = [s for s in info.symbols if s.sec == idx and s.type in ('Code', 'Data')]
         bases = {}
         for s in members:
             a = m.address(s.name, extra)
             if a is not None: bases.setdefault(a - offset(s), []).append(s.name)
         if not bases:
-            if sname.startswith('i.'):
+            if is_code(info, idx):
                 errors.append(f'no address for section {sname} (symbols: {", ".join(s.name for s in members) or "none"}); '
                               f'add an /* at: NAME 0xADDR */ line or a map row')
             else:
@@ -106,9 +116,14 @@ def match(cfg, src, dis=None):
     work = os.path.join(cfg.build, stem); os.makedirs(work, exist_ok=True)
     tc = armtc.toolchain(cfg)
     with open(src, encoding='latin1') as f: text = f.read()
-    _, opts = cfg.directives(src)
     obj = os.path.join(work, stem + '.o')
-    ok, log = tc.compile(src, obj, opts or cfg.c_opts)
+    if src.endswith('.s'):
+        import re as _re
+        m_opts = _re.search(r'^\s*;\s*opts:\s*(.*)$', text, _re.M)
+        ok, log = tc.assemble(src, obj, m_opts.group(1) if m_opts else (cfg.asm_opts or '--cpu Cortex-M3'))
+    else:
+        _, opts = cfg.directives(src)
+        ok, log = tc.compile(src, obj, opts or cfg.c_opts)
     if log.strip(): res.lines += log.strip().splitlines()
     if not ok: res.lines.append('-- compile failed'); return res
     info = tc.symbols(obj)
@@ -159,17 +174,19 @@ def match(cfg, src, dis=None):
         if s.type == 'Code' and isinstance(s.sec, int): names[info.sections[s.sec][0]] = s.name
     size_of = {n: z for n, z in info.sections.values()}
     sec_index = {n: i for i, (n, _) in info.sections.items()}
+    code_sec = {n for i, (n, _) in info.sections.items() if is_code(info, i)}
+    zi_sec = {n for i, (n, _) in info.sections.items() if is_zi(info, i)}
     good = total = 0; whole = True
     for region, section in regions.items():
         a = addr_of[section]
         got = section_bytes(bins.get(region, b'')[a % 4:], size_of.get(section))
-        if section == '.bss': got = bytes(size_of.get(section) or 0)     # fromelf writes no bytes for ZI
+        if section in zi_sec: got = bytes(size_of.get(section) or 0)     # fromelf writes no bytes for ZI
         label = names.get(section, section)
         if a >= RAM and ram is None:
             pending = True
             res.lines.append(f'{label:28} 0x{a:08X}  placed (RAM, not compared: the image has no region table)'); continue
         problems = []; padded = 0
-        if section.startswith('i.'):
+        if section in code_sec:
             row = m.row_at(a)
             if row is None:
                 problems.append('no map row (size unknown)'); n = len(got)
@@ -188,9 +205,9 @@ def match(cfg, src, dis=None):
             n = len(got)
             if a >= RAM and ram is not None and n:
                 kinds = {ram.kind_at(x) for x in range(a, a + n)}
-                if section == '.bss' and kinds != {'zero'}:
+                if section in zi_sec and kinds != {'zero'}:
                     problems.append('zero-init section over initialised RAM in the original')
-                if section == '.data' and 'zero' in kinds:
+                if section not in zi_sec and 'zero' in kinds:
                     problems.append('initialised section over zero-init RAM in the original')
             for sym in info.symbols:
                 if sym.sec != sec_index[section] or sym.type != 'Data' or sym.size is None: continue

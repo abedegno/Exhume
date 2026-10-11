@@ -14,7 +14,7 @@ OPTS = '--cpu Cortex-M3 -O1 -Otime --split_sections --library_type=microlib'
 SP_SYMDEFS = '#<SYMDEFS># ARM Linker, 5060960: Last Updated: Thu Jan  1 00:00:00 1970\n0x20002000 D __initial_sp\n'
 # Arm's C library startup (__main, __scatterload) is linked in, so RW data is compressed
 SCATTER = '''LR_IROM 0x08000000 0x8000 {
-  ER_IROM 0x08000000 0x8000 { *(InRoot$$Sections) .ANY (+RO) }
+  ER_IROM 0x08000000 0x8000 { vectors.o(RESET, +First) *(InRoot$$Sections) .ANY (+RO) }
   RW_IRAM 0x20000000 0x2000 { .ANY (+RW +ZI) }
 }
 '''
@@ -31,10 +31,13 @@ def build(tc, root, srcdir=os.path.join(HERE, 'src')):
     work = os.path.join(root, 'build', 'answerkey'); os.makedirs(work, exist_ok=True)
     objs = []
     for n in sorted(os.listdir(srcdir)):
-        if not n.endswith('.c'): continue
+        if not n.endswith(('.c', '.s')): continue
         shutil.copy(os.path.join(srcdir, n), os.path.join(src, n))
         obj = os.path.join(work, n[:-2] + '.o')
-        ok, log = tc.compile(os.path.join(src, n), obj, OPTS)
+        if n.endswith('.s'):
+            ok, log = tc.assemble(os.path.join(src, n), obj, '--cpu Cortex-M3')
+        else:
+            ok, log = tc.compile(os.path.join(src, n), obj, OPTS)
         if not ok: raise RuntimeError(f'{n}: {log}')
         objs.append(obj)
     with open(os.path.join(work, 'fw.sct'), 'w') as f: f.write(SCATTER)
@@ -60,7 +63,7 @@ def build(tc, root, srcdir=os.path.join(HERE, 'src')):
         if mine: sections[(mine.group(1), sec)] = (addr, size)
         elif kind == 'Code' and size: lib_code.append((addr, size))
         if sec == 'Region$$Table': table = addr
-    answers, functions, data = {}, [], []
+    answers, functions, data, lib_names = {}, [], [], {}
     # library code (Arm's startup and helpers) is in the map too, as kind lib
     for addr, size in lib_code:
         functions.append(Row(addr, size, f'sub_{addr:08X}', 'lib', ''))
@@ -68,23 +71,33 @@ def build(tc, root, srcdir=os.path.join(HERE, 'src')):
         m = _SYMLINE.match(l)
         if not m: continue
         name, addr, kind, size, stem, section = m.groups(); addr = int(addr, 16); size = int(size)
-        if (stem, section) not in sections: continue        # a library member, not one of our sources
+        if (stem, section) not in sections:                  # a library member, not one of our sources
+            lib_names[name] = addr & ~1 if 'Code' in kind else addr
+            continue
         if 'Code' in kind:
             addr &= ~1
             base, ssize = sections[(stem, section)]
+            if not section.startswith('i.'):             # an assembly code area: one row for the area
+                answers[name] = (addr, stem)
+                if base == addr: functions.append(Row(addr, ssize, f'sub_{addr:08X}', 'asm', ''))
+                continue
             answers[name] = (addr, stem)
             functions.append(Row(addr, ssize, f'sub_{addr:08X}', 'code', ''))
         else:
             answers[name] = (addr, stem)
+            if section == 'RESET': continue                 # the vector table: its own row below
             k = 'ro' if addr < 0x20000000 else 'ram'
             data.append(Row(addr, size, f'{"c" if k == "ro" else "g"}_{addr:08X}', k, ''))
+    if ('vectors', 'RESET') in sections:
+        va, vs = sections[('vectors', 'RESET')]
+        data.append(Row(va, vs, f'c_{va:08X}', 'ro', ''))
     os.makedirs(os.path.join(root, 'map'), exist_ok=True)
     armmap.save(os.path.join(root, 'map', 'functions.tsv'), functions)
     armmap.save(os.path.join(root, 'map', 'data.tsv'), data)
     import ehex, struct
     img = ehex.Image(os.path.join(root, 'target', 'testfw.hex'))
     load, exe, size, fn = struct.unpack_from('<IIII', img.data, table - img.base)
-    return {'answers': answers, 'rw': (load, exe, size)}
+    return {'answers': answers, 'rw': (load, exe, size), 'lib': lib_names}
 
 
 if __name__ == '__main__':

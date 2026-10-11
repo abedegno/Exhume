@@ -35,7 +35,8 @@ class TestFirmware(unittest.TestCase):
         for n in os.listdir(os.path.join(cls.root, 'src')):
             p = os.path.join(cls.root, 'src', n)
             with open(p) as f: body = f.read()
-            with open(p, 'w') as f: f.write(at + body)
+            # an assembly source takes its annotations in a ; comment
+            with open(p, 'w') as f: f.write(('; ' + at.replace('/*', '').replace('*/', '') if n.endswith('.s') else at) + body)
 
     @classmethod
     def tearDownClass(cls):
@@ -62,6 +63,14 @@ class TestFirmware(unittest.TestCase):
     def test_tables(self): self.check('tables')
 
     def test_init(self): self.check('init')
+
+    def test_vectors_assembly(self):
+        p = os.path.join(self.root, 'src', 'vectors.s')
+        with open(p) as f: body = f.read()
+        lib = ', '.join(f'{n} 0x{a:08X}' for n, a in self.key['lib'].items() if n == '__main')
+        with open(p, 'w') as f: f.write(f'; at: {lib}\n' + body)
+        r = armmatch.match(self.cfg, p)
+        self.assertTrue(r.whole, '\n'.join(r.lines))
 
     def test_uninitialised_candidate_for_initialised_data_is_not_a_match(self):
         # declared without an initialiser, g_init goes to .bss: its zeros must be compared against

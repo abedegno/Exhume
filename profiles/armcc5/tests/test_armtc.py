@@ -24,6 +24,12 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(by['g_far'].sec, 'Ref')
         self.assertEqual(by['sub_08009000'].type, 'Code')
 
+    def test_section_flags(self):
+        names = {n: i for i, (n, _) in self.info.sections.items()}
+        self.assertIn('SHF_ALLOC', self.info.flags[names['i.f']])
+        self.assertIn('SHF_EXECINSTR', self.info.flags[names['i.f']])
+        self.assertNotIn('SHF_ALLOC', self.info.flags.get(names['.symtab'], ''))
+
     def test_section_alignment(self):
         self.assertEqual(self.info.align[1], 4)          # i.f: "Size : 36 bytes (alignment 4)"
 

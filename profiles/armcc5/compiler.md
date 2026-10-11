@@ -29,3 +29,17 @@ Evidence is a matched function in a real firmware or a test in tests/.
   `__scatterload_copy` as handlers. The standard library links `__scatterload_rt2` and
   `__dczerorl2` instead. Both compress RW data in the same format (tools/lz77.py). MicroLIB needs
   `__initial_sp`, which a startup file normally defines.
+
+## Learned while matching a real firmware
+
+- A byte load (`ldrb [r1,#0x61]; tst #2`) testing a bit of a halfword field comes from a 1-bit
+  bitfield (`unsigned short b9:1` in a `__packed` struct); an ordinary mask (`u16 & 0x200`) keeps
+  the halfword load (`ldrh [r1,#0x60]; tst.w #0x200`).
+- An OR of several bitfields compiles to separate byte tests; one halfword test
+  (`ldrh; bic #0xf9; bics #0xfb00; beq`) is `*(unsigned short *)&f & 0x406`. A mask that isn't a
+  Thumb-2 immediate becomes two `bic`s.
+- Zero assignments keep source order, and later zeros copy the first one's register:
+  `j = 0; ... for (; j < N; j++)` gives `movs r2,#0` first, where `for (j = 0; ...)` put it last.
+- A struct used inside a `__packed` struct must itself be `__packed` (else error #1032);
+  halfword fields at odd addresses still compile to plain `ldrh`/`ldrsh` on Cortex-M3.
+- A long function can carry a literal pool in its middle, with a `b` over it.
