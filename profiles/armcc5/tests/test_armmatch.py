@@ -61,6 +61,17 @@ class PlaceTest(unittest.TestCase):
         self.assertEqual(dict(placements), {'.text': 0x08008164})
         self.assertNotIn('SysTick_Handler', defined)
 
+    def test_all_weak_startup_placed_by_its_annotation(self):
+        # ST marks every handler [WEAK], Reset_Handler too: the at: line places the section
+        info = armtc.ObjectInfo({1: ('.text', 0x1C)}, [armtc.Sym('Reset_Handler', 1, 'Wk', 1, 'Code', 8),
+                                                       armtc.Sym('SysTick_Handler', 9, 'Wk', 1, 'Code', 2)],
+                                {1: 4}, {1: 'SHF_ALLOC + SHF_EXECINSTR'}, {1: 'SHT_PROGBITS'})
+        m = armmap.Map([Row(0x08008164, 0x1C, 'Reset_Handler', 'asm', ''), Row(0x08014850, 0x10, 'SysTick_Handler', 'code', '')], [])
+        placements, defined, errors, _ = armmatch.place(info, m, {'Reset_Handler': 0x08008164})
+        self.assertEqual(errors, [])
+        self.assertEqual(dict(placements), {'.text': 0x08008164})
+        self.assertNotIn('SysTick_Handler', defined)
+
     def test_padding(self):
         self.assertTrue(armmatch.padding_ok(b'\x01\x02', b'\x01\x02\x00\x00', 0x08000020))
         self.assertFalse(armmatch.padding_ok(b'\x01\x02', b'\x01\x02\x00\x01', 0x08000020))

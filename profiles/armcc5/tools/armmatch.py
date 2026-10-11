@@ -46,13 +46,15 @@ def place(info, m, extra, unused_ok=False):
     for idx, (sname, _) in sorted(info.sections.items()):
         if not allocatable(sname, (info.flags or {}).get(idx) if info.flags else None): continue
         members = [s for s in info.symbols if s.sec == idx and s.type in ('Code', 'Data')]
-        # a weak symbol the map puts elsewhere was overridden by a real definition (a startup
-        # file's default handlers): it says nothing about where this section is
+        # what places the section: its annotated symbols if any (authoritative), else its strong
+        # ones, else all. A weak symbol the map puts elsewhere was overridden by a real
+        # definition (a startup file's default handlers) and says nothing about this section.
+        annotated = [s for s in members if s.name in extra]
         strong = [s for s in members if s.bind != 'Wk']
-        if strong:
-            members = strong + [s for s in members if s.bind == 'Wk' and m.address(s.name, extra) is None]
+        deciders = annotated or strong or members
+        weak_off = set()
         bases = {}
-        for s in members:
+        for s in deciders:
             a = m.address(s.name, extra)
             if a is not None: bases.setdefault(a - offset(s), []).append(s.name)
         if not bases:
@@ -67,13 +69,17 @@ def place(info, m, extra, unused_ok=False):
                           '; '.join(f'0x{b:08X} from {", ".join(n)}' for b, n in sorted(bases.items())))
             continue
         base = next(iter(bases))
+        for s in members:
+            a = m.address(s.name, extra)
+            if s.bind == 'Wk' and a is not None and a != base + offset(s): weak_off.add(s.name)
         al = (info.align or {}).get(idx, 1)
         if base % al:
             errors.append(f'section {sname} needs {al}-byte alignment, but its address 0x{base:08X} is not '
                           f'(a member of a wider type than the original, or __align)')
             continue
         placements.append((sname, base))
-        for s in members: defined[s.name] = base + offset(s)
+        for s in members:
+            if s.name not in weak_off: defined[s.name] = base + offset(s)
     return placements, defined, errors, unplaced
 
 
