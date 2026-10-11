@@ -143,3 +143,6 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - `dst[n] = x; n++;` updates n in place; `dst[n++] = x;` takes a new register for n+1.
 - `arr[a - 1]` with a u8 `a` gives `subs` without `uxtb`; `a--` first adds the `uxtb`.
 - Branch order decides layout: the arm tested first (`if (p->err != 0)`) goes inline.
+- A builder with constant indices may still have used a running index (`n = 14; ...; txlen =
+  n - 14;`): the folded constant is loaded early. A literal at the end loads late.
+- A value both clamped and split into bytes needs one `u32` local, or the multiply is redone.
