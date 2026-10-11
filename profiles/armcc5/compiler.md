@@ -43,3 +43,16 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - A struct used inside a `__packed` struct must itself be `__packed` (else error #1032);
   halfword fields at odd addresses still compile to plain `ldrh`/`ldrsh` on Cortex-M3.
 - A long function can carry a literal pool in its middle, with a `b` over it.
+- Compare constants stay as written: `x < 10` is `cmp #10; bhs`, `x <= 9` is `cmp #9; bhi`, so the
+  source's `<` or `<=` reads straight off the bytes.
+- `uint16 / 250` at -Otime is `(x+1)*0x4189 >> 22` (`movw #0x4189; mla r1,r1,r4,r4; ubfx #22,#8`);
+  writing `(x+1)/250` gives `adds; umull; ubfx #4` instead.
+- Globals read directly in each condition compile differently from cached locals: direct reads
+  hoist one set of loads with a fresh literal and keep a `tst/bne` per term; locals fuse terms
+  into `and; and; orrs`.
+- In a switch over a global struct, fields used by several cases are loaded once before the
+  `tbb`; a field used by one case is loaded inside it.
+- `g.buf[g.state++] = c` in a case where the state is a known constant reloads the struct base
+  (`ldr r1,=g` again); `g.state = N+1; g.buf[N] = c;` does not.
+- Two reads of one byte, one through a struct field and one through a byte-pointer cast, stay two
+  loads; the same lvalue twice merges into one.
