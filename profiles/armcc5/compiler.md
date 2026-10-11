@@ -120,3 +120,14 @@ Evidence is a matched function in a real firmware or a test in tests/.
   keeps the constants in callee-saved registers.
 - A field of an ordinary struct is loaded once across byte stores to other memory; a field of a
   `__packed` struct is reloaded. Which structs were packed shows in the reloads.
+- The literal pool follows the order in which the source first refers to each literal, not the
+  instruction order: it shows which global the source touched first.
+- `i = g.f >> 4; i++;` gives `lsrs; adds; uxtb`; `i = (g.f >> 4) + 1;` hoists the 1 into a
+  callee-saved register.
+- A range check `(u32)(c - '0') > 9` gives `sub; cmp #9; bls`; `c >= '0' && c <= '9'` gives
+  `cmp #10; blo`.
+- Splitting a sign-extended sum into an `s16` local (`k = f + 2731; v = (k + 5) / 10;`) loads the
+  divide's literal after the add; one expression loads it first.
+- A known-zero index can come out as a register holding zero (`ldrb r0,[r2,r1]`), where a literal
+  `buf[0]` gives an immediate offset.
+- A function returning `u8` versus `u16` changes how callers mask the result.
