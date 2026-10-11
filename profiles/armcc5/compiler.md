@@ -74,3 +74,20 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - How a clamp is written decides register allocation even when the instructions are the same:
   `v = f > K ? K : f;`, `if (f > K) c = K; else c = f;` and `if (v > K) v = K;` swap r0/r1 around
   it. When a mismatch is only a register swap near a clamp, try all three.
+- armcc keeps r1-r3 and ip live across a `bl` to a function defined earlier in the same file (it
+  knows the callee's register use); with only a prototype it saves them in r4-r10 instead. So a
+  caller that keeps r1-r3 live across a call shares its source file with the callee. `__weak`
+  definitions switch this off.
+- `#pragma O0` inside an `-O1` file gives code neither command-line level gives
+  (`sub sp,#4; movs; str; b test; ...; add sp,#4; bx lr` for a volatile counter loop); functions
+  under it still pass on their register use.
+- Dead `else if` arms armcc deletes can still leave a shared subexpression hoisted where they
+  were; the hoist shows in the bytes.
+- `for (i = 8; i != 0; i--)` on a u8 is `subs; uxtb; cmp; bne`; `do {} while (--i)` is
+  `subs; ands #0xff; bne`; on a u16 the loops give `uxth` or `lsls/lsrs #16`.
+- A local return value (`r = ...; return r;`) and direct returns allocate registers differently.
+- `a = (a & ~0xf) | 0x10;` and `a &= ~0xf; a |= 0x10;` allocate differently; `& 0xf0` is `and`,
+  `&= ~0xf` is `bic`.
+- armcc can rematerialise a constant from a known register (`lsls r5,r1,#5` for 0x100 from 8).
+- `if (!(x & 2)) r = 1; else r = 0;` puts `r = 1` after the return; `if (x & 2) r = 0; else r = 1;`
+  keeps it inline.

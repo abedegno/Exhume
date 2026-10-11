@@ -36,6 +36,14 @@ merge, commit, or edit shared files.
   unsure, keep the placeholder.
 - **Other functions:** call them by their map name, with a prototype you work out from the call
   sites. Use `sub_XXXXXXXX` unless the map names them.
+- **A callee from the same file:** if a caller keeps r1-r3 (or ip) live across a `bl`, the callee
+  was defined earlier in the **same source file**. armcc knew its register use, so a prototype
+  won't reproduce it. Define the callee above the caller, with its own `at:` entry, even if it's
+  outside your unit, and say so in your report: one source file can own functions far apart in
+  the image, because the layout is sorted by name, not by file.
+- **Names and adjacency:** two adjacent functions are linked in one region, where armlink orders
+  them by name. A pair whose names don't sort in address order won't match. When unsure, use the
+  placeholder.
 - **Globals:**
   - **Define** the globals the original file defined, with their initial values from the RW image
     (`map/data.tsv` says `rw` or `zi`). The sign is that armcc addresses a file's own globals
