@@ -33,6 +33,16 @@ class ParseTest(unittest.TestCase):
     def test_section_alignment(self):
         self.assertEqual(self.info.align[1], 4)          # i.f: "Size : 36 bytes (alignment 4)"
 
+    def test_a_long_name_wrapped_onto_its_own_line(self):
+        # fromelf puts a long name alone on one line and its columns on the next
+        text = ("** Section #21 'i.ADC_GetResetCalibrationStatus' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]\n"
+                "    Size   : 16 bytes (alignment 2)\n"
+                "     40  ADC_GetResetCalibrationStatus\n"
+                "                                 0x00000001   Gb   21  Code  Hi   0x10\n")
+        info = armtc.parse_symbols(text)
+        by = {s.name: s for s in info.symbols}
+        self.assertEqual((by['ADC_GetResetCalibrationStatus'].sec, by['ADC_GetResetCalibrationStatus'].value), (21, 1))
+
     def test_noise_lines_are_dropped(self):
         self.assertEqual(armtc.clean('a\nassertion failed [x86_avx_state_ptr->xsave_header.xfeatures == k]: \n(ThreadContextSignals.cpp:414 rt_sigreturn)\nb'), 'a\nb')
 

@@ -36,13 +36,24 @@ class ObjectInfo:
 
 _SECT = re.compile(r"^\*\* Section #(\d+) '([^']+)'(?: \((\w+)\))?(?: \[([^\]]*)\])?")
 _SIZE = re.compile(r'^\s*Size\s*:\s*(\d+) bytes(?: \(alignment (\d+)\))?')
+_SYMNAME = re.compile(r'^\s*\d+\s+(\S+)\s*$')                      # a long name, alone on its line
+_SYMREST = re.compile(r'^\s+0x([0-9a-fA-F]+)\s+(Lc|Gb|Wk)\s+(\d+|Abs|Ref)\s+(\S+)\s+\S+(?:\s+0x([0-9a-fA-F]+))?\s*$')
 _SYM = re.compile(r'^\s*\d+\s+(\S+)\s+0x([0-9a-fA-F]+)\s+(Lc|Gb|Wk)\s+(\d+|Abs|Ref)\s+(\S+)\s+\S+(?:\s+0x([0-9a-fA-F]+))?\s*$')
 
 
 def parse_symbols(text):
     """Sections and symbols from `fromelf --text -s` of one object."""
     sections, symbols, cur, align, flags, types = {}, [], None, {}, {}, {}
+    pending = None
     for line in text.splitlines():
+        if pending:
+            m = _SYMREST.match(line)
+            if m:
+                val, bind, sec, typ, size = m.groups()
+                symbols.append(Sym(pending, int(val, 16), bind, int(sec) if sec.isdigit() else sec, typ,
+                                   int(size, 16) if size else None))
+                pending = None; continue
+            pending = None
         m = _SECT.match(line)
         if m:
             cur = int(m.group(1)); sections[cur] = (m.group(2), None)
@@ -53,6 +64,9 @@ def parse_symbols(text):
             sections[cur] = (sections[cur][0], int(m.group(1)))
             if m.group(2): align[cur] = int(m.group(2))
             continue
+        m = _SYMNAME.match(line)
+        if m and not _SYM.match(line):
+            pending = m.group(1); continue
         m = _SYM.match(line)
         if m:
             name, val, bind, sec, typ, size = m.groups()
