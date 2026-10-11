@@ -168,3 +168,7 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - `a[0] = a[1] = 0;` stores a[1] first.
 - In one expression pair on a 5-bit value, `/10` used `movs #0xcd; muls; lsrs #11` while `%10`
   still used `umull` with 0xCCCCCCCD.
+- Sometimes the original did use pointer locals (`s = &g_A; o = &g_B;` set early): the bases are
+  loaded before an unrelated test and fields are reloaded at each use. Direct reads keep fields in
+  registers instead. Read globals directly first, but try pointer locals when the original reloads.
+- A signed product stored to a `u16` field gets `and.w ..., #0xffff`; to a `short` field it doesn't.
