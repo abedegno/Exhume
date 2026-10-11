@@ -151,3 +151,7 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - A byte built from 1-bit bitfields after `dst.all = 0;` forwards the zero (`mov r2,rZero; lsrs;
   bfi; bfi; strb`, no load). A union used inside a `__packed` struct must itself be `__packed`.
 - The zero-assignment order rule applies to mixed widths too: `i = 0; mask = 0; for (; ...)`.
+- A caller's masking follows the prototype it saw, not the callee's definition: a file that
+  declared `u16 f(u8)` keeps `and.w ..., lsl #4` masks even where `f` is defined returning `u8`.
+- A clamp's form can move register allocation and literal loads far from the clamp; when a
+  mismatch is a swap or a reordered literal load, try the clamp forms across the whole function.
