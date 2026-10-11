@@ -17,6 +17,17 @@ class Order(unittest.TestCase):
         self.assertEqual(at, {'a_fn': 0x08, 'b_fn': 0x10, 'c_fn': 0x20})
         self.assertEqual(amb, {})
 
+    def test_a_contested_address_goes_to_the_name_that_fits_the_order(self):
+        # B_b and X_x both fit 0x20 by bytes; only B_b sorts between A_a (0x10) and C_c (0x30)
+        at, amb = armlibid.settle({'A_a': [0x10], 'B_b': [0x20], 'C_c': [0x30], 'X_x': [0x20]})
+        self.assertEqual(at, {'A_a': 0x10, 'B_b': 0x20, 'C_c': 0x30})
+        self.assertNotIn('X_x', at)
+
+    def test_identical_twins_that_both_fit_stay_ambiguous(self):
+        at, amb = armlibid.settle({'A_a': [0x10], 'B_b1': [0x20], 'B_b2': [0x20], 'C_c': [0x30]})
+        self.assertNotIn('B_b1', at); self.assertNotIn('B_b2', at)
+        self.assertEqual(amb, {'B_b1': [0x20], 'B_b2': [0x20]})
+
     def test_unsettled_stays_ambiguous(self):
         at, amb = armlibid.settle({'b_fn': [0x10, 0x40]})
         self.assertEqual(at, {})

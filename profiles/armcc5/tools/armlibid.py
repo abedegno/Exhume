@@ -32,21 +32,34 @@ def _mask(code, base):
 
 
 def settle(candidates):
-    """(settled {name: addr}, still ambiguous {name: [addrs]}) using name order."""
-    at = {n: c[0] for n, c in candidates.items() if len(c) == 1}
-    amb = {n: list(c) for n, c in candidates.items() if len(c) > 1}
+    """(settled {name: addr}, still ambiguous {name: [addrs]}). An address holds one function, and
+    code is laid out sorted by name: a name is settled when exactly one of its candidate addresses
+    lies between the settled names just below and above it and no other name also fits there.
+    Names that fit nowhere drop out (the image lacks them)."""
+    pending = {n: list(c) for n, c in candidates.items() if c}
+    at = {}
     changed = True
-    while changed and amb:
+    while changed and pending:
         changed = False
-        for n in sorted(amb):
+        def window(n):
             lower = [at[k] for k in at if k < n]; upper = [at[k] for k in at if k > n]
-            lo = max(lower) if lower else -1; hi = min(upper) if upper else 1 << 40
-            fit = [a for a in amb[n] if lo < a < hi]
-            if len(fit) == 1:
-                at[n] = fit[0]; del amb[n]; changed = True
-            elif fit and len(fit) < len(amb[n]):
-                amb[n] = fit; changed = True
-    return at, amb
+            return (max(lower) if lower else -1), (min(upper) if upper else 1 << 40)
+        fits = {}
+        for n, c in pending.items():
+            lo, hi = window(n)
+            fits[n] = [x for x in c if lo < x < hi and x not in at.values()]
+        claim = {}
+        for n, f in fits.items():
+            for x in f: claim.setdefault(x, []).append(n)
+        for n in sorted(pending):
+            f = fits[n]
+            if not f:
+                del pending[n]; changed = True          # fits nowhere
+            elif len(f) == 1 and claim[f[0]] == [n]:
+                at[n] = f[0]; del pending[n]; changed = True
+            elif len(f) < len(pending[n]):
+                pending[n] = f; changed = True
+    return at, pending
 
 
 def candidates_for(tc, cfg, src, opts):
