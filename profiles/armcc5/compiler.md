@@ -131,3 +131,10 @@ Evidence is a matched function in a real firmware or a test in tests/.
 - A known-zero index can come out as a register holding zero (`ldrb r0,[r2,r1]`), where a literal
   `buf[0]` gives an immediate offset.
 - A function returning `u8` versus `u16` changes how callers mask the result.
+- A non-leaf function keeps the stack 8-byte aligned at calls to extern functions by pushing an
+  unused extra register (r8, or ip). When the callee is defined earlier in the same file and needs
+  no aligned stack, the padding goes: an odd-count `push` in a non-leaf means a same-file callee.
+- A range test `c >= 'A' && c <= 'F'` fuses into `sub; cmp #5; bhi`; nested ifs keep
+  `cmp #0x41; blo; cmp #0x46; bhi`.
+- `if (b == 0) {...} else if (w == 0) clear;` puts the clear out of line (`cbz` and `b`); the
+  inverted form puts it inline with `cbnz`.
