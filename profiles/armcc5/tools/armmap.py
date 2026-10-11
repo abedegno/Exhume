@@ -63,6 +63,15 @@ def dropped(text):
     return out
 
 
+_UNUSED = re.compile(r'/\*\s*unused:\s*dropped\s*\*/|^\s*;\s*unused:\s*dropped\s*$', re.M)
+
+
+def unused_dropped(text):
+    """A file marked /* unused: dropped */ (a library source) may hold functions the image lacks:
+    armlink removed them as unreferenced."""
+    return bool(_UNUSED.search(text))
+
+
 class Map:
     def __init__(self, functions, data):
         self.functions, self.data = functions, data

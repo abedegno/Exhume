@@ -78,6 +78,22 @@ class TestFirmware(unittest.TestCase):
         r = self.run_src('initzero', self.AT + 'unsigned char g_init[16];\nunsigned char *init(void) { return g_init; }\n')
         self.assertFalse(r.whole, '\n'.join(r.lines))
 
+    EXTRA = '\nint extra_unused(int x) { return x * 3 + 1; }\n'
+
+    def test_a_function_the_image_lacks_is_an_error(self):
+        r = self.run_src('crcextrafn', self.source('crc') + self.EXTRA)
+        self.assertFalse(r.whole)
+        self.assertTrue(any(l.startswith('ERROR no address for section i.extra_unused') for l in r.lines), '\n'.join(r.lines))
+
+    def test_unused_dropped_lets_a_library_file_carry_functions_the_image_lacks(self):
+        r = self.run_src('crcunused', '/* unused: dropped */\n' + self.source('crc') + self.EXTRA)
+        self.assertTrue(r.whole, '\n'.join(r.lines))
+        self.assertTrue(any(l.startswith('NOTE') and 'extra_unused' in l for l in r.lines), '\n'.join(r.lines))
+
+    def test_unused_dropped_alone_is_never_whole(self):
+        r = self.run_src('onlyunused', '/* unused: dropped */\n' + self.EXTRA)
+        self.assertFalse(r.whole, '\n'.join(r.lines))
+
     def test_wrong_initialiser_is_reported(self):
         r = self.run_src('protoinit', self.source('proto').replace('= 955', '= 956'))
         self.assertFalse(r.whole)

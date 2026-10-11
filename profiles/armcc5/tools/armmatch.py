@@ -36,7 +36,7 @@ def offset(sym):
     return sym.value & ~1 if sym.type == 'Code' else sym.value
 
 
-def place(info, m, extra):
+def place(info, m, extra, unused_ok=False):
     """(placements [(section, addr)], defined {name: addr}, errors, unplaced [section]).
 
     A function section with no known address is an error. A data section with none is left
@@ -51,11 +51,11 @@ def place(info, m, extra):
             a = m.address(s.name, extra)
             if a is not None: bases.setdefault(a - offset(s), []).append(s.name)
         if not bases:
-            if is_code(info, idx):
+            if is_code(info, idx) and not unused_ok:
                 errors.append(f'no address for section {sname} (symbols: {", ".join(s.name for s in members) or "none"}); '
                               f'add an /* at: NAME 0xADDR */ line or a map row')
             else:
-                unplaced.append(sname)
+                unplaced.append(sname)            # data, or a library file's unused function
             continue
         if len(bases) > 1:
             errors.append(f'section {sname}: its symbols disagree on its address: ' +
@@ -129,7 +129,8 @@ def match(cfg, src, dis=None):
     info = tc.symbols(obj)
     m = armmap.Map.from_dir(cfg.map)
     extra = armmap.annotations(text)
-    placements, defined, errors, unplaced = place(info, m, extra)
+    unused_ok = armmap.unused_dropped(text)
+    placements, defined, errors, unplaced = place(info, m, extra, unused_ok)
     res.defined = defined
     if errors:
         res.lines += ['ERROR ' + e for e in errors]; res.lines.append('-- not linked'); return res
@@ -142,7 +143,10 @@ def match(cfg, src, dis=None):
         for x in unplaced:
             idx = next(i for i, (n, _) in info.sections.items() if n == x)
             syms = [s.name for s in info.symbols if s.sec == idx and s.type in ('Code', 'Data')]
-            if syms and set(syms) <= dead:
+            idx_code = is_code(info, idx)
+            if idx_code and unused_ok:
+                res.lines.append(f'NOTE section {x} ({", ".join(syms)}) is not in the image: unused, dropped by armlink')
+            elif syms and set(syms) <= dead:
                 res.lines.append(f'NOTE section {x} ({", ".join(syms)}) is marked dropped: linked at 0x{UNPLACED:08X}, not compared')
             else:
                 blocked = True
