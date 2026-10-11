@@ -72,6 +72,11 @@ class PlaceTest(unittest.TestCase):
         self.assertEqual(dict(placements), {'.text': 0x08008164})
         self.assertNotIn('SysTick_Handler', defined)
 
+    def test_symbol_size_check_accepts_a_label_whose_row_is_the_whole_section(self):
+        self.assertTrue(armmatch.size_fits(sym_size=4, sym_offset=0, row_size=0x150, section_len=0x150))
+        self.assertFalse(armmatch.size_fits(sym_size=4, sym_offset=4, row_size=0x150, section_len=0x150))
+        self.assertTrue(armmatch.size_fits(sym_size=8, sym_offset=4, row_size=8, section_len=0x150))
+
     def test_padding(self):
         self.assertTrue(armmatch.padding_ok(b'\x01\x02', b'\x01\x02\x00\x00', 0x08000020))
         self.assertFalse(armmatch.padding_ok(b'\x01\x02', b'\x01\x02\x00\x01', 0x08000020))

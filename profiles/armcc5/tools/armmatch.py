@@ -94,6 +94,12 @@ def padding_ok(got, want, addr):
     return 0 < extra < 4 and want[:len(got)] == got and not any(want[len(got):]) and (addr + len(want)) % 4 == 0
 
 
+def size_fits(sym_size, sym_offset, row_size, section_len):
+    """A data symbol's size agrees with its map row: equal, or an assembler label at the start of
+    its section (sized to its first directive) whose row is the whole section."""
+    return row_size == sym_size or sym_offset == 0 and row_size == section_len
+
+
 def compare(got, want):
     """Offsets where got differs from want; a length difference counts at the shorter's end."""
     bad = [i for i in range(min(len(got), len(want))) if got[i] != want[i]]
@@ -240,7 +246,8 @@ def match(cfg, src, dis=None):
                 if sym.sec != sec_index[section] or sym.type != 'Data' or sym.size is None: continue
                 row = m.row_at(a + offset(sym))
                 if row is None: problems.append(f'{sym.name}: no map row (size unknown)')
-                elif row.size != sym.size: problems.append(f'{sym.name}: size 0x{sym.size:X} want 0x{row.size:X}')
+                elif not size_fits(sym.size, offset(sym), row.size, len(got)):
+                    problems.append(f'{sym.name}: size 0x{sym.size:X} want 0x{row.size:X}')
         try:
             want = ram.bytes(a, n) if a >= RAM else img.bytes(a, n)
         except ValueError as e:
