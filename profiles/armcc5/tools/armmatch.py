@@ -46,6 +46,11 @@ def place(info, m, extra, unused_ok=False):
     for idx, (sname, _) in sorted(info.sections.items()):
         if not allocatable(sname, (info.flags or {}).get(idx) if info.flags else None): continue
         members = [s for s in info.symbols if s.sec == idx and s.type in ('Code', 'Data')]
+        # a weak symbol the map puts elsewhere was overridden by a real definition (a startup
+        # file's default handlers): it says nothing about where this section is
+        strong = [s for s in members if s.bind != 'Wk']
+        if strong:
+            members = strong + [s for s in members if s.bind == 'Wk' and m.address(s.name, extra) is None]
         bases = {}
         for s in members:
             a = m.address(s.name, extra)
