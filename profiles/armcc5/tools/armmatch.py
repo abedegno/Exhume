@@ -196,6 +196,14 @@ def match(cfg, src, dis=None):
         problems = []; padded = 0
         if section in code_sec:
             row = m.row_at(a)
+            if row is not None:
+                # an area (an assembly .text) can span several map rows: the ones that start at
+                # its own symbols; the expected size runs to the end of the last of them
+                own = {defined[sym.name] for sym in info.symbols
+                       if sym.sec == sec_index[section] and sym.name in defined and sym.type == 'Code'}
+                rows_in = [r for r in m.functions if r.addr in own and a <= r.addr < a + len(got) + 4]
+                end = max([r.addr + r.size for r in rows_in] + [row.addr + row.size])
+                row = armmap.Row(a, end - a, row.name, row.kind, row.file)
             if row is None:
                 problems.append('no map row (size unknown)'); n = len(got)
             else:

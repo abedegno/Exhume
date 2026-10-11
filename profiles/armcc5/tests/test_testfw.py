@@ -5,7 +5,7 @@ PROFILE = os.path.dirname(HERE)
 EXHUME = os.path.dirname(os.path.dirname(PROFILE))
 sys.path.insert(0, os.path.join(PROFILE, 'tools')); sys.path.insert(0, os.path.join(PROFILE, 'testfw'))
 sys.path.insert(0, os.path.join(EXHUME, 'tools'))
-import armtc, armmatch, answerkey, config
+import armtc, armmatch, answerkey, config, armmap
 
 HOME = os.environ.get('EXHUME_ARMCC_HOME')
 DOCKER = shutil.which('docker') and subprocess.run(['docker', 'info'], capture_output=True).returncode == 0
@@ -63,6 +63,27 @@ class TestFirmware(unittest.TestCase):
     def test_tables(self): self.check('tables')
 
     def test_init(self): self.check('init')
+
+    def test_an_assembly_code_area_spanning_two_map_rows(self):
+        # the map split the startup code at a handler something points at: the area still matches
+        fpath = os.path.join(self.root, 'map', 'functions.tsv')
+        with open(fpath) as f: saved = f.read()
+        fault = self.key['answers']['Fault_Handler'][0]; reset = self.key['answers']['Reset_Handler'][0]
+        try:
+            rows = armmap.load(fpath)
+            r = next(r for r in rows if r.addr == reset)
+            rows.append(armmap.Row(fault, r.addr + r.size - fault, f'sub_{fault:08X}', 'asm', ''))
+            r.size = fault - r.addr
+            armmap.save(fpath, rows)
+            p = os.path.join(self.root, 'src', 'vectors.s')
+            with open(p) as f: body = f.read()
+            lib = ', '.join(f'{n} 0x{a:08X}' for n, a in self.key['lib'].items() if n == '__main')
+            if '; at: __main' not in body: body = f'; at: {lib}\n' + body
+            with open(p, 'w') as f: f.write(body)
+            r2 = armmatch.match(self.cfg, p)
+            self.assertTrue(r2.whole, '\n'.join(r2.lines))
+        finally:
+            with open(fpath, 'w') as f: f.write(saved)
 
     def test_vectors_assembly(self):
         p = os.path.join(self.root, 'src', 'vectors.s')
