@@ -172,3 +172,9 @@ Evidence is a matched function in a real firmware or a test in tests/.
   loaded before an unrelated test and fields are reloaded at each use. Direct reads keep fields in
   registers instead. Read globals directly first, but try pointer locals when the original reloads.
 - A signed product stored to a `u16` field gets `and.w ..., #0xffff`; to a `short` field it doesn't.
+- Compare operand order tells a local from a global: with a global field, `j < g.len` and
+  `g.len > j` both give `cmp rLen, rJ`; with a u8 local the operands follow the source.
+- `n = g.len = f();` gives `uxtb; strb` with one register; `n = f(); g.len = n;` allocates
+  differently.
+- `w = v * 102; w = w / 100;` multiplies before loading the divide literal; one expression loads
+  the literal first.
