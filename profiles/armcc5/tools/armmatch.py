@@ -157,10 +157,12 @@ def match(cfg, src, dis=None):
     axf = os.path.join(work, stem + '.axf')
     inputs = [obj, os.path.join(work, 'match.sym')]
     if any(a % 4 for _, a in placements):
-        pad_obj = os.path.join(work, armmap.PAD_OBJ)
-        if not os.path.exists(pad_obj):
-            with open(os.path.join(work, 'exhume_pad.c'), 'w') as f: f.write(armmap.PAD_SOURCE)
-            ok, log = tc.compile(os.path.join(work, 'exhume_pad.c'), pad_obj, cfg.c_opts)
+        pad_obj = os.path.join(work, armmap.PAD_OBJ); pad_c = os.path.join(work, 'exhume_pad.c')
+        src_text = armmap.pad_source(placements)
+        old = open(pad_c).read() if os.path.exists(pad_c) else None
+        if old != src_text or not os.path.exists(pad_obj):
+            with open(pad_c, 'w') as f: f.write(src_text)
+            ok, log = tc.compile(pad_c, pad_obj, cfg.c_opts)
             if not ok: res.lines += log.splitlines() + ['-- pad object failed']; return res
         inputs.append(pad_obj)
     ok, log = tc.link(inputs, os.path.join(work, 'match.sct'), axf)

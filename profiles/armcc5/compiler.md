@@ -71,3 +71,6 @@ Evidence is a matched function in a real firmware or a test in tests/.
   the mask goes.
 - `(u16field + 5) / 10` with signed int arithmetic still uses `umull` by 0xCCCCCCCD; the signed and
   `+ 5u` forms schedule the literal load differently.
+- How a clamp is written decides register allocation even when the instructions are the same:
+  `v = f > K ? K : f;`, `if (f > K) c = K; else c = f;` and `if (v > K) v = K;` swap r0/r1 around
+  it. When a mismatch is only a register swap near a clamp, try all three.

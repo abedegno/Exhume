@@ -110,38 +110,48 @@ def symdefs_text(entries):
     return '\n'.join(lines) + '\n'
 
 
-# 1-3 pad bytes of each kind (RO, RW, ZI), each count in its own section, to put a section on an
-# address that isn't 4-aligned. The pad must be the section's own kind: armlink starts an
-# execution region's RW part after its RO part on a 4-byte boundary.
-PAD_SOURCE = """/* exhume: pads for sections on addresses that aren't 4-aligned */
-__attribute__((section(".padro1"))) const unsigned char exhume_padro1[1] = { 0 };
-__attribute__((section(".padro2"))) const unsigned char exhume_padro2[2] = { 0 };
-__attribute__((section(".padro3"))) const unsigned char exhume_padro3[3] = { 0 };
-__attribute__((section(".padrw1"))) unsigned char exhume_padrw1[1] = { 1 };
-__attribute__((section(".padrw2"))) unsigned char exhume_padrw2[2] = { 1 };
-__attribute__((section(".padrw3"))) unsigned char exhume_padrw3[3] = { 1 };
-__attribute__((section(".padzi1"), zero_init)) unsigned char exhume_padzi1[1];
-__attribute__((section(".padzi2"), zero_init)) unsigned char exhume_padzi2[2];
-__attribute__((section(".padzi3"), zero_init)) unsigned char exhume_padzi3[3];
-"""
+def _kind(section):
+    return 'rw' if section == '.data' else 'zi' if section == '.bss' else 'ro'
+
+
+def pad_source(placements):
+    """C for the pads the unaligned placements need, one section each (a section can be placed
+    once): pad k for the k-th unaligned placement, as many bytes as its address is past a 4-byte
+    boundary, and of its kind: armlink starts an execution region's RW part after its RO part on
+    a 4-byte boundary, so the pad must match."""
+    lines = ['/* exhume: pads for sections on addresses that are not 4-aligned */']
+    k = 0
+    for section, addr in placements:
+        if not addr % 4: continue
+        k += 1; n = addr % 4; kind = _kind(section)
+        if kind == 'ro':
+            lines.append(f'__attribute__((section(".pad{k}"))) const unsigned char exhume_pad{k}[{n}] = {{ 0 }};')
+        elif kind == 'rw':
+            lines.append(f'__attribute__((section(".pad{k}"))) unsigned char exhume_pad{k}[{n}] = {{ 1 }};')
+        else:
+            lines.append(f'__attribute__((section(".pad{k}"), zero_init)) unsigned char exhume_pad{k}[{n}];')
+    return '\n'.join(lines) + '\n'
+
+
 PAD_OBJ = 'exhume_pad.o'
 
 
 def scatter_text(obj_name, placements):
     """One load and execution region per section, each FIXED at its address. armlink wants
     regions on 4-byte boundaries, and a .data of halfwords can sit on 2: such a section goes in an
-    execution region at the aligned address below, after 1-3 bytes from exhume_pad.o (PAD_SOURCE),
+    execution region at the aligned address below, after 1-3 bytes from exhume_pad.o (pad_source),
     all in one load region out of the way (link with --datacompressor off). The pad bytes come
     first in that region's output; the matcher drops them (addr % 4)."""
     lines, regions, unaligned = [], {}, []
+    k = 0
     for i, (section, addr) in enumerate(placements, 1):
         regions[f'ER_{i}'] = section
         if addr % 4:
-            kind = 'rw' if section == '.data' else 'zi' if section == '.bss' else 'ro'
-            unaligned.append(f'  ER_{i} 0x{addr & ~3:08X} {{ {PAD_OBJ}(.pad{kind}{addr % 4}, +FIRST) {obj_name}({section}) }}')
+            k += 1
+            unaligned.append(f'  ER_{i} 0x{addr & ~3:08X} {{ {PAD_OBJ}(.pad{k}, +FIRST) {obj_name}({section}) }}')
             continue
         lines += [f'LR_{i} 0x{addr:08X} {{', f'  ER_{i} 0x{addr:08X} FIXED {{ {obj_name}({section}) }}', '}']
     if unaligned:
         # the pads no section needs still have to go somewhere (the matcher links with --keep *)
-        lines += ['LR_UNALIGNED 0x0E000000 {'] + unaligned + [f'  ER_PADS 0x0F800000 {{ {PAD_OBJ}(+RO +RW +ZI) }}', '}']
+        lines += ['LR_UNALIGNED 0x0E000000 {'] + unaligned + ['}']
     return '\n'.join(lines) + '\n', regions

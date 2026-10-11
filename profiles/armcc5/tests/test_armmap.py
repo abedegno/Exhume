@@ -47,15 +47,26 @@ class ArmmapTest(unittest.TestCase):
         # armlink wants regions on 4-byte boundaries; a .data of halfwords can sit on 2: it goes
         # after a 2-byte pad from exhume_pad.o in a region at the aligned address below
         text, regions = armmap.scatter_text('t.o', [('i.f', 0x08004120), ('.data', 0x2000001A)])
-        self.assertEqual(armmap.PAD_SOURCE.count('section(".pad'), 9)
+
         self.assertIn('ER_1 0x08004120 FIXED { t.o(i.f) }', text)
         self.assertIn('LR_UNALIGNED 0x0E000000 {', text)
         # the pad is the same kind as the section: armlink starts RW after RO on a 4-byte boundary
-        self.assertIn('ER_2 0x20000018 { exhume_pad.o(.padrw2, +FIRST) t.o(.data) }', text)
+        self.assertIn('ER_2 0x20000018 { exhume_pad.o(.pad1, +FIRST) t.o(.data) }', text)
+        self.assertIn('unsigned char exhume_pad1[2] = { 1 }', armmap.pad_source([('i.f', 0x08004120), ('.data', 0x2000001A)]))
         text2, _ = armmap.scatter_text('t.o', [('.bss', 0x20000101), ('.constdata', 0x08000203)])
-        self.assertIn('exhume_pad.o(.padzi1, +FIRST) t.o(.bss)', text2)
-        self.assertIn('exhume_pad.o(.padro3, +FIRST) t.o(.constdata)', text2)
+        src2 = armmap.pad_source([('.bss', 0x20000101), ('.constdata', 0x08000203)])
+        self.assertIn('exhume_pad.o(.pad1, +FIRST) t.o(.bss)', text2)
+        self.assertIn('zero_init)) unsigned char exhume_pad1[1]', src2)
+        self.assertIn('const unsigned char exhume_pad2[3]', src2)
         self.assertEqual(regions, {'ER_1': 'i.f', 'ER_2': '.data'})
+
+    def test_each_unaligned_section_gets_its_own_pad(self):
+        # one pad section can be placed once: two unaligned code sections need two pads
+        text, regions = armmap.scatter_text('t.o', [('i.a', 0x08000002), ('i.b', 0x08000012)])
+        self.assertIn('exhume_pad.o(.pad1, +FIRST) t.o(i.a)', text)
+        self.assertIn('exhume_pad.o(.pad2, +FIRST) t.o(i.b)', text)
+        src = armmap.pad_source([('i.a', 0x08000002), ('i.b', 0x08000012)])
+        self.assertIn('section(".pad1")', src); self.assertIn('section(".pad2")', src)
 
     def test_scatter(self):
         text, regions = armmap.scatter_text('t.o', [('i.timer_tick', 0x08004120), ('.data', 0x20000210)])
