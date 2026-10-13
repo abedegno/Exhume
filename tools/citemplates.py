@@ -15,8 +15,10 @@ Exhume from a checkout in .exhume, with the Makefile template) overridden by the
 The templates began as UW2Decomp's workflows, with what was UW2's as {{name}} variables:
 {{name}} in a line is replaced by the value; a line that is only {{name}}, from its first
 column, is replaced by the value's lines (which carry their own indentation), or removed when
-the value is empty. GitHub's own ${{ expr }} has spaces
-and is left alone. A variable with no value stops the tool.
+the value is empty. The lines between a line that is only {{if name}} and one that is only
+{{end}}, both from the first column, are kept when name's value is not empty and removed when it
+is (an optional step: blackbox_windows); such blocks do not nest. GitHub's own ${{ expr }} has
+spaces and is left alone. A variable with no value stops the tool.
 
     accuracy    the gate, the port build, the quick fuzzing and every session against its golden,
                 on pushes to main, by hand, and on pull requests from the repository's own branches
@@ -66,7 +68,19 @@ def values(vars_file=None, cfg=None):
 
 def render(text, v, name):
     out = []
+    block = None                        # inside {{if k}}: whether its lines are kept
     for line in text.split('\n'):
+        c = re.fullmatch(r'\{\{if (\w+)\}\}', line)
+        if c:
+            if block is not None: sys.exit(f'citemplates.py: {name}: {{{{if}}}} inside {{{{if}}}}')
+            if c.group(1) not in v: sys.exit(f'citemplates.py: {name}: no value for {c.group(1)}')
+            block = str(v[c.group(1)]) != ''
+            continue
+        if line == '{{end}}':
+            if block is None: sys.exit(f'citemplates.py: {name}: {{{{end}}}} with no {{{{if}}}}')
+            block = None
+            continue
+        if block is False: continue
         m = re.fullmatch(r'\{\{(\w+)\}\}', line)
         if m:
             k = m.group(1)
@@ -78,6 +92,7 @@ def render(text, v, name):
             if mm.group(1) not in v: sys.exit(f'citemplates.py: {name}: no value for {mm.group(1)}')
             return str(v[mm.group(1)])
         out.append(VAR.sub(sub, line))
+    if block is not None: sys.exit(f'citemplates.py: {name}: {{{{if}}}} with no {{{{end}}}}')
     return '\n'.join(out)
 
 

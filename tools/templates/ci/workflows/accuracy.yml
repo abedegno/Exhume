@@ -108,6 +108,12 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/logs"
           {{verify_windows}} 2>&1 | tee "$RUNNER_TEMP/logs/verify-windows.log"
+{{if blackbox_windows}}
+      - name: The black box
+        run: |
+          set -o pipefail
+          {{blackbox_windows}} 2>&1 | tee "$RUNNER_TEMP/logs/blackbox-windows.log"
+{{end}}
 {{mt32_step}}
       - name: Upload the difference pictures and logs
         if: failure()

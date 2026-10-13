@@ -15,6 +15,11 @@ setup_sound = "sh .exhume/tools/setup-sound.sh tools/nuked-opl3"
 port = "make EXHUME=.exhume port"
 verify = "make EXHUME=.exhume verify"
 verify_windows = "make EXHUME=.exhume PY=python verify"
+# the black box (runtime/port/sys/blackbox.c, tools/blackboxcheck.py) on Windows, after the
+# sessions, where the C runtime keeps fault handlers per thread: for a port with the black box,
+# "make EXHUME=.exhume PY=python blackbox" (a target the Makefile template has); empty, as for a
+# port without it: no step
+blackbox_windows = ""
 setup_libs_windows = "SETUP_LIBS=mt32emu sh .exhume/tools/setup-libs.sh tools/libs"
 port_check = "make EXHUME=.exhume port-check"
 port_windows = "make EXHUME=.exhume PY=python port"
