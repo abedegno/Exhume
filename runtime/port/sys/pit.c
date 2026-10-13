@@ -94,8 +94,24 @@ EMSCRIPTEN_KEEPALIVE void web_test_stop(int how)
 }
 #endif
 
+#ifndef __EMSCRIPTEN__
+/* An input script's "fault" event (inscript.c; tools/blackboxcheck.py): the game's thread writes
+   through a null pointer at its next clock read, a real host fault on the thread the game runs on,
+   so that the check can see the black box write out the recording there (crash.c). Called on the
+   main thread; nothing calls it but an input script. */
+static _Atomic int test_fault;
+static int *volatile fault_at;              /* never set: the write is through a null pointer */
+void port_test_fault(void)
+{
+    atomic_store(&test_fault, 1);
+}
+#endif
+
 void port_pause_wait(void)
 {
+#ifndef __EMSCRIPTEN__
+    if (atomic_exchange(&test_fault, 0)) *fault_at = 0;
+#endif
 #ifdef __EMSCRIPTEN__
     switch (atomic_exchange(&test_stop, 0)) {
     case 1: port_fatal("web_test_stop: a fatal error, for the page's check");

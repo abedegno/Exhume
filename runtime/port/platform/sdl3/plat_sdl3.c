@@ -227,11 +227,17 @@ static void handle_key(SDL_Scancode sc, int down, int repeat)
     if (!repeat) key(sc, down);
 }
 
+void port_crash_handlers(void);         /* sys/crash.c */
+
 static int game_thread(void *p)
 {
     void **a = p;
     int (*game)(void *) = (int (*)(void *))a[0];
-    int st = game(a[1]);
+    int st;
+    /* the fault handlers on the thread the game runs on, as well as main's: the Windows C runtime
+       keeps SIGSEGV's and SIGILL's per thread (crash.c) */
+    port_crash_handlers();
+    st = game(a[1]);
     game_status = st;
     SDL_SetAtomicInt(&game_done, 1);
     return st;

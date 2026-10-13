@@ -2,9 +2,9 @@
    anything else the port does differently from DOS, can be replayed exactly (Exhume's
    docs/port.md, "The black box"; first written for UW2Decomp's port). Each session gets a
    folder, recordings/YYYYMMDD-HHMMSS in the home directory, holding RECORD.OUT, the inputs as
-   runtime/replay/replay.c records them, and stage/, a copy of the home directory's files (the
-   saved games, the game's configuration) as they were when the session began, which is what a
-   replay starts from:
+   runtime/replay/replay.c records them, and stage/, a copy of the files the game itself keeps in
+   the home directory (the saved games, the game's configuration) as they were when the session
+   began, which is what a replay starts from:
 
        python3 tools/replay.py port recordings/S/RECORD.OUT OUT --stage recordings/S/stage
 
@@ -13,21 +13,36 @@
    (crash.c), and so does the game's exit (borland.c's bc_exit). The newest BLACKBOX_KEEP
    sessions are kept.
 
-   The project's portgame.h turns it on and names what is not the game's:
+   The project's portgame.h turns it on and names what is the game's:
      PORT_BLACKBOX       defined: crash.c and borland.c call port_blackbox_close (link this file)
      BLACKBOX_KEEP       the sessions kept, this one included (5)
-     BLACKBOX_SKIP       more top-level names of the home directory that stage/ leaves out, as
-                         string literals separated by commas: the port's own settings file and
-                         logs (UW2: "uw2port.cfg"); recordings/, RECORDIN/ and the replay
-                         harness's files (STATE.OUT, RECORD.OUT, REPLAY.IN, TRACE.OUT) are always
-                         left out, in any case
+     BLACKBOX_STAGE      what stage/ copies of the home directory, as string literals separated
+                         by commas: paths in it, with '/' between names, matched without case;
+                         a folder named is copied whole, and a path under a folder copies only
+                         that of the folder. They are the files a replay reads back (UW1 and
+                         UW2: "DATA", whole, for UW.CFG, the sound cards, and any file the player
+                         put there that the port reads ahead of the game's own, such as a
+                         translated STRINGS.PAK; and "SAVE0" to "SAVE4", the game in progress
+                         and the four saved games). Nothing else is copied, and a symbolic link
+                         is never followed (is_link).
+
+   stage/ is an allow-list, not a copy of the home directory less some names, because the home
+   directory holds files that are not the player's to send: the game copied out of GOG's CD
+   image (gog-cd/, sys/gamedir.c), MT-32 ROMs (roms/, mt32-roms/), a game folder the player put
+   there for the search to find, and the port's own settings and recordings. Underworld
+   Exhumed's UW1 1.0.1 and UW2 1.2.2 copied all of it but the settings file and the recordings
+   into every session's stage/. The game writes nothing else in the home directory that a
+   replay needs: its other files there are scratch (UW1's a.tmp to h.tmp, made and removed at
+   start) or output (screenshots, uwpicNNN.gif), and a game file it changes in place (UW1's
+   CUTS\csNNN.n00, copied into the home directory at its first write, borland.c) is written
+   again, the same way, by the replay before it is read.
 
    The recording's name is a host path, which replay.c opens as it is (borland.c's
    bc_open_host). The black box of Underworld Exhumed's UW1 1.0.0 and UW2 1.2.1 gave it a DOS
    path, RECORDINGS\YYYYMMDD-HHMMSS\RECORD.OUT, which the game's file names cut to 8.3: every
    session of a day went to RECORDIN/YYYYMMDD/RECORD.OUT, each overwriting the last, never
    pruned, and copied into each later session's stage/. An old RECORDIN/ is left where it is,
-   the player's own files, but kept out of stage/.
+   the player's own files, and is not staged.
 
    The port's main calls port_blackbox_start(home) before the game starts, for a player's run
    only: one with a window, neither recording nor replaying a test, and with an option to turn
@@ -39,13 +54,18 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "port.h"
 #ifdef _WIN32
 #include <direct.h>
 #define mkdir(p, m) _mkdir(p)
+/* kernel32's, declared here rather than through windows.h, which names things the port's headers
+   name too (gogreg.c's note) */
+__declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char *path);
+#define BB_NO_FILE 0xFFFFFFFFul         /* INVALID_FILE_ATTRIBUTES */
+#define BB_REPARSE 0x400ul              /* FILE_ATTRIBUTE_REPARSE_POINT */
 #else
 #include <unistd.h>
 #endif
-#include "port.h"
 
 #ifndef BLACKBOX_KEEP
 #define BLACKBOX_KEEP 5
@@ -56,17 +76,36 @@ extern int16_t rp_blackbox;
 extern const char *rp_blackbox_name;
 void rp_blackbox_close(int crashed);
 
-static const char *const skip[] = {
-    "recordings", "RECORDIN", "STATE.OUT", "RECORD.OUT", "REPLAY.IN", "TRACE.OUT",
 #ifdef BLACKBOX_SKIP
-    BLACKBOX_SKIP,
+#error "BLACKBOX_SKIP was replaced by BLACKBOX_STAGE, an allow-list of what stage/ copies (the header's note)"
 #endif
-};
+#ifndef BLACKBOX_STAGE
+#ifdef PORT_BLACKBOX
+#error "portgame.h names the home directory's entries the black box stages (BLACKBOX_STAGE)"
+#endif
+#define BLACKBOX_STAGE ""               /* no black box: nothing is staged (a path is never empty) */
+#endif
+
+static const char *const stage_names[] = { BLACKBOX_STAGE };
 
 static int is_dir(const char *p)
 {
     struct stat st;
     return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* a symbolic link (on Windows any reparse point: a link or a junction), which stage/ and the
+   pruning never follow: a link can lead out of the home directory, to what is not the player's
+   to send or the black box's to delete, or back up the tree, round for ever */
+static int is_link(const char *p)
+{
+#ifdef _WIN32
+    unsigned long a = GetFileAttributesA(p);
+    return a != BB_NO_FILE && (a & BB_REPARSE);
+#else
+    struct stat st;
+    return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
+#endif
 }
 
 static int copy_file(const char *from, const char *to)
@@ -81,40 +120,63 @@ static int copy_file(const char *from, const char *to)
     return fclose(out) != 0;
 }
 
-/* from's files and folders into to, which is made; the top level leaves out the skip names */
-static int copy_tree(const char *from, const char *to, int top)
+/* What stage/ does with the home directory's entry at path (relative, '/' between names):
+   2 copies it whole (a stage name is the path), 1 goes into it for what is named under it (a
+   stage name starts with the path and '/'), 0 leaves it out. Names match without case. */
+static int staged(const char *path)
+{
+    size_t i, n = strlen(path);
+    int how = 0;
+    for (i = 0; i < sizeof stage_names / sizeof *stage_names; i++) {
+        const char *s = stage_names[i];
+        if (!strcasecmp(s, path)) return 2;
+        if (strlen(s) > n && s[n] == '/' && !strncasecmp(s, path, n)) how = 1;
+    }
+    return how;
+}
+
+/* from's files and folders into to, which is made: all of them when rel is NULL, else those the
+   stage names allow, rel being from's path in the home directory ("" for the home directory) */
+static int copy_tree(const char *from, const char *to, const char *rel)
 {
     DIR *d = opendir(from);
     struct dirent *e;
-    char a[1200], b[1200];
-    int bad = 0;
-    size_t i;
+    char a[1200], b[1200], r[1200];
+    int bad = 0, how = 2;
     if (!d) return 1;
     mkdir(to, 0755);
     while ((e = readdir(d)) != NULL) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-        for (i = 0; top && i < sizeof skip / sizeof *skip; i++)
-            if (!strcasecmp(e->d_name, skip[i])) break;
-        if (top && i < sizeof skip / sizeof *skip) continue;
+        if (rel) {
+            snprintf(r, sizeof r, "%s%s%s", rel, *rel ? "/" : "", e->d_name);
+            if (!(how = staged(r))) continue;
+        }
         snprintf(a, sizeof a, "%s/%s", from, e->d_name);
         snprintf(b, sizeof b, "%s/%s", to, e->d_name);
-        bad |= is_dir(a) ? copy_tree(a, b, 0) : copy_file(a, b);
+        if (is_link(a)) continue;       /* never followed: is_link */
+        if (is_dir(a)) bad |= copy_tree(a, b, how == 2 ? NULL : r);
+        else if (how == 2) bad |= copy_file(a, b);
     }
     closedir(d);
     return bad;
 }
 
-/* removes the folder p and everything in it; p is always a session folder under recordings/ */
+/* removes the folder p and everything in it; p is always a session folder under recordings/. A
+   link is removed, never what it leads to. */
 static void remove_tree(const char *p)
 {
-    DIR *d = opendir(p);
+    DIR *d;
     struct dirent *e;
     char a[1200];
-    if (!d) return;
+    if (is_link(p)) {
+        if (remove(p) != 0) rmdir(p);   /* Windows removes a link to a folder as a folder */
+        return;
+    }
+    if (!(d = opendir(p))) return;
     while ((e = readdir(d)) != NULL) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         snprintf(a, sizeof a, "%s/%s", p, e->d_name);
-        if (is_dir(a)) remove_tree(a);
+        if (is_dir(a) || is_link(a)) remove_tree(a);
         else remove(a);
     }
     closedir(d);
@@ -165,7 +227,7 @@ int port_blackbox_start(const char *home)
     snprintf(session, sizeof session, "%s/%s", dir, stamp);
     if (mkdir(session, 0755) != 0 && !is_dir(session)) return 1;
     snprintf(stage, sizeof stage, "%s/stage", session);
-    if (copy_tree(home, stage, 1)) fprintf(stderr, PORT_NAME ": the session's starting files were not all copied\n");
+    if (copy_tree(home, stage, "")) fprintf(stderr, PORT_NAME ": the session's starting files were not all copied\n");
     /* a host path, which replay.c opens as it is: not a DOS one, which the game's 8.3 file
        names would cut to RECORDIN\YYYYMMDD (the header's note) */
     snprintf(record, sizeof record, "%s/RECORD.OUT", session);

@@ -12,6 +12,12 @@
                          mapped as a player's click is
        T wdown X Y       the press of a wclick alone, its release lost (as a macOS fullscreen
                          switch can lose one)
+       T fault           a host fault on the game's thread (a write through a null pointer at its
+                         next clock read, sys/pit.c): the black box's check of a crash's recording
+                         (tools/blackboxcheck.py). A test's alone: a script with it is refused
+                         unless the environment has EXHUME_TEST_FAULT=1, so that a script passed
+                         to a player's build cannot crash it, and the web build, which has no
+                         fault handlers, refuses it always
    '#' starts a comment. Keys go in as PC set-1 scan codes through the hook real keys use, and
    the pointer through the one the mouse uses, so the game, the recorder and the black box see
    a player's input. The time is the BIOS clock's plus the time the settings screen has been open,
@@ -27,8 +33,9 @@
 #endif
 uint32_t pit_bios_ticks(void);
 uint32_t pit_paused_ms(void);
+void port_test_fault(void);
 
-enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP, EV_WCLICK, EV_WDOWN };
+enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP, EV_WCLICK, EV_WDOWN, EV_FAULT };
 struct ev { uint32_t ms; int kind, code, x, y, button; };
 static struct ev *evs;
 static int nev, next;
@@ -114,8 +121,17 @@ int inscript_load(const char *path, void (*key)(uint8_t), void (*pointer)(const 
             if (sscanf(buf, "%lu %31s %d %d", &ms, word, &e.x, &e.y) < 4
                 || e.x < -1000 || e.x > 1000 || e.y < -1000 || e.y > 1000)
                 return bad(f, path, line, "a motion -1000..1000 -1000..1000");
+        } else if (!strcmp(word, "fault")) {
+#ifdef __EMSCRIPTEN__
+            return bad(f, path, line, "fault: not in the web build, which has no fault handlers");
+#else
+            const char *on = getenv("EXHUME_TEST_FAULT");
+            if (!on || strcmp(on, "1"))
+                return bad(f, path, line, "fault: a test's event, refused unless EXHUME_TEST_FAULT=1");
+            e.kind = EV_FAULT;
+#endif
         } else
-            return bad(f, path, line, "an event: key, down, up, move, click, mdown, mup, look, wclick or wdown");
+            return bad(f, path, line, "an event: key, down, up, move, click, mdown, mup, look, wclick, wdown or fault");
         if (nev && e.ms < evs[nev - 1].ms) return bad(f, path, line, "times must not go back");
         if (nev == cap) {
             struct ev *m = realloc(evs, (size_t)(cap = cap ? cap * 2 : 32) * sizeof *evs);
@@ -174,6 +190,9 @@ void inscript_tick(void)
         case EV_WDOWN: plat_window_click((float)e->x, (float)e->y, 0); break;
         case EV_MDOWN: send_ptr(PLAT_POINTER_MOVE, e, 0); send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button); break;
         case EV_MUP: send_ptr(PLAT_POINTER_UP, e, 0); break;
+#ifndef __EMSCRIPTEN__
+        case EV_FAULT: port_test_fault(); break;
+#endif
         case EV_CLICK:
             send_ptr(PLAT_POINTER_MOVE, e, 0);
             send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button);

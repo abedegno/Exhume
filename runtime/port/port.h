@@ -9,7 +9,7 @@
    messages), may move the load segment and the far heap (PORT_LOAD_SEG, PORT_HEAP_FIRST,
    PORT_HEAP_END), gives DGROUP's paragraph (PORT_DGROUP_PARA) and where the C library's _ctype
    table sits in it (PORT_CTYPE_AT), the termination chain exit runs (PORT_EXIT_CHAIN()),
-   whether the port has the black box (PORT_BLACKBOX, with BLACKBOX_KEEP and BLACKBOX_SKIP:
+   whether the port has the black box (PORT_BLACKBOX, with BLACKBOX_KEEP and BLACKBOX_STAGE:
    sys/blackbox.c), what marks the game's directory (PORT_GAME_EXE and the rest:
    sys/gamedir.c), and declares the program's own far blocks. compat.h includes it too, so the
    game's C sees it: it declares only the port's names. UW2's is UW2Decomp's src/port/portgame.h. */
@@ -192,6 +192,8 @@ void port_pause(int on);                /* sys/pit.c: the settings screen open (
 void port_pause_wait(void);             /* sys/pit.c: the game's thread, at a clock read: wait while paused */
 int port_game_parked(void);             /* sys/pit.c: 1 while the game's thread waits in port_pause_wait */
 uint32_t pit_paused_ms(void);           /* sys/pit.c: milliseconds spent paused so far (main thread) */
+void port_test_fault(void);             /* sys/pit.c: a host fault on the game's thread at its next clock read (tests) */
+void port_crash_handlers(void);         /* sys/crash.c: the fault handlers, on each thread that runs the game */
 void audio_set_volume(int percent);     /* sound/audio.c: 0..100, applied to every sample played after the call */
 unsigned audio_underruns(void);         /* sound/audio.c: times the device found the ring empty after it started playing */
 void mouse_look_mode(int on);
