@@ -1,0 +1,141 @@
+
+========================================================================
+
+** ELF Header Information
+
+    File Name: x.o
+
+    Machine class: ELFCLASS32 (32-bit)
+    Data encoding: ELFDATA2LSB (Little endian)
+    Header version: EV_CURRENT (Current version)
+    Operating System ABI: none
+    ABI Version: 0
+    File Type: ET_REL (Relocatable object) (1)
+    Machine: EM_ARM (ARM)
+
+    Entry offset (in SHF_ENTRYSECT section): 0x00000000
+    Flags: None (0x05000000)
+
+    ARM ELF revision: 5 (ABI version 2)
+
+    Built with
+    Component: ARM Compiler 5.06 update 7 (build 960) Tool: armcc [4d365d]
+
+    Header size: 52 bytes (0x34)
+    Program header entry size: 0 bytes (0x0)
+    Section header entry size: 40 bytes (0x28)
+
+    Program header entries: 0
+    Section header entries: 17
+
+    Program header offset: 0 (0x00000000)
+    Section header offset: 1316 (0x00000524)
+
+    Section header string table index: 14
+
+========================================================================
+
+** Section #1 'i.f' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 36 bytes (alignment 4)
+    Address: 0x00000000
+
+
+** Section #10 '.reli.f' (SHT_REL)
+    Size   : 32 bytes (alignment 4)
+    Symbol table #9 '.symtab'
+    4 relocations applied to section #1 'i.f'
+
+
+** Section #2 'i.name' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 8 bytes (alignment 4)
+    Address: 0x00000000
+
+
+** Section #11 '.reli.name' (SHT_REL)
+    Size   : 8 bytes (alignment 4)
+    Symbol table #9 '.symtab'
+    1 relocations applied to section #2 'i.name'
+
+
+** Section #3 '.arm_vfe_header' (SHT_PROGBITS)
+    Size   : 4 bytes (alignment 4)
+
+
+** Section #4 '.comment' (SHT_PROGBITS)
+    Size   : 146 bytes
+
+
+** Section #5 '.constdata' (SHT_PROGBITS) [SHF_ALLOC]
+    Size   : 21 bytes
+    Address: 0x00000000
+
+
+** Section #6 '.data' (SHT_PROGBITS) [SHF_ALLOC + SHF_WRITE]
+    Size   : 8 bytes (alignment 2)
+    Address: 0x00000000
+
+
+** Section #7 '.debug_frame' (SHT_PROGBITS)
+    Size   : 68 bytes
+
+
+** Section #12 '.rel.debug_frame' (SHT_REL)
+    Size   : 16 bytes (alignment 4)
+    Symbol table #9 '.symtab'
+    2 relocations applied to section #7 '.debug_frame'
+
+
+** Section #8 '.debug_frame' (SHT_PROGBITS)
+    Size   : 68 bytes
+
+
+** Section #13 '.rel.debug_frame' (SHT_REL)
+    Size   : 16 bytes (alignment 4)
+    Symbol table #9 '.symtab'
+    2 relocations applied to section #8 '.debug_frame'
+
+
+** Section #9 '.symtab' (SHT_SYMTAB)
+    Size   : 336 bytes (alignment 4)
+    String table #15 '.strtab'
+    Last local symbol no. 13
+
+    Symbol table .symtab (20 symbols, 13 local)
+
+      #  Symbol Name                Value      Bind  Sec  Type  Vis  Size
+    ========================================================================
+
+      1  /work/x.c                  0x00000000   Lc  Abs  File  De 
+      2  $t                         0x00000000   Lc    1   --   De 
+      3  $d                         0x00000018   Lc    1   --   De 
+      4  $t                         0x00000000   Lc    2   --   De 
+      5  $d                         0x00000004   Lc    2   --   De 
+      6  .constdata                 0x00000000   Lc    5  Sect  De   0x15
+      7  .data                      0x00000000   Lc    6  Sect  De   0x8
+      8  i.f                        0x00000000   Lc    1  Sect  De 
+      9  i.name                     0x00000000   Lc    2  Sect  De 
+     10  BuildAttributes$$THM_ISAv4$P$D$K$B$S$PE$A:L22UL41UL21$X:L11$S22US41US21$IEEE1$IW$USESV6$~STKCKD$USESV7$~SHL$OTIME$EBA8$REQ8$PRES8$EABIv2
+                                    0x00000000   Lc  Abs   --   De 
+     11  s_name                     0x00000000   Lc    5  Data  De   0x15
+     12  __ARM_grp_.debug_frame$5   0x00000000   Lc    7  Data  De 
+     13  __ARM_grp_.debug_frame$8   0x00000000   Lc    8  Data  De 
+     14  g_flag                     0x00000000   Gb    6  Data  Hi   0x1
+     15  g_tbl                      0x00000002   Gb    6  Data  Hi   0x6
+     16  f                          0x00000001   Gb    1  Code  Hi   0x18
+     17  name                       0x00000001   Gb    2  Code  Hi   0x4
+     18  g_far                      0x00000000   Gb  Ref  Data  Hi 
+     19  sub_08009000               0x00000000   Gb  Ref  Code  Hi 
+     20  Lib$$Request$$armlib       0x00000000   Wk  Ref  Code  Hi 
+
+
+** Section #14 '.shstrtab' (SHT_STRTAB)
+    Size   : 121 bytes
+
+
+** Section #15 '.strtab' (SHT_STRTAB)
+    Size   : 292 bytes
+
+
+** Section #16 '.ARM.attributes' (SHT_ARM_ATTRIBUTES)
+    Size   : 72 bytes
+

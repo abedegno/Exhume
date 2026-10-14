@@ -1,0 +1,30 @@
+# Toolchain profile: Arm Compiler 5.06 update 7 (build 960) from Keil MDK 5.36, run as MDK-Lite
+# under Wine in Docker (Dockerfile, setup-mdk.sh). What is true of the tools, not of one firmware;
+# the evidence is in compiler.md and linker.md.
+
+name = "Arm Compiler 5.06u7 (Keil MDK-Lite 5.36)"
+
+[c]
+default_opts = "--cpu Cortex-M3 -O1 -Otime --split_sections"
+
+[asm]
+default_opts = "--cpu Cortex-M3"
+
+[log]
+problem = "(Error|Warning): "
+benign = "(L6305W|L6314W)"          # no entry point; an empty .bss pattern in a generated scatter file
+fatal = "Error: "
+
+[link]
+# the matcher links each source at its real addresses and compares finished bytes
+# (profiles/armcc5/tools/armmatch.py); there is no masked object and no verify step
+object_model = "linked-image"
+lite_limit = 32768                   # MDK-Lite refuses to link an image larger than this
+
+[docker]
+image = "armcc-wine"
+
+[setup]
+mdk_installer = "MDK536.EXE"
+mdk_url = "https://armkeil.blob.core.windows.net/eval/MDK536.EXE"
+mdk_sha256 = "f2398d43cd162b02f8a1d54553199426b64b53dff5b8b499b566b8db4459cc51"

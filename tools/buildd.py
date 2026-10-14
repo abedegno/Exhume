@@ -24,7 +24,7 @@ opt = lambda n, d: int(a[a.index(n) + 1]) if n in a else d
 JOBS, BUDGET = opt('--jobs', None) or dosbatch.sessions(), opt('--budget', 30)
 q = cfg.queue; os.makedirs(os.path.join(q, 'budget'), exist_ok=True)
 srcrel = os.path.relpath(cfg.src, cfg.root)
-OK = re.compile(r'^(match|verify) ((?:' + re.escape(srcrel) + r'/)?(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.(?:C|ASM))((?: --dis [A-Za-z_][A-Za-z0-9_]*| --no-build)*)$')
+OK = re.compile(r'^(match|verify) ((?:' + re.escape(srcrel) + r'/)?(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.(?:C|ASM|c|s))((?: --dis [A-Za-z_][A-Za-z0-9_]*| --no-build)*)$')
 
 def finish(req, text):
     out = req[:-4] + '.out'
@@ -49,6 +49,8 @@ def run(req):
             return finish(req, f'build budget for {os.path.basename(src)} is used up; stop and write your final report\n[exit 3]\n')
         open(bf, 'w').write(str(left - 1))
     if cmd == 'verify': opts = ''
+    if cmd == 'verify' and cfg.object_model == 'linked-image':
+        cmd = 'match'          # a linked-image match already checks every address
     r = subprocess.run([sys.executable, os.path.join(here, cmd + '.py'), src, '--config', cfg.file] + opts.split(),
                        cwd=cfg.root, capture_output=True, text=True, timeout=900)
     finish(req, r.stdout + r.stderr + f'\n[exit {r.returncode}]\n')
