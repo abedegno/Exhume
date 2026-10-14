@@ -34,6 +34,27 @@ You are rebuilding one original source file (one code segment) as C that the ori
 - Only edit your own source file. No git commands. Do not edit tools, target tables, other sources, symbols.tsv or matched.txt. Keep scratch files in a subfolder named after your file; other agents share the scratch area.
 - If a function will not match after about 20 builds, keep the best version and move on; report the remaining difference.
 
+## armcc5 (Cortex-M images)
+
+The loop is the same; the brief to give an agent is profiles/armcc5/match-brief.md, and the
+evidence is in profiles/armcc5/compiler.md. What differs:
+
+- A source names its functions' addresses with `/* at: name 0xADDR */` lines (or keeps the map's
+  `sub_ADDR` placeholders) and its options with `/* opts: ... */`; there is no target table.
+- match.py links the object at the real addresses with every other symbol defined from the map,
+  and compares finished bytes: a wrong extern or callee shows as a byte difference, so there is no
+  verify step. WHOLE FILE MATCHES, then `merge.py`.
+- Between builds, `profiles/armcc5/tools/armvariant.py score SRC NAME --diff` compiles only (a
+  second or two) and scores one function against the image; `--regs` tells structure from
+  register allocation, and `pool` shows the literal pool's order.
+- A function that stays a register swap after the budget goes to a search rather than more hand
+  edits: `armoutline.py` (inline helpers, or one statement at every point), `armbrute.py` over
+  that template or a hand-written one, `armpermute.py`, then `armreduce.py` on the hit and
+  match.py on the result. compiler.md, "Searching for the source", has what the searches found.
+- Every function is C: no `__asm` functions (all of a file's go into one `.emb_text` section),
+  no forced instructions, no register variables; inline `__asm` only for one special-register
+  instruction (MSR, MRS, CPSID, WFI).
+
 ## Why verify matters here
 
 match.py masks every byte a fixup writes, so a call to the wrong routine, a wrong global, or a constant where the original had a relocation still says MATCH. In UW2 a draft called `strncmp` where the original called `strnicmp`, and about 20 extern names in another file were wrong behind a MATCH. Only verify and the link catch these.

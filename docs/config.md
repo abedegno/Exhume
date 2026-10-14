@@ -63,6 +63,67 @@ For tools/gate.py, the build driver and gate (docs/readability.md, "The gate"). 
 - `sessions`, `batch`: DOS sessions at once for the gate alone (default: `[toolchain] sessions`, else what suits the DOS in use; `EXHUME_DOS_SESSIONS` wins) and sources per session (default 8).
 - `boot`: rungame.mjs steps for `gate.py boot`, which also uses [run].
 
+### [gate] for a linked image (armcc5)
+
+A linked-image project's `gate.py check` (and `exact`) runs profiles/armcc5/tools/armgate.py,
+which rebuilds the image in pieces and compares it with the original byte for byte, then writes
+`<build>/gate/rebuilt.hex` (or `.bin`) in the original file's own layout and compares the files
+(profiles/armcc5/linker.md, "The whole-image gate"). The keys above do not apply; these do, all
+optional:
+
+- `pieces`: the pieces file (default `pieces.toml` in the root). It holds `known_diffs` (names of
+  functions not matched yet, allowed to differ), one `[[piece]]` per piece (`start`, `end` in hex;
+  `startup = true` on the piece that holds the vector table, the startup code and the library's
+  entry code) and an optional `[data]` with `start` (default the last piece's end) and `end`
+  (default the end of the image's compressed or copied RW data). `[[gate.piece]]` and
+  `[gate.data]` in exhume.toml may stand in for the file. Each piece starts on a 4-byte boundary
+  at a section start and is small enough for one MDK-Lite link (32 KB, counting its files' other
+  sections).
+- `startup`: the startup source (default: the one assembly source with a `RESET` area).
+- `symdefs`: a symdefs file of symbols the original link took from outside the sources (a stack
+  top a scatter file defined), added to every link.
+- `library`: the scatter module pattern of the toolchain's libraries (default `*.l`); `libpath`:
+  their directory (default `[toolchain] home`'s `ARM/ARMCC/lib`); `aside`: library objects to link
+  out of the startup piece by name (the gate finds most itself).
+- `exclude`: directories under `src` the gate never compiles (a mod's own sources).
+- `jobs`: worker processes (default one per core, up to 12). With the Wine runner each worker has
+  its own Wine prefix under `EXHUME_GATE_WINEPREFIX` (default `~/.exhume-wine`) and a persistent
+  wineserver. `EXHUME_GATE_JOBS` and `--jobs N` win over it; 1 runs everything in one process.
+- `allow_gaps`: pass even if some bytes between the first piece and the data's end are rebuilt by
+  nothing (default false).
+- `[data] split_zi`: link zero-init data in its own region at the image's zero region address,
+  rather than after the RW data in one region (default false).
+
+`EXHUME_GATE_EXTRA_SYMDEFS` names a symdefs file added to every link, and `EXHUME_GATE_DATA_END`
+the end of the data stage's comparison: hooks for a project's own modded build (armmod.py passes
+the same through armgate.run()).
+
+## [mod]
+
+The modded build of a linked image (`gate.py game`, profiles/armcc5/tools/armmod.py;
+skills/modding-build). It copies the project to `<build>/mod/tree`, edits the copy, links the new
+code as one more piece, runs the gate in the copy, and checks every difference from the original.
+
+- `sources`: the new code, relative to the root. Keep it out of `src`, or list its directory in
+  `[gate] exclude`, so the exact build never compiles it.
+- `include`: more include directories for it (`[project] include` is always on the path).
+- `code`, `ram`: where the new piece goes: free flash, and RAM above everything the image uses
+  (its data and the stack; the build refuses less). Nothing initialises that RAM at reset.
+- `[[mod.replace]]`: `file`, `old`, `new` and `count` (default 1): a string replaced in the copy,
+  which must occur exactly `count` times. `patches`: patch files applied to the copy with
+  `patch -p1`. `edit`: a command run in the copy (`{tree}`, `{root}`, `{build}`, `{python}`).
+- `[[mod.allow]]`: the differences the edits may make, each with an optional exact `count`:
+  `kind = "word"` (`from`, `to`, optional `at`): a word that held one symbol's address now holds
+  another's (a vector, a pointer); `kind = "pool"` (`from`, `to`, optional `size`, default the map
+  row's): a literal pool word into one table now points at the same offset in another;
+  `kind = "imm"` (`insn` of `movs`, `cmp`, `adds`, `subs`; `old`, `new`): a 16-bit Thumb
+  immediate; `kind = "range"` (`start` and `end`, or `symbol` and `size`): anything inside.
+  Symbols come from the map, the mod and the gate's own links. With no edits no rule is needed,
+  and the image must be identical.
+- `out`: the output file (default `<build>/mod/NAME-mod.hex`, or `.bin` for a raw image), written
+  in the original's format, with the new piece's symbols beside it (`.syms.tsv`).
+- `copy_ignore`: glob patterns of paths not copied.
+
 ## [cparse]
 
 Optional, for the parser behind declinv.py, structrec.py and headergen.py (tools/cparse.py, `setup()`). It learns all three from the headers in `[project] include` without this section, which adds or overrides:
@@ -157,6 +218,72 @@ For tools/citemplates.py (docs/ci-bundle.md): `vars`, a TOML file of the CI temp
 ## [test]
 
 tools/test.py's tiers: `fast` and `full`, each a list of `[name, command, needs]`; without them the defaults in the tool. `coverage_doc` is where tools/coverage.py writes its page.
+
+## [difftest]
+
+For the armcc5 profile's differential tests, profiles/armcc5/tools/emu/difftest.py
+(docs/firmware-testing.md). Every key is optional and its command-line option wins.
+
+- `reference`: the image the others are measured against (default `[binary] image`). An image
+  is an Intel HEX, raw or ELF file.
+- `reference_syms`: its symbols: a map directory, an ELF or a TSV (default `[project] map`).
+- `candidate`, `candidate_syms`: the build under test and its symbols (default: the reference's
+  symbols, right only for a build at the same addresses, such as the exact link).
+- `src`: directories whose C definitions give argument and return widths, and the default list of
+  functions (default `[project] src`).
+- `runs` (default 200), `budget` (instructions per run, default 300000).
+- `exclude`: regular expressions of function names left out of the default list.
+- `init_rw`: true starts initialised data whose initial bytes differ between the builds from each
+  build's own values (`--init-rw`).
+- `flash`, `ram`, `scratch`: `[base, size]` of the regions (defaults `[0x08000000, 0x80000]`,
+  `[0x20000000, 0x10000]`, `[0x30000000, 0x10000]`; pointer arguments point into scratch).
+  `periph`: a list of `[base, size]` whose every read is random and every write recorded
+  (default the first megabyte at 0x40000000 and at 0x50000000).
+
+## [sysemu]
+
+For the system emulator, profiles/armcc5/tools/emu/sysemu.py (docs/firmware-testing.md).
+
+- `image`, `symbols`: what it boots and the names stubs and tests use (default `[binary] image`
+  and `[project] map`).
+- `flash`, `ram`: `[base, size]` (defaults `[0x08000000, 0x80000]`, `[0x20000000, 0x10000]`).
+- `instr_per_ms` (default 30000): instructions in an emulated millisecond. `cpu_hz` (default
+  72000000): the clock SysTick and the timers count. `irq_repeat` (default 32): deliveries of
+  level-triggered interrupts in one millisecond.
+- `on_reset`: `reboot` (default) or `stop`, on a reset request or the watchdog.
+- `chip`: the models added (`stm32f1`, the default; anything else adds none). `uart_baud`
+  (`{ 1 = 115200 }`, per USART), `flash_page` (default 0x400), `flash_kb` (default the `flash`
+  size), `uid` (the unique ID, 24 hex digits).
+- `plugins`: Python files, each with `attach(machine, options)`, that add the project's own models
+  and stubs; `options` is this table, so a plugin reads its own subtable (`[sysemu.NAME]`;
+  profiles/armcc5/tools/emu/example_device.py).
+- `ram_fill`: a seed: RAM holds random bytes at reset, as at power-on.
+
+## [openbuild]
+
+For the open-toolchain build, profiles/armcc5/tools/openbuild/openbuild.py
+(docs/firmware-testing.md).
+
+- `out`: where the copy of the sources, the objects, `app.elf` and `app.hex` go (default
+  `build/open`).
+- `src`, `sources`, `exclude`: the source directory (default `[project] src`), globs of the C
+  files to build relative to the root (default every `.c` under it) and globs left out.
+- `include`: header directories besides `[project] include`. Each source's `/* opts: */` line
+  gives its `-D` and `-I` as for armcc; `docker_root` (default `/work`) is the project's mount in
+  the toolchain container, mapped back to the copy.
+- `extra`: C or GNU assembler files added as they are: a startup file and vector table, the
+  project's stand-ins for the library calls it makes (`sprintf`, float helpers).
+- `cc` (default `clang`), `target` (`thumbv7m-none-eabi`), `cpu` (`cortex-m3`), `opt` (`-Os`),
+  `cflags`, `defines`, `libs` (more objects or archives for the link).
+- `short_enums` (default true), `default_rewrites` (default true: `__packed struct` and
+  `__packed union`), `rewrite`: more `[pattern, replacement]` pairs (Python regular expressions)
+  applied to the copy of every source and header, such as one for an embedded `__asm { }` block.
+- `flash`, `ram`: `[origin, length]` for the linker script.
+- `ram_layout` (default true) and `ram_syms` (default `[project] map`; an ELF or TSV also
+  serves): every RAM symbol at the original's address. Without the map, RAM is in the linker's
+  own order and the build says so.
+- `entry` (default `main`), `runtime` (default true: link the profile's runtime.c and
+  runtime.S), `ld`, `objcopy`, `objdump` (defaults the `arm-none-eabi-` tools).
 
 ## Source directives
 

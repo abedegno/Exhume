@@ -12,6 +12,21 @@ A project names its profile in exhume.toml (`[toolchain] profile`).
 
 Turbo C++ 1.01, Turbo Assembler 2.0, Turbo Link 3.01 and the VROOMM overlay manager. Learned on Ultima Underworld II. Complete for the medium model with overlays; other memory models are untested.
 
+## armcc5
+
+Arm Compiler 5 (armcc 5.06, armasm, armlink, fromelf) from Keil MDK, for Cortex-M firmware, run as
+MDK-Lite (no licence; a 32 KB link limit, which the whole-image gate works around by linking in
+pieces) under Wine, in Docker or on the host. Learned on a Cortex-M3 firmware of about 500
+functions: every function matched in C, the image rebuilt byte-identical from its pieces, its const
+data, region table and compressed RW data. The tools read Intel HEX update files and ELF objects;
+`compiler.md` and `linker.md` hold what matching taught, `match-brief.md` is the brief for matching
+agents. Beyond the bytes: differential tests, a Cortex-M system emulator and an open-toolchain
+build (docs/firmware-testing.md, skills/firmware-verify).
+
+Next for this family: other armcc 5 updates (each update changes code generation: pin the exact
+build first), Arm Compiler 6 (armclang, LLVM-based: a different profile), and GCC for Arm
+(arm-none-eabi-gcc; the profile's open-toolchain build uses clang with GNU ld for testing).
+
 ## Profiles that would come naturally next (not written)
 
 - **Borland C++ 2.0 / 3.x and Turbo C 2.0.** The nearest neighbours: same object format, same linker family and overlay manager in 3.x, much of compiler.md likely to carry over but every rule to be re-proven (the `_BSS` hash and public order in particular).

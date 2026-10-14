@@ -75,9 +75,9 @@ Evidence is a matched function in a real firmware or a test in tests/.
   `v = f > K ? K : f;`, `if (f > K) c = K; else c = f;` and `if (v > K) v = K;` swap r0/r1 around
   it. When a mismatch is only a register swap near a clamp, try all three.
 - armcc keeps r1-r3 and ip live across a `bl` to a function defined anywhere in the same file,
-  before or after the caller (it knows the callee's register use); with only a prototype it saves them in r4-r10 instead. So a
-  caller that keeps r1-r3 live across a call shares its source file with the callee. `__weak`
-  definitions switch this off.
+  before or after the caller (it knows the callee's register use); with only a prototype it
+  saves them in r4-r10 instead. So a caller that keeps r1-r3 live across a call shares its source
+  file with the callee. `__weak` definitions switch this off.
 - `#pragma O0` inside an `-O1` file gives code neither command-line level gives
   (`sub sp,#4; movs; str; b test; ...; add sp,#4; bx lr` for a volatile counter loop); functions
   under it still pass on their register use.
@@ -132,8 +132,9 @@ Evidence is a matched function in a real firmware or a test in tests/.
   `buf[0]` gives an immediate offset.
 - A function returning `u8` versus `u16` changes how callers mask the result.
 - A non-leaf function keeps the stack 8-byte aligned at calls to extern functions by pushing an
-  unused extra register (r8, or ip). When the callee is defined earlier in the same file and needs
-  no aligned stack, the padding goes: an odd-count `push` in a non-leaf means a same-file callee.
+  unused extra register (r8, or ip). When the callee is defined in the same file (before or after
+  the caller) and needs no aligned stack, the padding goes: an odd-count `push` in a non-leaf means
+  a same-file callee.
 - A range test `c >= 'A' && c <= 'F'` fuses into `sub; cmp #5; bhi`; nested ifs keep
   `cmp #0x41; blo; cmp #0x46; bhi`.
 - `if (b == 0) {...} else if (w == 0) clear;` puts the clear out of line (`cbz` and `b`); the
@@ -178,3 +179,247 @@ Evidence is a matched function in a real firmware or a test in tests/.
   differently.
 - `w = v * 102; w = w / 100;` multiplies before loading the divide literal; one expression loads
   the literal first.
+
+## Which compiler build
+
+armcc 5's point releases compile nearly all code alike, so one matched function says little about
+the build. A whole firmware's matched files, run under every MDK release from 4.60 (armcc 5.02)
+to 5.36 (5.06u7) with `tools/armbuilds.py`, settled it:
+
+- 5.05u1 to 5.06u2 matched every file. 5.05 and earlier broke about ten files (different code,
+  or a link that failed), and 5.03 and 5.02 shortened a large switch-driven function by 0x30
+  bytes. 5.06u3 and every later update built one library function 2 bytes longer.
+- The one function that told them apart rebuilt a constant from a register known to hold a
+  smaller value (`lsls r1,r2,#5` for 0x100 with r2 = 8, after a switch whose cases share their
+  compares). 5.06u2 and earlier keep that knowledge past compares whose flags serve two branches;
+  5.06u3 onwards drop it and load the constant (`mov.w r1,#0x100`, 2 bytes longer). No option
+  changed it (-O0 to -O3, -Otime or not, -g, --c99, --no_inline and others).
+- So: build every merged file under every release you can get, and look for the files that only
+  some releases match. A function nothing matches after long work is worth trying under the
+  neighbouring releases before more hours on its source; here it was the compiler.
+- Several MDK releases carry the same armcc build (5.21 and 5.21a; 5.22 and 5.23; 5.24 and 5.24a;
+  5.17, 5.18 and 5.18a; 5.13 and 5.14). `armcc --vsn` and the object's `.comment` ("Component: ARM
+  Compiler 5.06 update 2 (build 183)") name the build.
+- MDK 4's compilers take their licence from a `TOOLS.INI` at the toolchain root, not from
+  `ARM_TOOL_VARIANT`; a minimal one gives the Lite licence.
+- MicroLIB members are not compiled with the project: `_printf_core` from MDK 5.14, 5.20 and 5.25
+  was the image's, 5.36's differed throughout. Its release is evidence for the MDK release too.
+- The image's code also chose the library: a peripheral library's functions compiled from two
+  vendor releases were identical except a few (a UART set-up, a clock query), which matched only
+  the older release. Compile every release of a vendor library, not just the latest.
+
+## What a file's contents decide
+
+Which functions and globals share a source file changes the code, so it is evidence of the
+original files, and a source file can't be split or joined freely afterwards.
+
+- A callee defined in the same file, before or after its caller, lets armcc keep r1-r3 live across
+  the call and drop the stack-alignment push (above). armcc generates a file's callees first: in
+  `void init(void) { other(); cfg(); }` with `cfg` defined later, `cfg` is the object's first
+  section. A test with the callee before and after its caller gave the same bytes.
+- A caller masks a callee's result by the prototype it saw, not the callee's definition. With
+  `u8 changed; changed |= check();` and `check` defined in the file returning `u32`, armcc emits
+  `orrs r4,r0; uxtb`; with only a `u8` prototype in view, a bare `orrs r4,r0`. A missing `uxtb`
+  shows the callee was in another file, compiled against a narrower prototype.
+- A file's own globals are reached from one another's addresses (`add.w ip,r5,#8` for the global
+  defined 8 bytes after another); externs each get a literal. So a function that uses two globals
+  its file defines must stay with that data (data is laid out per file).
+- A second pool entry for the same address means two variables: with one struct over a block of
+  RAM, armcc reused the struct's base register for a flag byte at its start; with the flag and
+  the halfwords after it as separate globals defined in the file, it loaded the same literal again
+  (`ldr.w ip,[pc,#..]`) for the flag, as the image did. armcc shares the pool word through
+  the file's data anchor but doesn't treat two variables as one address.
+- Options are per file: a file's `/* opts: */` line holds what differs from the defaults
+  (`--no_data_reorder`, `--bss_threshold=N`). Files joined into one need options that suit both.
+- `--split_sections` does not split embedded assembler: every `__asm` function of a file goes into
+  one `.emb_text` section. One more reason for C everywhere.
+
+## Inline helpers, getters and register allocation
+
+armcc allocates an inlined function's code after its caller's own. A `static __inline` helper the
+original source had moves registers anywhere in the function without changing one instruction,
+and no edit to the caller's own statements reproduces that. When a register swap resists every
+spelling of the statements around it, the source probably called a helper there.
+
+- A loop calling two functions six times, then a store to a peripheral register: written in
+  place, armcc put the register's address in r1 and the value in r0, the image the other way
+  round. The loop as `static __inline void repeat6(void)` gave the image's registers; the loop's
+  own bytes were the same either way. Moving only the store into a helper did nothing.
+- A sign clamp (`if (!(v > 0 && m.b1)) { if (v < 0 && m.b0) v = -v; else v = 0; }`) as
+  `static __inline int clamp(int v) {...; return v;}`, together with one local widened to `u32`,
+  fixed a two-register swap; neither change alone did. Found by a search.
+- Four of ten single-byte flag reads written through one-line getters
+  (`static __inline u8 get_f21(void) { return g_state.f21; }`) swapped ip and r7 as the image had
+  them. No subset of the four worked, and each partial set scored worse than no getters at all:
+  one change at a time would never have found it. 32 of 59,049 combinations matched.
+- Two copies of a 10-byte text into a buffer through one `copy_text(dst)` helper decided which of
+  two hoisted constants got r4. The natural helper; both copies must use it.
+- A getter for a struct pointer (`view()->flags |= 0x80`) fixed three registers but left a
+  temporary in r1 where the image had r0: the getter's result is a value of its own, allocated
+  before armcc forwards the base into the address. A getter that fixes what you look at can still
+  leave this trace.
+- `tools/armrepeats.py` finds instruction runs the image repeats at several places: inlined
+  helpers and macros of the original. A function holding such a run probably called the helper.
+
+## Dead code that steers allocation
+
+Some code armcc deletes still takes part in register allocation; some is deleted before it.
+
+- A test is deleted only when both outcomes reach the same code: `if (c) continue;` where the body
+  falls through to the increment anyway, `if (c) break;` just before a case's own `break`, `else if
+  (c) return;` at the very end of a void function. Inside a loop, or before later statements, the
+  same test is kept and costs a compare and branch.
+- A deleted test on locals still moves registers (in one loop any dead use of i, j or n moved a
+  hoisted constant from r6 to ip); a deleted test on globals alone changed nothing.
+- A dead arm can keep a value live: in a chain of `if ((d -= K) == 0)` tests on `d = (u32)p -
+  base`, adding `else if (d == (u32)p) return;` (deleted, no code) kept `p` in r0, so the running
+  difference stayed in r1 and the last test became `subs.w r1,r1,#K` as in the image, not `cmp`.
+- An unread comparison of pointers survives until register allocation, counts as a use of what it
+  reads, and is deleted after it: `{ u32 z; z = (u32)(&tbl[i + 1] != 0); }` at the end of a loop
+  body moved a hoisted array base from lr to r7, with no code. `if (E) {}`, `(void)(E);`, scalar
+  comparisons and plain pointer assignments are deleted before allocation and change nothing;
+  only relational or equality comparisons of pointers survived (70 of 6912 statement forms tried).
+- Unread pointer locals hold registers through allocation the same way:
+
+      { T *q0 = (T *)&g_a; T *q1 = &tbl[1]; T *q2 = (T *)&g_b;
+        v = tbl[0].f24; v &= ~0x41; w = tbl[0].f26;
+        z = (u32)(q0 != tbl); z = (u32)(q1 != tbl); z = (u32)(q2 != tbl); }
+      v &= ~0xe000; w &= 4;
+
+  armcc gives short values the first free register in its order (ip, then r6, then fp); the three
+  pointers, live from before the load to the comparisons, take ip and r6, so the half-masked `v`
+  went to fp as in the image. They and the comparisons are gone after allocation. Found by a
+  placement search: 615 variants, 3 matches, all with three pointers opened before the load.
+- Dead, duplicate and redundant stores are deleted before allocation and change nothing.
+
+## Hoisted values and their registers
+
+- armcc hoists loads and constants that sibling regions share into the entry block. Which register
+  a hoisted value gets follows how it is used: references inside a loop count far more than those
+  outside, and a value whose range crosses a call ranks among the call-crossing values (r4 up).
+- A hoisted address used in five loops was coloured after every other value (lr) until it had
+  one real use in one loop's latch block (the block with `++i` and the test); then it was fourth
+  (r7), as in the image. One use anywhere else, of 150 positions, did not do it; two uses in two
+  of a few straight-line blocks did. The unread comparison above is such a use with no code.
+- In a small copy, which of two hoisted values was coloured first flipped only with nine stores
+  inside the loop, never with sixteen outside it.
+- The order of hoisted values in the entry block is not their source order; it moved with the
+  block structure of either region, and once with a dead store armcc later deleted.
+- A temporary far away decides a loop's registers: `{ u32 x = g.f18; out.buf[4] = x; }` for
+  `out.buf[4] = g.f18;` in one case of a switch, together with a declaration order
+  (`u8 i; u8 n; u8 j; char s[8]; u32 v; u32 w; u16 t;`), fixed a swap in another case. Another
+  function's swap 0x50 bytes before the change was fixed by `u32 max` for `u16 max` and an `int`
+  temporary for a copied field. Neither change alone worked in either.
+- A field read once and used twice wants a local: `u16 lim = g.f14;` for two reads gave the
+  image's registers (the field in r1, temporaries in r2).
+- Reading fields in a condition decides a helper's registers: cached locals in any order gave
+  `ldrb.w ip; ldrh.w r3; add.w r4,ip,r3` (0x6A bytes); `if ((p->w & 0xff) + p->count <= n && ...)`
+  gave the image's `ldrb.w r3; ldrh.w r4; add.w ip,r3,r4` (0x66). Sibling functions already
+  matched are the template for the style.
+
+## Literal pools and scheduling
+
+- The pool is in the order the source created the constants, not the instruction order. For
+  `buf[idx] = val`, armcc creates the value, then the index, then the array, whatever the
+  spelling (`*(buf + idx)`, `idx[buf]`, `&buf[idx]`, casts, a pointer taken first, volatile,
+  2-D arrays, extern or static: over 10,000 variants, tabulated as `tools/armbrute.py --table
+  --pool` does). The scheduler then moves loads, so the order shows in the pool when the index
+  chain is longest and in the loads when the chains tie.
+- A side effect in the array operand creates the array first: `(p = buf)[k = idx] = val;` and
+  `(c = 0, buf)[idx] = val;` (the dead assignments compile to nothing) give pool value, array,
+  index, with the index still loaded first. A store through a pointer assigned in the expression
+  hides the array from alias analysis, so armcc reloads what is read after it: use the index
+  local `k` afterwards; the comma form keeps the store visibly to `buf`. Three functions of one
+  image needed this.
+- A pointer local to a global moved a mid-function pool: with `Info *p = &g_info;` and `p->f` at
+  every use the instructions matched but the pool landed 16 bytes early (behind a padding
+  halfword); `g_info.f` directly put it where the image had it. When a pool lands a block early or
+  late over matching code, try the other spelling of the base.
+- Loads from a `__packed` struct are scheduled ahead of a hoisted constant: the same entry block
+  with the struct declared plainly put `movs r4,#0` before two `ldr`s; declared `__packed` (the
+  global was at an odd address), after them, as the image had. The loads were the same
+  instructions; armcc rates a possibly unaligned load as slower and starts it earlier.
+- A mask written as one expression is never split: `v & 0x1fbe` became two `bic`s with nothing
+  between them in every test. The image had a load between its two BICs, so the source applied
+  the mask in two steps (`v &= ~0x41; w = ...; v &= ~0xe000;`).
+- armcc rebuilds a constant from a register it knows (`lsls r1,r2,#5` for 0x100 with r2 = 8;
+  `lsls r1,r1,#14` for 0x10000 after `cmp r1,#4; beq`) only on a straight run into the use; a
+  compare whose flags serve two branches on the way ends the knowledge (in 5.06u3 and later). A
+  switch gave `mov.w` every time. With a pointer local, the knowledge reaches an MMIO address:
+  `volatile u32 *reg = &PERIPH->CLR; *reg = 0x200;` stored `asrs r1,r0,#21`, 0x200 rebuilt from
+  the register's address (any 0x400xxxxx shifted right 21 bits).
+- `tools/armvariant.py pool SRC FUNC` prints a function's loads in code order and its pool.
+
+## Control flow
+
+- Nesting decides which arm goes out of line: `if (v >= K) { if (a > w) w++; else { w = 0;
+  f = 1; } } else w = 0;` put `else w = 0` out of line behind `blt`; early returns or an
+  `if (v < K) ... else if ...` chain kept it inline behind `bge`.
+- A flat chain and nested ifs with the same layout swap value registers:
+  `if (p->n == 1) { if (v == 0x2200) {...} else p->err = 3; } else p->err = 2;` against
+  `if (p->n != 1) p->err = 2; else if (v == 0x2200) {...} else p->err = 3;`.
+- A sparse switch over pointer values (`switch ((u32)p)` with eight addresses, also five)
+  compiles to a binary search with a literal pool, never a compare chain.
+- A function that starts with `nop.w` (`f3af 8000`) before its prologue is two functions: a
+  4-byte one whose whole body is a tail call to the next (`void A(void) { B(); }` is `b.w B`),
+  which armlink's default `--branchnop` turned into `nop.w`, and B straight after it. Split the
+  map row 4 bytes in. Inline `__asm { NOP.W }` narrows to `bf00` and no intrinsic puts a NOP
+  before a push, so nothing else makes those bytes.
+- `__attribute__((naked))` is refused (#1207-D).
+
+## Types and packing
+
+- Type-based aliasing decides reloads both ways: one function's code through casts of a file's
+  `u16` arrays differed by 514 bytes from the same code through the struct types another file
+  used for the same globals. When joining files, keep each function's view of the data.
+- Accesses through the packed fields of a global at an odd address compile longer than the same
+  accesses through an aligned struct cast from the block's aligned base
+  (`(*(Block *)g_blk).f`); the image showed which the original did.
+- A `__packed` struct of `u16` bitfields still updates one byte when the fields fit in it
+  (`bic r2,r3,#1; strb r2,[r0]`).
+- An interpolation slope declared `u16` drops its own narrowing but swaps the slope and the delta
+  between r4 and r5; declared `int`, the delta took r4 as the image had.
+- Two separately defined `u16[50]` arrays are reached from one base (`add.w r4,ip,#100`); one
+  `u16[2][50]` with a pointer gave other base registers and an extra index reload. Map rows for
+  such data split at the second array.
+
+## Data and options
+
+- Zero-valued RW objects of 10 to 55 bytes mean the file had a larger `--bss_threshold` than the
+  default 8. No single value fitted a whole firmware (20-byte zero structs were in .bss there), so
+  it is per file: 64 in three files.
+- At -O1 with --split_sections, each global no function in the file references gets a section of
+  its own. A data-only file built at `-O0` keeps one section per kind, in declaration order.
+- A section holding a pointer is 4-aligned, so it can't share another file's halfword-aligned
+  `.data` run.
+
+## Searching for the source
+
+Most functions match by hand in a few builds. The last few in a firmware are register swaps and
+load orders that no single edit moves; these took searches over combinations, not more hand edits.
+
+- The tools: `armvariant.py` scores one source against the image without linking (a second or
+  two under Wine; a batch of 40 to 150 variants in one armcc call costs little more);
+  `armpermute.py` mutates a function at random and keeps what scores no worse;
+  `armoutline.py` writes templates of a function's statement runs as inline helpers, or of one
+  statement at every point of its body; `armbrute.py` runs a template's combinations exhaustively,
+  at random or by coordinate descent, or tabulates what armcc makes of each spelling;
+  `armreduce.py` cuts a result down to the edits that matter. Rerun match.py on any hit.
+- The score masks registers when asked (`--regs`): first get the structure (the same instructions
+  in the same order), then search the allocation. Structural differences are source shape;
+  register differences are helpers, temporaries, declaration order, types and dead uses (above).
+- Search the combinations, not one change at a time: the matches above needed two to four
+  changes together, and for one function every partial set scored worse than none.
+- armcc compiles its command line's files in order and stops at the first with an error, writing
+  nothing for the files after it. A batch must restart after each failing file, or every variant
+  after a bad one goes unscored silently: searches made before this was fixed covered less than
+  their counts said. Count the variants that did not compile.
+- Keep the template's variants compilable: a type choice the file has no typedef for failed 4810
+  of 8320 variants of one template, and helpers not given a struct local 555 of 593 of another.
+- Under Wine, start a persistent server in each prefix (`wineserver -p`) and give each parallel
+  job its own prefix; otherwise every call boots Wine (390 variants: 3 s with the servers up,
+  30 s without) and one shared server becomes the bottleneck.
+- armcc's front end keeps EDG's debug options: `--db=-dump_il` prints a function's intermediate
+  language with source lines and columns, `--db=-dump_stmts` the statement tree,
+  `--db=-dump_lifetimes` object lifetimes. The back end's debug output (register allocation,
+  scheduling, literal pools) is compiled out of the release build; no option reaches it.

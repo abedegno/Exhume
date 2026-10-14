@@ -7,6 +7,10 @@
     python3 tools/gate.py [--config PATH] symbols                  step 3 of the gate alone
     python3 tools/gate.py [--config PATH] boot [EXE]               boot the modding build (or EXE) and screenshot it
 
+A linked-image project (the armcc5 profile) hands `check` and `exact` to the profile's whole-image
+gate (profiles/armcc5/tools/armgate.py: the image rebuilt in pieces) and `game` to its modded build
+(armmod.py).
+
 A project wraps these in a Makefile (tools/templates/Makefile) and runs `check` from a git
 pre-push hook (tools/install-hooks.sh), since hosted CI cannot have the toolchain or the
 program; CI runs tools/repocheck.py instead.
@@ -325,7 +329,18 @@ class Gate:
 def main(argv):
     path, a = config.pop_config(argv)
     if not a or a[0] in ('-h', '--help'): print(__doc__); return 0
-    g = Gate(config.load(path))
+    cfg = config.load(path)
+    if cfg.object_model == 'linked-image':
+        # a linked image (armcc5) has its own gate: the image rebuilt in pieces, and its modded build
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        if a[0] in ('check', 'exact'):
+            import armgate
+            return armgate.main(cfg, a[1:], cfg.file)
+        if a[0] == 'game':
+            import armmod
+            return armmod.main(cfg, a[1:], cfg.file)
+        print(f'{a[0]}: not a command for a linked image (check, exact, game)'); return 2
+    g = Gate(cfg)
     c, rest = a[0], a[1:]
     if c == 'check': return g.check('--all' in rest, '--fast' in rest)
     if c == 'exact': return g.exact()

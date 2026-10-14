@@ -1,0 +1,108 @@
+** Section #1 'i.callit' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 20 bytes (alignment 4)
+    Address: 0x00000000
+
+    $t
+    i.callit
+    callit
+        0x00000000:    b510        ..      PUSH     {r4,lr}
+        0x00000002:    2001        .       MOVS     r0,#1
+        0x00000004:    f7fffffe    ....    BL       ext
+        0x00000008:    4901        .I      LDR      r1,[pc,#4] ; [g_val = 0x10] = 0
+        0x0000000a:    2003        .       MOVS     r0,#3
+        0x0000000c:    8008        ..      STRH     r0,[r1,#0]
+        0x0000000e:    bd10        ..      POP      {r4,pc}
+    $d
+        0x00000010:    00000000    ....    DCD    0 ; g_val
+
+** Section #14 '.reli.callit' (SHT_REL)
+    Size   : 16 bytes (alignment 4)
+    Symbol table #13 '.symtab'
+    2 relocations applied to section #1 'i.callit'
+
+
+** Section #2 'i.msg' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 12 bytes (alignment 4)
+    Address: 0x00000000
+
+    $t
+    i.msg
+    msg
+        0x00000000:    a000        ..      ADR      r0,{pc}+4 ; 0x4
+        0x00000002:    4770        pG      BX       lr
+    $d
+        0x00000004:    6c6c6568    hell    DCD    1819043176
+        0x00000008:    0000006f    o...    DCD    111
+
+** Section #3 'i.put' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 44 bytes (alignment 4)
+    Address: 0x00000000
+
+    $t
+    i.put
+    put
+        0x00000000:    4807        .H      LDR      r0,[pc,#28] ; [g_val = 0x20] = 0
+        0x00000002:    4908        .I      LDR      r1,[pc,#32] ; [g_ring = 0x24] = 0
+        0x00000004:    4b08        .K      LDR      r3,[pc,#32] ; [g_buf = 0x28] = 0
+        0x00000006:    8802        ..      LDRH     r2,[r0,#0]
+        0x00000008:    7808        .x      LDRB     r0,[r1,#0]
+        0x0000000a:    f8232010    #..     STRH     r2,[r3,r0,LSL #1]
+        0x0000000e:    2831        1(      CMP      r0,#0x31
+        0x00000010:    d202        ..      BCS      {pc}+0x8 ; 0x18
+        0x00000012:    1c40        @.      ADDS     r0,r0,#1
+        0x00000014:    7008        .p      STRB     r0,[r1,#0]
+        0x00000016:    4770        pG      BX       lr
+        0x00000018:    2000        .       MOVS     r0,#0
+        0x0000001a:    7008        .p      STRB     r0,[r1,#0]
+        0x0000001c:    4770        pG      BX       lr
+    $d
+        0x0000001e:    0000        ..      DCW    0
+        0x00000020:    00000000    ....    DCD    0 ; g_val
+        0x00000024:    00000000    ....    DCD    0 ; g_ring
+        0x00000028:    00000000    ....    DCD    0 ; g_buf
+
+** Section #15 '.reli.put' (SHT_REL)
+    Size   : 24 bytes (alignment 4)
+    Symbol table #13 '.symtab'
+    3 relocations applied to section #3 'i.put'
+
+
+** Section #4 'i.sw' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 38 bytes (alignment 2)
+    Address: 0x00000000
+
+    $t
+    i.sw
+    sw
+        0x00000000:    2805        .(      CMP      r0,#5
+        0x00000002:    d20e        ..      BCS      {pc}+0x20 ; 0x22
+        0x00000004:    e8dff000    ....    TBB      [pc,r0]
+    $d
+        0x00000008:    09070503    ....    DCDU   151454979
+        0x0000000c:    000b        ..      DCW    11
+    $t
+        0x0000000e:    2005        .       MOVS     r0,#5
+        0x00000010:    4770        pG      BX       lr
+        0x00000012:    2007        .       MOVS     r0,#7
+        0x00000014:    4770        pG      BX       lr
+        0x00000016:    2009        .       MOVS     r0,#9
+        0x00000018:    4770        pG      BX       lr
+        0x0000001a:    200b        .       MOVS     r0,#0xb
+        0x0000001c:    4770        pG      BX       lr
+        0x0000001e:    2002        .       MOVS     r0,#2
+        0x00000020:    4770        pG      BX       lr
+        0x00000022:    2000        .       MOVS     r0,#0
+        0x00000024:    4770        pG      BX       lr
+
+** Section #5 'i.tenth' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 12 bytes (alignment 2)
+    Address: 0x00000000
+
+    $t
+    i.tenth
+    tenth
+        0x00000000:    f64c41cd    L..A    MOV      r1,#0xcccd
+        0x00000004:    4348        HC      MULS     r0,r1,r0
+        0x00000006:    f3c040c7    ...@    UBFX     r0,r0,#19,#8
+        0x0000000a:    4770        pG      BX       lr
+
