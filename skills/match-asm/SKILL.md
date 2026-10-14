@@ -29,3 +29,15 @@ A segment can be several original modules. The linker's padding between modules 
 ## Rules
 
 As match-file: only your own source and your own target table; no git; no guessing; report `db` fallbacks left and why, CPU directives and options with evidence, names recovered, table rows changed, and assembler behaviour not already in assembler.md (tested only).
+
+## armcc5 (Cortex-M images)
+
+An armcc image's code is C, apart from the startup file (the vector table, the reset handler,
+the stack and heap). Rebuild that from the vendor's startup file of the right release with
+armasm: a `.s` source carries `; opts:` and `; at:` lines, and match.py assembles and places it
+like a C file. A vendor startup file marks every handler weak, so its `at:` line places the
+section. Anything else that looks hand-written (an odd register habit, a `nop.w` at a function's
+start) has so far been C: a tail call armlink turned into `nop.w`, an inline helper, a dead use
+kept to register allocation (profiles/armcc5/compiler.md). Do not keep an assembly stand-in for a
+C function: `__asm` functions are not split by `--split_sections` (all of a file's share one
+`.emb_text` section), and a stand-in hides what the compiler would have shown.

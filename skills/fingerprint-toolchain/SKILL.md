@@ -1,6 +1,6 @@
 ---
 name: fingerprint-toolchain
-description: Use at the start of a byte-matching decompilation of a DOS executable, before any matching, to identify the exact compiler, assembler, linker, memory model and switches that built it, and to prove the identification by compiling a function to the same bytes.
+description: Use at the start of a byte-matching decompilation of a DOS executable (or, with the armcc5 profile, an Arm Cortex-M firmware image), before any matching, to identify the exact compiler, assembler, linker, memory model and switches that built it, and to prove the identification by compiling a function to the same bytes.
 ---
 
 # Fingerprint the toolchain
@@ -17,6 +17,27 @@ Paths are relative to the Exhume checkout. Nothing else in the method works unti
 6. Pick one small, self-contained function (no calls, or calls only to other files). Write C for it, put `/* target: SEG */` and `/* opts: ... */` lines at the top, make a target table row for it, and run `python3 tools/match.py src/FILE.C --dis NAME`. Iterate on the source and the switches until it says MATCH. Then do two more functions from different segments.
 7. Find the switches by the differences they make, one at a time: `-G` (`add sp,N` cleanup, no `enter`), `-O`, `-Z` (register reuse across stores), `-Y` (overlay code: a same-file function address is a relocated segment, not `mov ax,cs`), `-d` (duplicate strings stored once in the data segment), `-k-` (no frame in argument-less functions). Expect them to vary per file; each file names its own in its opts line.
 8. For assembly, assemble a routine rebuilt from its disassembly. Padding is the tell: TASM 2.0 single-pass writes an unshortened forward jump as the short jump plus `nop`s. If the padding comes out the same, you have the assembler.
+
+## Arm Compiler 5 (the armcc5 profile)
+
+The same proof, other tells; profiles/armcc5/compiler.md has the evidence.
+
+- Switches from the code: a short conditional as compare and branch is `-O1`, as an IT block
+  `-O2` or `-O3`; a 16-bit divide by a constant as multiply and shift needs `-Otime`; a literal
+  pool after every function means `--split_sections`. MicroLIB shows in its compact `__main` and
+  `__scatterload`.
+- The release, not just the version: armcc 5's updates compile nearly all code alike, so one
+  matching function proves little. Install every MDK release you can get (each is one toolchain
+  home), match every merged file under each with `profiles/armcc5/tools/armbuilds.py`, and read
+  the files that only some releases match. On one firmware every file matched under 5.05u1 to
+  5.06u2, and a single library function, 2 bytes longer from 5.06u3 on, settled the range. Repeat
+  this when the tree is nearly done: the last stubborn functions are the best test, and a
+  function nothing matches may be the compiler's, not the source's.
+- The libraries are evidence too: MicroLIB's members come from the MDK release (link the image's
+  `_printf_core` against each release's `mc_w.l`), and a vendor peripheral library's functions
+  can match one release of its source and not the next (compile every release).
+- `armcc --vsn`, and the `.comment` section of any object, name the build ("ARM Compiler 5.06
+  update 2 (build 183)"); several MDK releases ship the same build.
 
 ## Record
 

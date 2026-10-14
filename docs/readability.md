@@ -46,6 +46,29 @@ Each step was an experiment on the compiler, and the gate recorded the result. T
 - A field compiles like the cast it replaces only when the address is reached the same way.
 - File names become segment names, which never reach the EXE but which the linker joins modules by.
 
+## On an armcc image
+
+The armcc5 profile's trees (Cortex-M firmware, no sibling build, every function a placeholder at
+the start) take the same rule and gate with a different order of steps: names, file names and
+regrouping, shared headers and struct fields, comments. skills/readability-pass has the working
+steps; what shaped them:
+
+- **Names decide the layout.** armlink lays a region out in ASCII order of section name, and a
+  function's section is `i.<name>`, so names must sort in address order. A name is checked
+  against its neighbours before it is applied (`armnames.py`), the gaps between known names (a
+  vendor library's) bound what each function was called, and a readable name that does not fit
+  its gap takes a prefix that does. There is no such rule for data.
+- **A file's contents are part of the program.** armcc uses what it knows of a callee defined in
+  the same file, reaches a file's own globals from one another's addresses, and compiles a whole
+  file with one set of options. Matched files cut by address can be regrouped by subsystem, but
+  only with those facts kept (`armmovefunc.py`), and each move proved by the gate.
+- **The type is the code.** Struct copies are reconciled by Arm's layout rules (`armstruct.py`);
+  signedness, packing and aliasing all show in the bytes, so a few files keep a view of their
+  own.
+- **Many shapes in a matched armcc tree exist only for the bytes** (inline helpers, block-local
+  temporaries, unread pointer comparisons, `__weak`, a side effect in an array operand). Each
+  gets a `match:` comment, or a later reader will tidy it away and the gate will fail.
+
 ## Running it with agents
 
 Steps 1 and 2 are each one job over the whole tree. Steps 3, 4 and 6 split by subsystem, one agent per subsystem owning its sources and its header, about three at once and never nested (skills/orchestrate). Agents run the fast gate on their own changes; the orchestrator runs the full gate before every commit and checks comment work with `comments.py check --ref`.
@@ -65,5 +88,10 @@ Steps 1 and 2 are each one job over the whole tree. Steps 3, 4 and 6 split by su
 | `tools/accessors.py` | 4 | macro inventory, unify per-file macros, inline open-coded reads |
 | `tools/comments.py` | 6 | apply comment edits that keep the tokens; check, reflow, audit, join |
 | `tools/cparse.py` | all | the C parser (with the project's typedefs and macros, `[cparse]`), token streams, Turbo C struct layout |
+| `profiles/armcc5/tools/armnames.py` | names | armcc: name order check, the gaps between known names, rename with basis |
+| `profiles/armcc5/tools/armmovefile.py` | 5 | armcc: move or rename sources, with the map and records |
+| `profiles/armcc5/tools/armmovefunc.py` | 5 | armcc: move functions between files with their declarations, keeping call order |
+| `profiles/armcc5/tools/armgroups.py` | 5 | armcc: files that define the same function or global (one original file) |
+| `profiles/armcc5/tools/armstruct.py` | 2, 4 | armcc: struct copies by Arm's layout (survey, report, draft, convert), field names |
 
 UW2's plan, struct specs and the run's own scripts are in examples/uw2/readability/, examples/uw2/consts/ and examples/uw2/rename/.

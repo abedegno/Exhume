@@ -1,6 +1,6 @@
 ---
 name: readability-pass
-description: Use when a byte-matched, exactly linked DOS decompilation is to be made readable without changing a byte - a build gate, shared headers, named constants, struct fields and accessors, original file names and subsystem directories, comments and findings - each step proved by the gate; and when running agents to do it.
+description: Use when a byte-matched, exactly linked DOS decompilation (or an armcc5 Cortex-M firmware tree) is to be made readable without changing a byte - a build gate, shared headers, named constants, struct fields and accessors, original file names and subsystem directories, comments and findings - each step proved by the gate; and when running agents to do it.
 ---
 
 # Readability pass
@@ -75,6 +75,106 @@ Traps: Turbo C names a file's code segment `FILE_TEXT` and each far variable's s
 - One note per subsystem (architecture, data, the rules of the program found in the code, open questions), then a findings page across them: likely bugs, each labelled by confidence (confirmed by a second witness such as the sibling build or the data reaching the faulty path; likely; possible), with its effect and whether a port should reproduce it; recovered rules; engine findings; dead code; open questions. Re-read every bug candidate in the source before listing it, and drop the ones that do not hold (UW2 dropped two of 19).
 
 Traps: a comment's text can close the comment early (`*/` in the text) and leave code behind, which `apply` catches. What the code does is read from the code; intent and effect in the program are inferences and must say so.
+
+## On an armcc5 image (Cortex-M firmware)
+
+The rule and the gate are the same: the whole-image gate must rebuild the image identical after
+every step, and each step is its own commit. What differs is where the bytes hide. Tools are in
+`profiles/armcc5/tools/` and take `--config`; profiles/armcc5/compiler.md has the evidence. The
+order that worked on one firmware: names, then files, then shared headers and struct fields, then
+comments. Names come first because there are no sibling builds to name from: every function is
+`sub_ADDR` until someone works out what it does, and file names follow from the names.
+
+### Names: the order is the constraint
+
+armlink laid each region out in ASCII order of section name, and a function's section is
+`i.<name>`. So within the part of the image laid out that way, function names sort in address
+order (`A`-`Z` < `_` < `a`-`z`, byte by byte), and every new name must sort between its
+neighbours'. A placeholder counts as the last real name before it plus `_ADDR`.
+
+1. `armnames.py check --from ADDR --to ADDR` on the untouched map: zero pairs out of order. The
+   range is the part laid out by name (a startup file's code before it usually is not).
+2. `armnames.py gaps` lists each placeholder with the real names bounding its gap (`after`,
+   `before`). Split the list into address ranges, one naming agent each (below).
+3. The order is evidence: a vendor library's names fix the gaps between them, so a function
+   between `Timer_Start` and `Uart_Init` was named `Ti`-something above `Timer_St`, or `U`
+   below `Uart_I`, or anything starting `Tj` to `Tz`; one between two lower-case names was
+   lower case. Follow the style of the gap (`Module_Action` among upper-case library names,
+   `snake_case` among lower-case ones).
+4. A good name that does not sort into its gap gets a prefix that does: `Tmr_ReadAdc` rather
+   than `Adc_Read` between `Timer_Start` and `Uart_Init`. Say in the name's evidence that the
+   prefix is for the order. Names in one gap must also increase through the gap.
+5. Each name gets a basis: `original` (shown: the vendor library's own source, a string in the
+   image), `likely` (the job and the place in the order make a conventional name all but
+   certain, as a `Timer_Configuration` in the style of a vendor's example projects),
+   `descriptive` (the job, named to fit). Never claim more than the code shows.
+6. `armnames.py rename --file RANGE-names.tsv` (old, new, basis, note) refuses an out-of-order,
+   duplicate or non-identifier name, rewrites every source, header and map table, and logs
+   map/names.tsv. Then the gate.
+
+Globals have no order rule: data is laid out per file, by size or definition order, never by
+name. Rename them the same way, with their evidence.
+
+### Files: move whole, regroup with care
+
+- `armmovefile.py OLD NEW [NOTE]` moves or renames a source, keeping the map's file column,
+  matched.txt and any `--record` file in step, and logs map/filenames.tsv. Stems stay unique
+  (objects and build directories are named by them).
+- Matched files are usually units of consecutive addresses, not the original files, so a
+  subsystem's functions are scattered. `armmovefunc.py FUNC... --to DEST` moves functions with the
+  declarations they need, turns data they use into externs (data stays with its file), adds a
+  prototype where the old file still calls them, keeps DEST's call order, and refuses a function
+  that needs a static of its old file or comes from a file with other `/* opts: */`.
+- What a file holds changes code (compiler.md, "What a file's contents decide"), so a move can:
+  - a caller in the same file as its callee keeps r1-r3 across the call and may drop an
+    alignment push; two functions that were in different files must not end up in one unless
+    the callee is `__weak` (which the original files did not need: say so in a `match:` comment);
+  - functions joined by such calls move together;
+  - a function that reaches two globals of its file from one base stays with that data;
+  - a caller compiled against a narrower prototype than the callee's definition was in another
+    file.
+  Run the gate after each move; the commit says which functions went where.
+- `armgroups.py` lists files that define the same function or global: parts of one original file
+  copied during matching. Join each group into one file (the gate needs one owner per
+  definition) and match the joined file again.
+
+### Shared headers, structs and fields
+
+- One types header (`u8` ... `s32` once), the vendor's own headers for its types and registers,
+  one header per global block, one per subsystem for prototypes.
+- `armstruct.py survey` lists globals declared in several files; `report GLOBAL` lines every
+  copy's fields up by offset, size, sign and bits under Arm's layout (`!!` where copies disagree);
+  `draft GLOBAL TYPE` writes a starting typedef; `convert GLOBAL HEADER TYPE --write` rewrites
+  each file's local struct to the shared one where every field it uses has the same bits there.
+- The type is the code: a halfword read as `s16` compiles to `ldrsh`, a `__packed` struct's
+  fields are reloaded where a plain one's stay in registers, and the same data reached through
+  a struct or through a `u16[]` aliases differently. A file whose view must stay different keeps
+  its local struct, with a `match:` comment saying why.
+- Field names compile to nothing. `armstruct.py fields FIELDS.tsv --write` (type, old, new,
+  comment) renames them in the typedef and through the type's globals and pointers in every file
+  that includes its header, putting the comment (where the name comes from, the unit) on the
+  field's line.
+- A prototype in a shared header can change callers: a file that compiled against `u16 f(u8)`
+  keeps the masks that prototype gave even where `f` returns `u8`. Such a name stays declared
+  in each file its own way.
+
+### Comments
+
+`tools/comments.py` works on armcc sources as on DOS ones: specs applied only when the token
+stream is unchanged, `check --ref HEAD` over the tree before committing. Tag `match:` every
+shape kept for the bytes: `__weak` on a same-file callee, `#pragma O0`, a block-local temporary,
+an inline helper or getter, an unread pointer comparison or pointer local, a side effect in an
+array operand, a mask applied in two steps. A reader will want to tidy each of them away.
+
+### Agents
+
+- Naming: one read-only agent per address range, writing `RANGE-names.tsv` (placeholder, name,
+  basis, one line of evidence) and a line per source file read (its job, a suggested name and
+  directory). Each checks its own list's order with a short script before finishing; the
+  orchestrator renames and runs the gate.
+- Commenting: one agent per subsystem, writing comments.py specs only.
+- Regrouping and struct merges: the orchestrator, one global or one destination file at a time,
+  the gate after each.
 
 ## Orchestration
 
