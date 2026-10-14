@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include "portgame.h"
 #include "sys/enhance.h"                /* ENHANCED(i): the port's enhancements, all off by default */
+#include "sys/cheat.h"                  /* port_cheat_point: a test's cheats (refused unless asked for) */
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>

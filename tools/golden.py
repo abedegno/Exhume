@@ -19,7 +19,11 @@ configuration), in [replay] order first. Sessions run concurrently, one per core
 ([replay.dos_jobs]: 8 in DOSBox-X, 4 in js-dos, whose every run is a headless Chrome). A
 session that replays the saved game another makes ([replay.stage_from], UW2: load from items)
 waits for it: golden takes it from that session's first DOS run, verify from its port run once
-that is shown to be the golden's.
+that is shown to be the golden's. A stage_from session DOS cannot replay, a port-made setup
+session whose recording carries a test's cheats (format 6; UW1's setup/tidy-heavy, a
+directory session, tests/replay/setup/NAME/session.rec), is replayed in the port by both, so
+that DOS judges the session from the saved game the port made; the golden keeps that saved
+game's digests, and verify checks the port still makes it.
 
 golden.json holds no game data and no dump, only digests. For each checkpoint: its header (kind,
 number, hook calls, clock) and a 64-bit BLAKE2b digest of each section, taken over the section as
@@ -66,7 +70,29 @@ def say(*a):
     with _print_lock: print(*a, flush=True)
 
 
-def rec_of(name): return os.path.join(RC.sessions, name + '.rec')
+def rec_of(name):
+    """NAME's recording: NAME.rec, or for a directory session (a name with a /, setup/NAME)
+    NAME/session.rec, with session.cfg beside it."""
+    if '/' in name: return os.path.join(RC.sessions, name, 'session.rec')
+    return os.path.join(RC.sessions, name + '.rec')
+
+
+def port_only(name):
+    """A session only the port replays (its recording format 5 or 6): a stage made by it comes
+    from the port's replay, in golden and verify alike."""
+    rec = rec_of(name)
+    return os.path.exists(rec) and not R.dos_can_replay(rec)[0]
+
+
+def port_stage_run(name, d):
+    """Replays port-only session name in the port into d (its saved games copied there, as
+    replay.py's run_port does): (exit status, d, seconds)."""
+    shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+    t = time.time()
+    rc = R.run_port(rec_of(name), d, [], quiet=True)
+    if rc == 0 and not stage_dirs(d): rc = 7
+    say(f'  {name}: port run (a setup session DOS cannot replay) {"done" if rc == 0 else f"failed ({rc})"} in {time.time() - t:.1f} s')
+    return (rc, d, time.time() - t)
 
 
 def sha256(path):
@@ -319,6 +345,9 @@ def cmd_golden(names, jobs, backend, check):
 
     with pool(jobs) as ex:
         for n in need:
+            if n not in names and port_only(n):         # a setup session: the port makes its saved game
+                runs[(n, 1)] = ex.submit(port_stage_run, n, os.path.join(WORK, n, 'port1'))
+                continue
             for k in ((1, 2) if n in names else (1,)):
                 runs[(n, k)] = ex.submit(dos_run, n, k)
         for n in names:
@@ -443,8 +472,11 @@ def cmd_verify(names, jobs, debug=False, cov=False):
             f'\n         (the dump is {rel(os.path.join(d, "STATE.OUT"))}; for byte ranges, replay in DOS and use replay.py compare)' + \
             ''.join('\n         note: ' + x for x in notes), dt
 
+    def setup(name):
+        return port_stage_run(name, os.path.join(VWORK, name, 'port'))[0]
+
     with pool(jobs) as ex:
-        for n in need: futs[n] = ex.submit(one, n)
+        for n in need: futs[n] = ex.submit(setup if n not in names and port_only(n) else one, n)
         for n in names: results[n] = futs[n].result()
     print(f'== verify: {len(names)} sessions in the port{" (UBSan build)" if debug else " (coverage build)" if cov else ""} against the goldens, '
           f'{time.time() - t0:.1f} s')

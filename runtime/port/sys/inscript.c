@@ -18,6 +18,10 @@
                          unless the environment has EXHUME_TEST_FAULT=1, so that a script passed
                          to a player's build cannot crash it, and the web build, which has no
                          fault handlers, refuses it always
+       T cheat COMMAND ARGS...   a test's cheat, the game's COMMAND (its table, cheat.h), run
+                         at the game's next safe point from T on (cheat.c): refused unless the
+                         environment has EXHUME_TEST_CHEATS=1, and always in the web build, so
+                         that a script passed to a player's build cannot change its game
    '#' starts a comment. Keys go in as PC set-1 scan codes through the hook real keys use, and
    the pointer through the one the mouse uses, so the game, the recorder and the black box see
    a player's input. The time is the BIOS clock's plus the time the settings screen has been open,
@@ -27,6 +31,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "inscript.h"
+#include "cheat.h"
 #include "portgame.h"
 #ifndef PORT_NAME
 #define PORT_NAME "port"
@@ -35,7 +40,7 @@ uint32_t pit_bios_ticks(void);
 uint32_t pit_paused_ms(void);
 void port_test_fault(void);
 
-enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP, EV_WCLICK, EV_WDOWN, EV_FAULT };
+enum { EV_KEY, EV_DOWN, EV_UP, EV_MOVE, EV_CLICK, EV_LOOK, EV_MDOWN, EV_MUP, EV_WCLICK, EV_WDOWN, EV_FAULT, EV_CHEAT };
 struct ev { uint32_t ms; int kind, code, x, y, button; };
 static struct ev *evs;
 static int nev, next;
@@ -130,8 +135,17 @@ int inscript_load(const char *path, void (*key)(uint8_t), void (*pointer)(const 
                 return bad(f, path, line, "fault: a test's event, refused unless EXHUME_TEST_FAULT=1");
             e.kind = EV_FAULT;
 #endif
+        } else if (!strcmp(word, "cheat")) {
+            /* the rest of the line, after the time and the word */
+            const char *err, *t = buf;
+            while (*t == ' ' || *t == '\t') t++;
+            while (*t && *t != ' ' && *t != '\t') t++;          /* the time */
+            while (*t == ' ' || *t == '\t') t++;
+            t += 5;                                             /* "cheat" */
+            if ((err = cheat_add(t)) != NULL) return bad(f, path, line, err);
+            e.kind = EV_CHEAT;
         } else
-            return bad(f, path, line, "an event: key, down, up, move, click, mdown, mup, look, wclick, wdown or fault");
+            return bad(f, path, line, "an event: key, down, up, move, click, mdown, mup, look, wclick, wdown, fault or cheat");
         if (nev && e.ms < evs[nev - 1].ms) return bad(f, path, line, "times must not go back");
         if (nev == cap) {
             struct ev *m = realloc(evs, (size_t)(cap = cap ? cap * 2 : 32) * sizeof *evs);
@@ -193,6 +207,7 @@ void inscript_tick(void)
 #ifndef __EMSCRIPTEN__
         case EV_FAULT: port_test_fault(); break;
 #endif
+        case EV_CHEAT: cheat_release(); break;
         case EV_CLICK:
             send_ptr(PLAT_POINTER_MOVE, e, 0);
             send_ptr(PLAT_POINTER_DOWN, e, (unsigned)e->button);

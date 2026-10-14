@@ -58,6 +58,12 @@
    (ENH), the enhancements the session was played with, their names comma-separated
    (runtime/port/sys/enhance.c); the port writes it only when one is on, and the DOS build,
    which reads versions 2 to 4, never replays it.
+   Version 6, the port only: version 5 with its chunk of stream 9 always there (empty when no
+   enhancement is on), written when the session's input script has cheats (a test's;
+   runtime/port/sys/cheat.c), and each cheat as a chunk of stream 10 (CHEAT) where it ran: the
+   number of the game's safe point it ran at (dword, counting from 1) and its text. The
+   streams' readers skip those chunks; cheat.c reads them before the game starts and runs each
+   again at its safe point. DOS has no cheats and never replays one.
      1 TIME     count, then a byte d: the clock is the last run's plus d, or d = FFh and the
                 clock (dword) follows
      2 KEY      count, the key read's result (word), n (byte) and n pairs (offset, byte): the
@@ -156,8 +162,11 @@
 #define HDR_LEN     12
 
 #ifndef __TURBOC__
-/* enhance_on and enhance_names: sys/enhance.h, through compat.h, which the port force-includes */
-#define RP_MAX_VERSION 5                /* the port: 5 is 4 with the enhancements' chunk first */
+/* enhance_on and enhance_names: sys/enhance.h, through compat.h, which the port force-includes;
+   cheat_scripted: sys/cheat.h, the same way */
+#define RP_MAX_VERSION 6                /* the port: 5 is 4 with the enhancements' chunk first,
+                                           6 is 5 with the cheats' chunks too */
+#define S_CHEAT     10                  /* format 6: a cheat run (runtime/port/sys/cheat.c) */
 #else
 #define RP_MAX_VERSION 4
 #endif
@@ -589,9 +598,10 @@ static void rp_start_on(void)
             stop_at = bounce[8] | (uint32)bounce[9] << 8 | (uint32)bounce[10] << 16 | (uint32)bounce[11] << 24;
             for (s = 1; s < NSTREAMS; s++) st[s].scan = HDR_LEN;
 #ifndef __TURBOC__
-            if (bounce[4] == 5) {
+            if (bounce[4] == 5 || bounce[4] == 6) {
                 /* skip the enhancements' chunk (stream 9): main applied them before the game
-                   started; the streams start after it, and the rest is version 4's */
+                   started; the streams start after it, and the rest is version 4's (6's cheat
+                   chunks, stream 10, the streams' readers skip; cheat.c has read them) */
                 unsigned char c[3];
                 read(log_fd, c, 3);
                 for (s = 1; s < NSTREAMS; s++) st[s].scan = HDR_LEN + 3 + (c[1] | c[2] << 8);
@@ -607,14 +617,15 @@ static void rp_start_on(void)
         if (log_fd < 0) return;
         rp_mode = RP_RECORD;
 #ifndef __TURBOC__
-        if (enhance_on) {
+        if (enhance_on || cheat_scripted()) {
             /* format 5: the enhancements the session is played with, as one chunk of stream 9
-               after the header (enhance.c reads it before the game starts) */
+               after the header (enhance.c reads it before the game starts); 6 when the input
+               script has cheats, which follow as chunks of stream 10 (rp_cheat_put) */
             char names[512], h5[HDR_LEN];
             unsigned n = (unsigned)strlen(enhance_names(enhance_on, names, sizeof names));
             unsigned char c[3];
             memcpy(h5, hdr, HDR_LEN);
-            h5[4] = 5;
+            h5[4] = cheat_scripted() ? 6 : 5;
             write(log_fd, h5, HDR_LEN);
             c[0] = 9;
             c[1] = (unsigned char)n;
@@ -646,6 +657,27 @@ static void rp_start_on(void)
         trace_fd = open("TRACE.OUT", O_WRONLY | O_CREAT | O_TRUNC | O_TEXT, 0x180);
     }
 }
+
+#ifndef __TURBOC__
+/* format 6: a cheat run at the game's safe point POLL (sys/cheat.c), recorded as a chunk of
+   stream 10 of its own, the poll (dword) and the text, when a recording is being made */
+void rp_cheat_put(uint32_t poll, const char *text)
+{
+    unsigned char c[3 + 4 + 128];
+    unsigned n = (unsigned)strlen(text);
+    if (rp_mode != RP_RECORD || log_fd < 0) return;
+    if (n > 128) n = 128;
+    c[0] = S_CHEAT;
+    c[1] = (unsigned char)(n + 4);
+    c[2] = (unsigned char)((n + 4) >> 8);
+    c[3] = (unsigned char)poll;
+    c[4] = (unsigned char)(poll >> 8);
+    c[5] = (unsigned char)(poll >> 16);
+    c[6] = (unsigned char)(poll >> 24);
+    memcpy(c + 7, text, n);
+    write(log_fd, c, 7 + n);
+}
+#endif
 
 static void rp_start(void)
 {

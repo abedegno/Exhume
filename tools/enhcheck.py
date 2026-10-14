@@ -17,8 +17,13 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
     python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
                                                             enhanced/NAME (timing and gameplay)
+    python3 tools/enhcheck.py [--config PATH] setup check|record [NAME ...]
+                                                            the port-made setup sessions of tests/
+                                                            replay/setup/NAME, whose scripts use a
+                                                            test's cheats (format 6): recorded, and
+                                                            checked to replay to the same saved game
     python3 tools/enhcheck.py [--config PATH] all           all of these but baseline make and
-                                                            record, and checks record
+                                                            record, setup record, and checks record
     python3 tools/enhcheck.py [--config PATH] checks record  record looking's and keys' scripted
                                                             screens again (tests/replay/checks)
 
@@ -164,6 +169,16 @@ def selftest():
         ok4, _ = R.dos_can_replay(p4); ok5, why = R.dos_can_replay(p5)
         check('DOS replays format 4', ok4)
         check('DOS refuses format 5, saying why', not ok5 and 'skip-intro' in why, why)
+        p6 = os.path.join(d, 'c.rec')
+        fake_recording(p6, 6, '')
+        with open(p6, 'ab') as f:
+            t = b'give 0xA0 20 drop'
+            f.write(bytes([10]) + struct.pack('<HI', 4 + len(t), 7) + t)
+        s6, _ = R.read_log(p6); ok6, why6 = R.dos_can_replay(p6)
+        check('format 6: its cheats read, with their safe points', s6.get('CHEAT') == [(7, 'give 0xA0 20 drop')], s6)
+        check('format 6: no enhancements, its chunk empty', s6.get('ENH') == [], s6)
+        check('DOS refuses format 6, naming its cheats', not ok6 and 'give 0xA0 20 drop' in why6, why6)
+        check('the port replays format 6 with EXHUME_TEST_CHEATS=1 (replay.py sets it)', R.is_cheats(p6) and not R.is_cheats(p5))
     finally:
         shutil.rmtree(d, ignore_errors=True)
     selftest_presentation()
@@ -183,14 +198,17 @@ def selftest_presentation():
           state_diff(g, [{'ck': [1, 1, 4, 0], 'secs': {'PLYR': 'a'}}]) == [(0, ['header'])])
 
 
-def port(home, *args, hidden=True, exit_after=1500, timed=False):
+def port(home, *args, hidden=True, exit_after=1500, timed=False, env=None):
     """Runs the port briefly in its own home (offscreen, no sound device), returning (exit
     status, output). hidden=False is a player's run: settings read and written. timed: a run
     judged by the wall clock (a screenshot at a moment), which takes a replay slot (ahead of the
     replays waiting), so that while it runs no more than JOBS busy port processes share the
     machine."""
-    env = R.port_env()
+    extra, env = env or {}, R.port_env()
     env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')   # dummy: a player's run gets a window
+    for k, v in extra.items():          # variables set (None: removed) for this run alone
+        if v is None: env.pop(k, None)
+        else: env[k] = v
     cmd = [R.port_exe(), R.RC.port_data_flag, R.DATA, R.RC.port_home_flag, home, '--no-recording',
            '--exit-after', str(exit_after)] + (['--hidden'] if hidden else []) + list(args)
     t = time.time()
@@ -342,6 +360,9 @@ def presentation():
                 for x in G.stage_dirs(sd): shutil.copytree(os.path.join(sd, x), os.path.join(stage, x))
             replay_port(G.rec_of(name), d, ['--enhance', flag], stage=stage)
             return [{'ck': G.header(ck), 'secs': G.canon(ck)} for ck in R.read_dump(d)]
+        # a stage a setup session makes (a test's cheats: only the port replays it), first
+        setups = sorted({G.STAGE_FROM[n] for n in order if n in G.STAGE_FROM and G.port_only(G.STAGE_FROM[n])})
+        pmap(lambda n: replay_port(G.rec_of(n), os.path.join(work, 'all', n), []), setups)
         every = ','.join(flags)
         goldens = {name: G.load_golden(name) for name in order}
         order = [n for n in order if goldens[n]]
@@ -403,19 +424,25 @@ def _stage(name):
         return _stages[src]
 
 
-def record_session(name, flags=None):
-    """Records enh_dir(name)/session.rec from its session.script with session.flags (or flags),
-    hidden, starting from its stage; returns the recording's path in a scratch directory."""
-    e = enh_dir(name)
+def setup_dir(name): return os.path.join(R.RC.sessions, 'setup', name)
+
+
+def record_session(name, flags=None, e=None):
+    """Records enh_dir(name)/session.rec (or e's) from its session.script with session.flags (or
+    flags), hidden, starting from its stage; returns the recording's path in a scratch directory.
+    A script with cheats (a setup session's) is run with EXHUME_TEST_CHEATS=1."""
+    e = e or enh_dir(name)
     flags = flags if flags is not None else open(os.path.join(e, 'session.flags')).read().strip()
     script_path = os.path.join(e, 'session.script')
     last = max([int(l.split()[0]) for l in open(script_path) if l.split() and l.split()[0].isdigit()] or [0])
     work = tempfile.mkdtemp(prefix='enhcheck-')
-    stage = stage_of(name)
+    stage = stage_of(name) if e == enh_dir(name) else None
     home = os.path.join(work, 'home'); os.makedirs(home)
     if stage: shutil.copytree(stage, home, dirs_exist_ok=True)
     data = R.port_data(work)
     env = R.port_env(); env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+    if any(len(l.split()) > 1 and l.split()[1] == 'cheat' for l in open(script_path) if not l.lstrip().startswith('#')):
+        env['EXHUME_TEST_CHEATS'] = '1'
     cmd = [R.port_exe(), R.RC.port_data_flag, data, R.RC.port_home_flag, home, '--hidden', '--no-recording',
            '--record', '--sound', '0,0', '--input-script', script_path, '--exit-after', str(last + 3000)] + \
           (['--enhance', flags] if flags else [])
@@ -470,6 +497,40 @@ def baseline(args):
                   f'{len(got[name])} checkpoints, not {len(g["checkpoints"])}; differ at {diff[:5]}')
 
 
+def setup(args):
+    """The setup sessions (tests/replay/setup/NAME: session.script, session.rec, session.cfg):
+    port-made, from a new game, with a test's cheats (format 6), each writing the saved game
+    another session starts from (its stage_from). record: from the script; check: the
+    recording carries its cheats and replays twice to the same saved games."""
+    import golden as G
+    mode = args[0] if args else 'check'
+    if mode not in ('check', 'record'): sys.exit(__doc__)
+    root = os.path.join(R.RC.sessions, 'setup')
+    names = args[1:] or (sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))) if os.path.isdir(root) else [])
+    for name in names:
+        e = setup_dir(name); rec = os.path.join(e, 'session.rec')
+        if mode == 'record':
+            r, cfg, w = record_session(name, '', e)
+            ok = os.path.exists(r) and R.is_cheats(r)
+            check(f'setup/{name}: recorded from its script, with its cheats (format 6)', ok, r)
+            if ok:
+                shutil.copy(r, rec)
+                if os.path.exists(cfg): shutil.copy(cfg, os.path.join(e, 'session.cfg'))
+                say(f'wrote {os.path.relpath(rec, R.root)}: ' + R.log_summary(rec))
+            shutil.rmtree(w, ignore_errors=True)
+            continue
+        cheats = R.read_log(rec)[0].get('CHEAT', []) if R.is_cheats(rec) else []
+        check(f'setup/{name}: a format 6 recording whose cheats ran', bool(cheats), rec)
+        work = tempfile.mkdtemp(prefix='enhcheck-')
+        try:
+            dirs = [os.path.join(work, str(k)) for k in (1, 2)]
+            pmap(lambda d: replay_port(rec, d, []), dirs)
+            a, b = (G.save_hashes(d) for d in dirs)
+            check(f'setup/{name}: replayed twice, the same saved game', a and a == b, (len(a), len(b)))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
 def png_pixels(data):
     """The decompressed image data of a PNG's bytes (the port's screenshots: one IDAT stream)."""
     import zlib
@@ -500,6 +561,24 @@ def script():
         p = os.path.join(d, 'player'); os.makedirs(p)
         rc, out = port(p, '--enhance', 'skip-intro', '--input-script', os.path.join(d, 'missing.script'), hidden=False)
         check('a bad script stops a player\'s run before it saves anything', rc != 0 and 'enhance=' not in settings(p), settings(p))
+        # cheats (runtime/port/sys/cheat.c): a test's alone, refused unless EXHUME_TEST_CHEATS=1
+        ch = os.path.join(d, 'cheat.script'); open(ch, 'w').write('500 key space\n900 cheat set str 10\n')
+        rc, out = port(h, '--input-script', ch, env={'EXHUME_TEST_CHEATS': None})
+        check('a cheat line is refused without EXHUME_TEST_CHEATS=1, naming it',
+              rc != 0 and 'cheat.script:2' in out and 'EXHUME_TEST_CHEATS' in out, out[-300:])
+        bc = os.path.join(d, 'badcheat.script'); open(bc, 'w').write('500 cheat fly 3\n')
+        rc, out = port(h, '--input-script', bc, env={'EXHUME_TEST_CHEATS': '1'})
+        check('an unknown cheat stops the run, listing the cheats', rc != 0 and 'badcheat.script:1' in out and 'goto' in out, out[-300:])
+        r = os.path.join(d, 'crec'); os.makedirs(r)
+        rc, out = port(r, '--record', '--input-script', ch, env={'EXHUME_TEST_CHEATS': '1'})
+        rec = os.path.join(r, 'RECORD.OUT')
+        data = open(rec, 'rb').read(5) if os.path.exists(rec) else b''
+        check('a recording whose script has cheats is format 6', rc == 0 and data[4:5] == b'\x06', (rc, data, out[-300:]))
+        if data:
+            kept = os.path.join(d, 'cheats.rec'); shutil.copy(rec, kept)
+            h3 = os.path.join(d, 'h3'); os.makedirs(h3)
+            rc, out = port(h3, R.RC.port_replay_flag, kept, env={'EXHUME_TEST_CHEATS': None})
+            check('its replay is refused without EXHUME_TEST_CHEATS=1', rc != 0 and 'EXHUME_TEST_CHEATS' in out, out[-300:])
         good = os.path.join(d, 'k.script'); open(good, 'w').write('500 key space\n')
         r = os.path.join(d, 'rec'); os.makedirs(r)
         rc, out = port(r, '--record', '--input-script', good)
@@ -851,6 +930,9 @@ def main(argv):
     elif cmd == 'checks' and argv[1:2] == ['record']:
         RECORDING = True
         run_groups([('looking', looking)]); run_groups([('keys', keys)])     # live: one after the other
+    elif cmd == 'setup':
+        if argv[1:2] and argv[1] not in ('check', 'record'): sys.exit(__doc__)
+        run_groups([('setup', lambda: setup(argv[1:]))])
     elif cmd == 'baseline':
         if argv[1:2] and argv[1] not in ('check', 'make', 'record'): sys.exit(__doc__)   # before the group's thread
         run_groups([('baseline', lambda: baseline(argv[1:]))])
@@ -867,7 +949,8 @@ def main(argv):
         else:
             run_groups([('selftest', selftest), ('registry', registry), ('script', script),
                         ('presentation', presentation), ('coverage', coverage), ('holes', holes),
-                        ('looking', looking), ('keys', keys), ('baseline', lambda: baseline(['check']))])
+                        ('looking', looking), ('keys', keys), ('baseline', lambda: baseline(['check'])),
+                        ('setup', lambda: setup(['check']))])
     else: sys.exit(__doc__)
     n = len(results); bad = results.count(False)
     print(f'enhcheck: {n - bad} of {n} checks pass')

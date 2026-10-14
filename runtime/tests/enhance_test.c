@@ -31,6 +31,23 @@ int main(void)
     CHECK(enhance_save("home", m) == 0);
     m = 0;
     CHECK(enhance_load("home", &m) == 0 && m == 3);
+    {   /* a recording's flags: format 5 names them; 6 (a test's, with cheats) may name none */
+        static const char *names[] = { "look", "" };
+        int v, carries;
+        for (v = 5; v <= 6; v++) {
+            const char *n = names[v - 5];
+            unsigned char h[15] = { 'T', 'S', 'T', 'R', (unsigned char)v, 0, 0, 0, 0, 0, 0, 0, 9,
+                                    (unsigned char)strlen(n), 0 };
+            FILE *f = fopen("/tmp/enhance_test.rec", "wb");
+            fwrite(h, 1, 15, f);
+            fwrite(n, 1, strlen(n), f);
+            fclose(f);
+            m = 7;
+            CHECK(enhance_from_recording("/tmp/enhance_test.rec", &m, &carries) == 0 && carries == 1
+                  && m == (v == 5 ? 2u : 0u));
+        }
+        remove("/tmp/enhance_test.rec");
+    }
     printf(fails ? "enhance_test: %d failed\n" : "enhance_test: all passed\n", fails);
     return fails != 0;
 }

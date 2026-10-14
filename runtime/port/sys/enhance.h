@@ -40,7 +40,7 @@ int enhance_save(const char *home, uint32_t mask);
 /* The table's size and its entry I (for a settings screen listing them). */
 int enhance_count(void);
 const struct enhance_flag *enhance_flag(int i);
-/* A recording's flags: *carries 1 for format 5; -1 when it names one this build lacks. */
+/* A recording's flags: *carries 1 for format 5 (and 6); -1 when it names one this build lacks. */
 int enhance_from_recording(const char *path, uint32_t *mask, int *carries);
 /* The log line, when any flag is on. */
 void enhance_log(void);

@@ -129,7 +129,8 @@ int enhance_save(const char *home, uint32_t mask)
 }
 
 /* Format 5 has, right after its 12-byte header, one chunk of stream 9: the byte 9, a length
-   word and the names comma-separated (runtime/replay/replay.c). */
+   word and the names comma-separated (runtime/replay/replay.c). Format 6 (a test's, with
+   cheats: cheat.c) has it too, empty when no enhancement was on. */
 int enhance_from_recording(const char *path, uint32_t *mask, int *carries)
 {
     unsigned char h[15];
@@ -139,7 +140,7 @@ int enhance_from_recording(const char *path, uint32_t *mask, int *carries)
     *mask = 0;
     *carries = 0;
     if (!f) return 0;                   /* the replay itself says it cannot open it */
-    if (fread(h, 1, 12, f) != 12 || h[4] != 5) {
+    if (fread(h, 1, 12, f) != 12 || (h[4] != 5 && h[4] != 6)) {
         fclose(f);
         return 0;
     }
@@ -147,7 +148,7 @@ int enhance_from_recording(const char *path, uint32_t *mask, int *carries)
     if (fread(h + 12, 1, 3, f) != 3 || h[12] != 9 || (len = h[13] | (unsigned)h[14] << 8) >= sizeof names
         || fread(names, 1, len, f) != len) {
         fclose(f);
-        fprintf(stderr, PORT_NAME ": enhance: %s is a format 5 recording without its enhancements\n", path);
+        fprintf(stderr, PORT_NAME ": enhance: %s is a format %d recording without its enhancements\n", path, h[4]);
         return -1;
     }
     fclose(f);

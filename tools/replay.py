@@ -215,18 +215,22 @@ def read_dump(path):
 def read_log(path):
     """RECORD.OUT (runtime/replay/replay.c): the streams' runs decoded. Returns {stream: [runs]},
     each run (count, value), a SOUND run (count, value, moment) from version 3 (version 4's
-    repeats expanded), and the call count the recording stopped at."""
+    repeats expanded), and the call count the recording stopped at. Format 5's enhancements are
+    'ENH' (their names), format 6's cheats 'CHEAT' ([(safe point, text)])."""
     d = open(path, 'rb').read()
-    if d[:4] != RC.magic or d[4] not in (2, 3, 4, 5): raise SystemExit(f'{path}: not a version 2 to 5 recording ({RC.magic.decode()})')
+    if d[:4] != RC.magic or d[4] not in (2, 3, 4, 5, 6): raise SystemExit(f'{path}: not a version 2 to 6 recording ({RC.magic.decode()})')
     ver = d[4]
     stop = struct.unpack_from('<I', d, 8)[0]
-    data = {}; p = 12
+    data = {}; p = 12; cheats = []
     while p + 3 <= len(d):
         s, n = d[p], struct.unpack_from('<H', d, p + 1)[0]; p += 3
-        data.setdefault(s, bytearray()).extend(d[p:p + n]); p += n
-    out = {}
+        if s == 10:                    # format 6: a cheat, each a chunk: its safe point, its text
+            cheats.append((struct.unpack_from('<I', d, p)[0], d[p + 4:p + n].decode('ascii', 'replace')))
+        else: data.setdefault(s, bytearray()).extend(d[p:p + n])
+        p += n
+    out = {'CHEAT': cheats} if ver == 6 else {}
     for s, b in data.items():
-        if s == 9:                     # format 5: the enhancements, names comma-separated
+        if s == 9:                     # format 5 and 6: the enhancements, names comma-separated
             out['ENH'] = [x for x in b.decode('ascii', 'replace').split(',') if x]
             continue
         runs = []; q = 0; t = 0
@@ -268,6 +272,7 @@ def log_summary(path):
     for k, v in runs.items():
         if k == 'MISC': parts.append('MISC ' + ' '.join(f'{a}:{b:X}' for a, b in v)); continue
         if k == 'ENH': parts.append('enhancements ' + (', '.join(v) or 'none')); continue   # names (format 5), not runs
+        if k == 'CHEAT': parts.append('cheats ' + ('; '.join(f'{t} at safe point {n}' for n, t in v) or 'none')); continue
         parts.append(f'{k} {sum(r[0] for r in v)} calls in {len(v)} runs')
     keys = [r for c, r in runs.get('KEY', []) if r]
     if keys: parts.append('keys ' + ' '.join(f'{k:04X}' for k in keys))
@@ -497,8 +502,12 @@ STAGE = None   # --stage DIR: files (a saved game) put into the game's directory
 
 def dos_can_replay(rec):
     """(True, '') if the DOS build can replay recording rec; else (False, why). A format 5
-    recording was made in the port with enhancements, which DOS does not have."""
+    recording was made in the port with enhancements, and a format 6 one with a test's cheats
+    (runtime/port/sys/cheat.c), which DOS does not have."""
     d = open(rec, 'rb').read(15)
+    if len(d) >= 5 and d[4] == 6:
+        cheats = '; '.join(t for _, t in read_log(rec)[0].get('CHEAT', []))
+        return False, f'{rec} was recorded in the port with cheats ({cheats or "none run"}); DOS cannot replay it'
     if len(d) >= 5 and d[4] == 5:
         names = ''
         if len(d) >= 15 and d[12] == 9:
@@ -506,6 +515,13 @@ def dos_can_replay(rec):
             names = open(rec, 'rb').read(15 + n)[15:].decode('ascii', 'replace')
         return False, f'{rec} was recorded in the port with enhancements ({names}); DOS cannot replay it'
     return True, ''
+
+
+def is_cheats(rec):
+    """Whether recording rec was made with a test's cheats (format 6), which the port replays
+    only with EXHUME_TEST_CHEATS=1."""
+    with open(rec, 'rb') as f: d = f.read(5)
+    return len(d) == 5 and d[4] == 6
 
 
 def run_dos(out, rec=None, steps=(), timeout=900, cfg=None, stage=None, log=None, backend=None, exe=None):
@@ -622,6 +638,7 @@ def run_port(rec, out, extra=(), stage=None, quiet=False, env=None):
     cmd = [exe, RC.port_data_flag, port_data(out), RC.port_home_flag, home] + RC.port_args + \
           [RC.port_replay_flag, os.path.abspath(rec)] + list(extra)
     penv = port_env()
+    if is_cheats(rec): penv['EXHUME_TEST_CHEATS'] = '1'    # format 6: a test's cheats, which the port runs again
     for k, v in (env or {}).items():
         if v is None: penv.pop(k, None)
         else: penv[k] = v
