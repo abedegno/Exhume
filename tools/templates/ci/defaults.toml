@@ -198,3 +198,24 @@ nightly_extra_jobs = ""
 # the draft release's notes, as the release action's inputs (default: GitHub's, from the commits);
 # a project can take them from a file release_name_step writes (body_path)
 release_notes = "          generate_release_notes: true"
+
+# site.yml, the web build deployed when a release is published: only for a repository with
+# Underworld Exhumed's web/deploy.sh (GAME/ folders, GAME-vX.Y.Z tags, --GAME-tree options), and
+# only rendered when web_site names the site repository (OWNER/NAME). site_games: the games'
+# folders; site_assets: the steps that fetch the private bundles; site_data: deploy.sh's
+# arguments after OWNER/NAME (the game folders and the ROMs); site_cleanup: what the last step
+# removes besides the key, the trees and the site (the bundles' $RUNNER_TEMP paths); site_if: the
+# job's condition
+web_site = ""
+site_comment = ""
+site_if = "true"
+# site.yml is written once, outside any game's table: where its checkout puts Exhume, and the lines
+# that follow from it (a submodule checkout sets site_checkout_submodules to "          submodules: true")
+site_checkout_submodules = ""
+site_exhume = ".exhume"
+site_npm_ci = "npm ci --no-audit --no-fund --prefix .exhume"
+site_emsdk_script = ".exhume/tools/setup-emsdk.sh"
+site_games = ""
+site_assets = ""
+site_data = ""
+site_cleanup = ""

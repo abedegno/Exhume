@@ -4,10 +4,11 @@
     python3 tools/citemplates.py --vars FILE OUTDIR           with a values file alone
     python3 tools/citemplates.py --list                       the variables and their defaults
 
-It writes OUTDIR/.github/workflows/{accuracy,nightly,port,repocheck,release}.yml and
+It writes OUTDIR/.github/workflows/{accuracy,nightly,port,repocheck,release}.yml (and site.yml
+when web_site names a site repository) and
 OUTDIR/.github/actions/linux-tools/action.yml and OUTDIR/.github/actions/<assets_action>/action.yml
 from tools/templates/ci/. With a [[games]] list in the values (a repository of several games,
-each in its own folder, with Exhume as a submodule), repocheck.yml is written once and the rest
+each in its own folder, with Exhume as a submodule), repocheck.yml and site.yml are written once and the rest
 once per game, with that game's values, as <wf_prefix>accuracy.yml and so on. The values are tools/templates/ci/defaults.toml (a project that uses
 Exhume from a checkout in .exhume, with the Makefile template) overridden by the file exhume.toml's
 [ci] vars names (UW2's: examples/uw2/ci.toml) and by any other [ci] keys.
@@ -33,6 +34,10 @@ spaces and is left alone. A variable with no value stops the tool.
                 systems (release_test_jobs, tools/pkgcheck.py); for a tag push only, a draft
                 release; signed and notarised with Apple's secrets when they are set, ad hoc
                 without them
+    site        the web build deployed (a repository with Underworld Exhumed's web/deploy.sh): each
+                game built from its latest published release's tag, checked, and pushed to the
+                gh-pages branch of web_site with the deploy key WEB_DEPLOY_KEY, when a release is
+                published; by hand a dry run unless push is set. Only when web_site is not empty
     linux-tools the Ubuntu packages, Python and Node packages, and the tools built from source,
                 each cached by the script that pins it; nothing cached touches the game
     assets      the private bundle: cloned with a read-only deploy key, decrypted with an age key
@@ -47,8 +52,11 @@ FILES = [('workflows/accuracy.yml', '.github/workflows/{wf_prefix}accuracy.yml')
          ('workflows/port.yml', '.github/workflows/{wf_prefix}port.yml'),
          ('workflows/repocheck.yml', '.github/workflows/{wf_prefix}repocheck.yml'),
          ('workflows/release.yml', '.github/workflows/{wf_prefix}release.yml'),
+         ('workflows/site.yml', '.github/workflows/{wf_prefix}site.yml'),
          ('actions/linux-tools/action.yml', '.github/actions/{linux_tools_action}/action.yml'),
          ('actions/assets/action.yml', '.github/actions/{assets_action}/action.yml')]
+# written once for the repository, not per game
+ONCE = ('workflows/repocheck.yml', 'workflows/site.yml')
 VAR = re.compile(r'\{\{(\w+)\}\}')
 
 
@@ -113,14 +121,16 @@ def main(argv):
     if len(argv) != 1: sys.exit(__doc__)
     out = argv[0]
     games = v.pop('games', None)
+    # site.yml only for a repository that names its site
+    files = [f for f in FILES if f[0] != 'workflows/site.yml' or v.get('web_site')]
     if not games:
-        write(out, v, FILES)
+        write(out, v, files)
         return 0
-    # a repository of several games: repocheck once for the repository, the rest per game
-    write(out, v, [f for f in FILES if f[0] == 'workflows/repocheck.yml'])
+    # a repository of several games: repocheck and site once for the repository, the rest per game
+    write(out, v, [f for f in files if f[0] in ONCE])
     for g in games:
         gv = dict(v); gv.update(g)
-        write(out, gv, [f for f in FILES if f[0] != 'workflows/repocheck.yml'])
+        write(out, gv, [f for f in files if f[0] not in ONCE])
     return 0
 
 
