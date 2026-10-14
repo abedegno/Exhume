@@ -627,6 +627,10 @@ def run_port(rec, out, extra=(), stage=None, quiet=False, env=None):
     if cov: extra.remove('--cov')
     stage = stage or STAGE
     exe = port_exe('debug' if debug else 'cov' if cov else '')
+    # a test's cheats (format 6) in EXHUME_CHEAT_PORT when set: the web build refuses cheats
+    # always, so its checks (make webcheck) make a cheat setup's saved game in the desktop build
+    if is_cheats(rec) and os.environ.get('EXHUME_CHEAT_PORT') and not debug and not cov:
+        exe = os.environ['EXHUME_CHEAT_PORT']
     if not os.path.exists(exe): sys.exit('replay.py: build the port first (tools/portbuild.py)')
     home = os.path.join(out, 'home'); shutil.rmtree(home, ignore_errors=True); os.makedirs(home)
     if stage: shutil.copytree(stage, home, dirs_exist_ok=True)
