@@ -60,10 +60,10 @@ jobs:
             trees="$trees --$g-tree $RUNNER_TEMP/site-$g"
           done
           echo "SITE_TREES=$trees" >> "$GITHUB_ENV"
-      - name: System packages (the port's build, and headless Chrome for the page checks)
+      - name: System packages (the port's build, age for the bundles, and headless Chrome for the page checks)
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends clang ninja-build pkg-config libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libasound2t64 libxfixes3 >/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends clang ninja-build pkg-config age libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libasound2t64 libxfixes3 >/dev/null
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
