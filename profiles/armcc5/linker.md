@@ -15,8 +15,18 @@
   `fromelf --bin` pads its region to 0x24. The section's own size (`fromelf -s`) is what to
   compare.
 - In `--map` output the entry section's row carries a `*` before its name.
-- Without `--keep`, `*(+RO)` sorts the input sections (by name here: i.crc16, i.main,
-  i.next_frame, ...), not in object order. The gate (Plan 3) must learn the original's order.
+- armlink orders the sections of an execution region by attribute (RO code, RO data, RW, ZI),
+  then by section name in ASCII order (A-Z < `_` < a-z), then by input order, whatever order the
+  scatter file lists them in. armcc names a function's section `i.<name>`, so a region of
+  functions comes out in name order: the test firmware's `.ANY (+RO)` gives i.big_switch, i.buf,
+  i.cfg, i.crc16, ..., i.version, and a Cortex-M3 firmware of about 500 functions had its whole
+  code region in ASCII order, so a function's address bounds its real name between its
+  neighbours'. Same-named sections (`.constdata`, `.data`, `.bss`, library `.text`) keep input
+  order. Placeholders need link names that sort between their real neighbours (the gate's
+  link_names).
+- armlink's default `--branchnop` turns a branch to the next instruction into `nop.w`, so a 4-byte
+  tail-call function placed right before its callee shows as a `nop.w`: split such a map row 4
+  bytes in.
 - armcc gives all of one file's const data a single `.constdata` section, so armlink can only drop
   dead data whose whole section is unreferenced: a dead table beside a live one is in the image.
   A source marks data the original never had with `/* dropped: NAME */`; any other data the map
@@ -43,3 +53,100 @@
   function. The switch's bound is a `cmp` a few instructions before the `tbb` (often with a `bhs`
   default between): with `bhs`/`bcs` to the default the table has that many entries, with `bhi`
   one more. These rules were needed for a real firmware's map to cover every byte.
+
+## The whole-image gate and the modded build (armgate.py, armdata.py, armmod.py)
+
+What rebuilding a whole image in pieces taught, on the test firmware and on a Cortex-M3 firmware
+of about 500 functions that the gate now rebuilds byte for byte.
+
+- MDK-Lite refuses an image over 32 KB, and the limit counts every section in the link: the
+  piece's own functions, its files' other sections placed FIXED, dumped copies and library
+  members. A 15 KB run of functions failed at 35 KB until it was split in two.
+- A piece can start only on a 4-byte boundary at a section start (L6244E): a run that would start
+  at a 2-aligned function starts at the next aligned row instead, and the function before it
+  joins the previous piece.
+- Linking a piece naturally (its function sections in one region, armlink choosing order and
+  padding) and everything else FIXED at map addresses, with the rest of the image's symbols from
+  symdefs, reproduces the image piece by piece. The order the scatter file lists the sections in
+  does not matter; the names do (above).
+- A name in a symdefs file is never pulled from a library. Leaving the library rows' names out of
+  symdefs, and listing a stub object that references them (kept with `--keep`), makes armlink link
+  the real members. Members load in resolution passes: the first loads, in archive order, what
+  the objects reference; later passes load what those members need. Their `.text` sections then
+  keep that load order. So the stub requests only what the project's objects reference (their
+  `Ref` symbols), and the members those need follow as in the original. A stub that requested
+  every member put two 64-bit shift helpers before the memory and string functions, against the
+  image.
+- Every armcc object references `Lib$$Request$$armlib`. Requested from a stub, it made armlink
+  stop with an internal fault: never request linker-made `$$` names.
+- An entry point a member's object keeps local (a printf variant's internal helpers) is
+  undefined to a stub (L6218E); the gate drops it from the stub and links again.
+- armlink adds the RW decompressor only when it compresses RW data, and the region handlers only
+  for the region kinds the link has. The startup piece links the image's own RW bytes (and a
+  zero-init array for each zero region) so armlink makes the same choices: MicroLIB's
+  zero-run-length decompressor (`__dczerorl2.o`, `__decompress`/`__decompress1`) and the
+  zero-init handler, as the original link did.
+- A library member the image has elsewhere (the region handlers or a printf variant, sorted
+  among the functions by their `i.` names) must be linked out of the startup piece by object
+  name: an object-name selector (`handlers.o (+RO)`) beats a library wildcard (`*.l (+RO)`). The
+  gate finds them from a first link's `--symbols` listing.
+- Section-name selectors beat attribute selectors: a stub's const table, listed `stub.o (+RO)` in
+  one region, still went to a region holding `*(.constdata)`. The data stage's stub is code only.
+- armlink removes unused sections only from a link with an entry point. A `--no_startup` link
+  with no `--entry` kept a string the original's link had dropped; with `--entry` on a stub
+  function it went, as it should.
+- MicroLIB's scatter-load code and handlers must be in a root region (L6202E: cannot be assigned
+  to a non-root region). A section fixed at an address that is not 4-aligned therefore goes in a
+  root region at the aligned address below, after a pad `+FIRST`, in flash; in RAM the pad's
+  region keeps its load address out of the way, as the matcher does.
+- The region table's handler addresses come from wherever the handlers are linked. The data stage
+  links once with the library members free, reads which member each table entry names, and links
+  again with those sections FIXED at the addresses the image's own table gives, so the table comes
+  out as the original's. `__scatterload`'s two literal words (the table's base and limit) are
+  taken from that link too.
+- The compressed RW stream may end a byte or more before its load region, which ends on a 4-byte
+  boundary: the image's data ends there, padded with zero.
+- A function or global that a partial file defines although another file owns it is renamed in
+  that file (`--preinclude` of `#define name name__dup_FILE`) and dumped past the image. The dump
+  must stay within `bl` range of the piece: a dump at a distant address made armlink add veneers
+  to the piece.
+- A known diff that grows its function pushes the piece into the next FIXED region (L6221E:
+  load regions overlap); the gate moves those regions aside and reports the functions the shift
+  affects rather than failing them.
+- Each Keil tool call under Wine boots a wineserver unless one is running in the prefix (about 6
+  s under Rosetta), and a prefix's server serialises its clients. The gate runs its compiles and
+  links in worker processes, each with its own prefix and a persistent `wineserver -p`: the whole
+  gate for the 500-function firmware went from 29 minutes to 45 seconds. A new prefix stops at
+  Wine's offer to install Mono and Gecko unless `WINEDLLOVERRIDES=mscoree,mshtml=` is set.
+- `fromelf --i32` writes 16-byte data records, an extended linear address record at the start
+  and at each 64 KB boundary, a start linear address record (the entry point) and CRLF line ends;
+  writing the rebuilt bytes the same way (ehex.write) gives a file identical to the shipped one.
+
+The data stage:
+
+- armcc gives an object one `.constdata`, one `.data` and one `.bss` for the data its functions
+  use, and each global no function in the file uses a section of its own. armlink lays each kind
+  out in object link order, so each kind's map rows split into one run per file, and one object
+  order serves all three kinds. Merging the three address orders gives that order; a conflict
+  means a row has the wrong owner.
+- Linking every data-owning file whole keeps the code its data points at (a table of handlers)
+  and that code's callees: over 32 KB. The data stage compiles each file with its function bodies
+  taken out, except a function that declares a static (the static is its data), plus one function
+  that stores the address of every global the file owns through a pointer parameter. armcc drops
+  all but the last store to a local, even through a volatile-qualified pointer, and with them the
+  references; stores through a parameter stay.
+- A modded build's RW image may compress to another length; the data stage compares the
+  original's range and hands back everything it linked.
+
+The modded build:
+
+- The new code links as one more piece in free flash, its RAM in an UNINIT region above
+  everything the image uses (its data and the stack). Nothing initialises that RAM at reset, zero
+  or not: the original's region table does not know it. armcc puts zero globals of up to 8 bytes
+  in `.data` (`--bss_threshold`), so even a "zero-init" counter in the mod starts as whatever the
+  RAM held. The mod sets its state up on first use or in a reset hook.
+- The mod's own symbols go to every link of the gate as extra symdefs, so edited sources can call
+  it or point at it, and everything else stays at its address.
+- Changes inside the original image are kept to the same size: a vector or a pointer redirected,
+  a table's address in literal pools, an immediate. A word-by-word check against the original
+  allows exactly those (armmod.check_allowed) and counts them.

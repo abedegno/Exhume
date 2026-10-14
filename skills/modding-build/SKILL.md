@@ -1,6 +1,6 @@
 ---
 name: modding-build
-description: Use when the sources of a byte-matched, exactly linked DOS decompilation are to be changed by any size (a fix, a mod, the first step of a port) and still linked into a running executable; and to audit the layout for addresses written as numbers, which matching and the exact link cannot see.
+description: Use when the sources of a byte-matched, exactly linked DOS decompilation are to be changed by any size (a fix, a mod, the first step of a port) and still linked into a running executable; and to audit the layout for addresses written as numbers, which matching and the exact link cannot see. Also for an armcc5 Cortex-M firmware: new code in free flash, and proof that the original's bytes changed only where the mod says.
 ---
 
 # Modding build
@@ -31,3 +31,44 @@ A literal address and a symbolic one assemble to the same bytes, so a number tha
 - A new source file needs a place in the link order (the link's module lists) before `--mod` will take it.
 - Keep DGROUP's static data, stack and near heap under 64 KB (profiles/borland-tc101/linker.md).
 - Report a modding build as proven only after it reaches the main scene and the marker search succeeds; a title screen is not enough.
+
+## A linked image (armcc5): new code in free flash
+
+A Cortex-M firmware has no relocations and its code calls by PC-relative offsets, so the safe
+mod leaves every original function where it is and puts new code beside the image. The modded
+build, `python3 tools/gate.py game` (profiles/armcc5/tools/armmod.py), does that and proves it:
+the gate (skills/link-and-diff) rebuilds the edited tree, and every byte that differs from the
+original must be one the mod declared. It needs a gate that passes first.
+
+1. Write the new code in its own directory outside `src` (or list the directory in
+   `[gate] exclude`), so the exact build never sees it. It may call any original function and use
+   any original global by its map name: every other symbol is linked at its map address.
+2. Set `[mod]` in exhume.toml (docs/config.md): `sources`; `code`, free flash after the image;
+   `ram`, above everything the image uses, its data and the stack (the build checks both).
+3. Run it with no edits first. The image must come back identical, with the new piece after it.
+4. Make the original reach the new code with the smallest edit that does it, as `[[mod.replace]]`
+   rules (each string must occur exactly `count` times) or patches: a vector pointed at a new
+   handler, an entry of a function table pointed at new code, a table's uses pointed at a larger
+   copy in the new RAM, a range check widened. Keep every original function the same size; new
+   behaviour goes in the new piece.
+5. Declare each difference those edits make as a `[[mod.allow]]` rule with its count: `word` (a
+   vector or pointer now holding the new symbol's address), `pool` (literal pool words moved to
+   the same offset in a new table), `imm` (a Thumb immediate, `cmp r1, #7` to `#8`), `range`
+   (data the mod rebuilds, which may compress to another length). Then build: any other byte
+   that differs, or a rule that meets a different count, fails the build. That check is what
+   shows the original code is otherwise untouched.
+6. The output is `<build>/mod/NAME-mod.hex` (or `.bin`) in the original's format, and the new
+   symbols beside it. Nothing here flashes it.
+
+Rules:
+
+- The new RAM is not in the original's region table, so nothing zeroes or loads it at reset.
+  Set the mod's state up on first use, or in a reset hook the vector points at before it jumps
+  to the original reset handler; test it with random power-on RAM. armcc keeps zero globals of up
+  to 8 bytes in `.data` (`--bss_threshold`), so "zero-init" is no exception.
+- A handler called through an original table gets what the original's callers give it and
+  nothing more: an entry the original only called at start-up for some slots may never be called
+  for the new one. Read the callers before relying on an init hook.
+- Edit the copy (`<build>/mod/tree`), never the matched tree; its gate must still pass unchanged.
+- Report a mod as working only after it has run (in an emulator or on the device) with the
+  check passing; a build that links is not proof it behaves.
