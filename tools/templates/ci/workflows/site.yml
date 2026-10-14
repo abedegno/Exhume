@@ -73,6 +73,9 @@ jobs:
         run: |
           {{site_npm_ci}}
           npx --prefix {{site_exhume}} puppeteer browsers install chrome
+          # Ubuntu 24.04's AppArmor stops unprivileged user namespaces, which Chrome's sandbox
+          # needs: allow them on this runner, rather than run Chrome with no sandbox
+          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
       # nothing in this job is cached: it holds a key that can write the site, and runs seldom
       - name: Install Emscripten
         run: EMSDK_VERSION={{web_emsdk_version}} sh {{site_emsdk_script}}
