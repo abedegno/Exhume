@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Use when running a whole byte-matching decompilation with several AI agents - choosing models, how many agents at once, per-file build budgets, Codex drafts with Claude finishers, the build queue for sandboxed agents, and keeping agents from clobbering each other; with the costs measured on UW2.
+description: Use when running a whole byte-matching decompilation with several AI agents - choosing models, how many agents at once, per-file build budgets, Codex drafts with Claude finishers, the build queue for sandboxed agents, and keeping agents from clobbering each other; with the costs measured on UW2. Also for an armcc5 firmware - a git worktree and a cloned Wine prefix per agent, the full gate before every merge.
 ---
 
 # Orchestrate matching agents
@@ -51,8 +51,44 @@ Paths are relative to the Exhume checkout. You (the orchestrator) prepare target
 
 After the exact link and the modding build, skills/readability-pass makes the tree readable without changing a byte. Its orchestration differs from matching: steps 1 and 2 (the gate, shared headers) are one job over the whole tree; steps 3, 4 and 6 (constants, fields, comments) split by subsystem, one agent owning a subsystem's sources and its header, never two agents on one header. Agents run `tools/gate.py check --fast` on their own changes and you run the full gate before each commit; comment agents' edits go through `tools/comments.py apply` and you check the tree with `tools/comments.py check --ref HEAD`. The no-nested-agents rule above came from this pass.
 
+## Firmware (armcc5): agents in parallel
+
+On a firmware the unit of work is a range of source files (by address), and the state agents could
+clobber is larger than a source and a table: the map, score and results files, best-source
+directories, work directories under build/, and Wine prefixes. What worked on a 500-function
+firmware matched by three agents at once:
+
+- One git worktree per agent (`git worktree add ../fw-rangeB -b rangeB`), each with its own
+  build/. Tools that keep results write them to files (a results table, a best source per
+  function, merged files); two processes writing one such file each keep their own copy and the
+  last to write wins, silently dropping the other's work. In a worktree an agent can run any tool;
+  in a shared tree, never two writers of one results file at once.
+- Give each agent a range of files, not of functions: a file is proved whole, and file boundaries
+  (compiler.md, "files built without --split_sections") move as agents learn. A map change outside
+  an agent's range goes in its report, for you to make.
+- One Wine prefix per agent, and one per parallel job within an agent: a prefix's wineserver
+  serialises its clients and now and then hangs. Make one template prefix, warm it once (`wine cmd
+  /c exit` with no pipes: linker.md, the first-call hang), stop its server, and clone it for each
+  agent. On APFS `cp -c -R template agentN` clones copy-on-write, so a clone costs almost no disk
+  where a fresh prefix is about 300 MB and a boot. Never point two agents at one prefix, and never
+  at a prefix a running gate uses.
+- Agents run the fast gate on their own changes; you run the full gate (no cache) on the merge
+  result before every merge into the main branch, and again after any change of the compiler
+  home. A file that passes in an agent's worktree can fail in the merged tree: another agent's map
+  change, a renamed symbol, a shared header.
+- Merge tool changes by hand. Agents improve shared tools in their worktrees (a scoring fix, a
+  translator rule); review each tool diff and apply it yourself rather than merging branches
+  wholesale, since two agents' changes to one tool conflict in ways git does not see, and a change
+  to a scorer changes every recorded score (rescore after it).
+- A release finding (one file only matches under a later MDK) changes the compile home for
+  everyone: switch it in the main tree, run the full gate with every proved file, then tell the
+  agents.
+
 ## Reviewing a report
 
-- Check its claims: rerun match and verify yourself through merge.py.
+- Check its claims: rerun match and verify yourself through merge.py. On firmware, a score of 0 is
+  not a proof (the score masks pool words and call targets) and "every byte equal" from a masked
+  compare is not either: the proof is match.py's WHOLE FILE MATCHES, or objplace.py for a file over
+  the Lite limit, which applies every relocation instead of masking it. Rerun it yourself.
 - New compiler behaviour goes into the profile's compiler.md or assembler.md only when tested.
 - Renames go into the tables (`tools/syncnames.py src/FILE.C` renames rows to the publics the file defines) and then symbols.tsv is rebuilt from scratch.

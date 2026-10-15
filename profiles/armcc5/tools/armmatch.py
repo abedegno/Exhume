@@ -52,6 +52,12 @@ def place(info, m, extra, unused_ok=False):
         annotated = [s for s in members if s.name in extra]
         strong = [s for s in members if s.bind != 'Wk']
         deciders = annotated or strong or members
+        # a weak symbol an at: line puts away from the rest (a startup file naming the
+        # application's real handler for one of its weak defaults) is overridden there too, when
+        # strong symbols still place the section
+        if len({extra[s.name] - offset(s) for s in annotated}) > 1:
+            firm = [s for s in annotated if s.bind != 'Wk'] or [s for s in strong if m.address(s.name, extra) is not None]
+            if firm: deciders = firm
         weak_off = set()
         bases = {}
         for s in deciders:

@@ -4,8 +4,11 @@
   with the objects. `--symdefs=FILE` is the option that writes one.
 - An execution region `ER 0xADDR FIXED { obj(i.name) }` puts one function at its address;
   `fromelf --bin` then writes one file per region, named after it.
-- MDK-Lite objects are in Keil's "ORC" format. `fromelf --text -s` lists their sections and
-  symbols; nothing else may read them.
+- MDK-Lite objects are in Keil's "ORC" format: the file starts `\xf7ORC` where an ELF object has
+  `\x7fELF`, and fromelf will not write one out as ELF under the Lite licence. `fromelf --text -s`
+  lists their sections and symbols, `-v` adds each section's file offset and `-r` the
+  relocations. The section contents themselves are stored plainly at those offsets, which is what
+  object placement (below) reads.
 - `fromelf --i32` writes a directory, one file per load region, when there is more than one.
 - armlink drops a section nothing references (default unused-section elimination): a `const
   char name[]` used only as `name[0]` was folded to a constant by armcc and its `.constdata` never
@@ -59,9 +62,10 @@
 What rebuilding a whole image in pieces taught, on the test firmware and on a Cortex-M3 firmware
 of about 500 functions that the gate now rebuilds byte for byte.
 
-- MDK-Lite refuses an image over 32 KB, and the limit counts every section in the link: the
-  piece's own functions, its files' other sections placed FIXED, dumped copies and library
-  members. A 15 KB run of functions failed at 35 KB until it was split in two.
+- MDK-Lite refuses an image over 32 KB (L6050U), and the limit counts every RO and RW section in
+  the link: the piece's own functions, its files' other sections placed FIXED, dumped copies and
+  library members. A 15 KB run of functions failed at 35 KB until it was split in two. Zero-init
+  does not count: a link with a 40 KB blob of bytes failed, one with 60 KB of zero-init linked.
 - A piece can start only on a 4-byte boundary at a section start (L6244E): a run that would start
   at a 2-aligned function starts at the next aligned row instead, and the function before it
   joins the previous piece.
@@ -118,6 +122,12 @@ of about 500 functions that the gate now rebuilds byte for byte.
   links in worker processes, each with its own prefix and a persistent `wineserver -p`: the whole
   gate for the 500-function firmware went from 29 minutes to 45 seconds. A new prefix stops at
   Wine's offer to install Mono and Gecko unless `WINEDLLOVERRIDES=mscoree,mshtml=` is set.
+- The first program run under a new wineserver starts Wine's services (services.exe, winedevice
+  and others), which inherit that program's output pipes and live as long as the server. When
+  that first program is a Keil tool run with its output captured, the output never reaches end of
+  file and the call never returns. Run `wine cmd /c exit`, with no pipes, in each new prefix (or
+  after starting each server) before any tool, and give every stage a timeout so a hang fails
+  instead of waiting forever.
 - `fromelf --i32` writes 16-byte data records, an extended linear address record at the start
   and at each 64 KB boundary, a start linear address record (the entry point) and CRLF line ends;
   writing the rebuilt bytes the same way (ehex.write) gives a file identical to the shipped one.
@@ -150,3 +160,47 @@ The modded build:
 - Changes inside the original image are kept to the same size: a vector or a pointer redirected,
   a table's address in literal pools, an immediate. A word-by-word check against the original
   allows exactly those (armmod.check_allowed) and counts them.
+
+## A firmware built without --split_sections, with the standard C library
+
+What a second Cortex-M3 firmware of about 500 functions taught, built at `-O0` without
+`--split_sections` and linked with the standard C library (not MicroLIB). Its whole image is
+rebuilt byte for byte.
+
+- Without `--split_sections` a source file is one `.text`, and one file can pass 32 KB: a 45 KB
+  file of 15 functions could not be linked by MDK-Lite at all. `tools/objplace.py` proves such a
+  file by doing armlink's job for its one object: each section placed where the matcher places it,
+  every relocation applied with the addend in place (REL: `R_ARM_ABS32`, `R_ARM_REL32`,
+  `R_ARM_THM_CALL`, `R_ARM_THM_JUMP24`, `R_ARM_THM_JUMP19`, MOVW/MOVT, `R_ARM_NONE`), symbols
+  resolved from the object and the same symdefs the armlink route gets, a weak definition giving
+  way to a symdefs one, every placed byte compared, nothing masked. An unresolved symbol, an
+  unknown relocation, a branch to data or out of range, or a relocation in the wrong mapping state
+  (`$t` for branches, `$d` for literal words) fails. Before it was trusted it was run beside
+  armlink over every source armlink could link (115 sources, 2,476 relocations): the same bytes
+  each time. armcc emitted only `R_ARM_THM_CALL` and `R_ARM_ABS32` in that firmware.
+- Alignment padding between two files: where 1 to 3 zero bytes lie between two sections and end on
+  the second's alignment, they are armlink's padding, made by linking the two in one region (the
+  first `+FIRST`). It only applies when the second section is 4-aligned in its object, which for a
+  `.text` means it holds a literal pool (compiler.md).
+- The region table follows the last RO section. When that section ends off a 4-byte boundary
+  (a byte table ending at 4n+2), armlink pads before `Region$$Table`, which holds words. A link
+  that makes the table cannot start a region at the unaligned end (L6244E), so it starts the
+  table's region at the 4-byte boundary below with a byte-aligned area standing in for the end of
+  the section (an assembler area of 1 to 3 bytes, byte-aligned); armlink then places the
+  table on the next boundary and fills the gap itself. With stand-ins of 1, 2, 3 and 4 bytes it put
+  the table at the same address with a PAD of 3, 2, 1 and 0 bytes, and the table and the
+  compressed RW data came out the same. Check the PAD row in the listing and that the padding
+  bytes are zero and the image's.
+- The standard library's start-up is `__main`, `__scatterload` (`__scatterload_rt2`),
+  `__decompress1`, the zero-init handler and the `.ARM.Collect$$` pieces of `__rt_entry`,
+  `__rt_lib_init`, `__rt_lib_shutdown` and `__rt_exit`, all linked from the toolchain's own `c_w.l`
+  (and `fz_ws.l` for float helpers) by requesting the entry points the objects reference. armcc
+  defines `__ARM_use_no_argv` in a file with `int main(void)`; a library link without it adds the
+  argv set-up. `__user_libspace` must sit at the original's address, so the zero-init region is
+  laid out around the library's own `.bss`.
+- A startup file's default handlers are weak, and the application's real handlers override them
+  at their own addresses. The startup source names those addresses on its `; at:` lines; the
+  matcher (armmatch.place) then places its section by its strong symbols and takes each weak name
+  an at: line puts elsewhere as overridden, so it comes from symdefs at the real handler's
+  address. Names the startup file only references (`__main`, the heap set-up helpers)
+  need `; at:` lines too when it is matched without the library.

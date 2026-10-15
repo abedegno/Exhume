@@ -1,0 +1,5 @@
+addr	size	name	kind	file
+20000000	1	g_mode	rw	
+20000002	2	g_count	rw	
+20000004	4	g_last	rw	
+20000008	20	g_table	zi	
