@@ -44,7 +44,11 @@ A Cortex-M firmware matched with the armcc5 profile has no DOS link to rebuild: 
 already links at the real addresses. The proof that the whole image comes from the sources is
 the gate, `python3 tools/gate.py check` (profiles/armcc5/tools/armgate.py). MDK-Lite will not link
 more than 32 KB, so it rebuilds the image in pieces, each linked by armlink at its own address,
-and compares every byte. profiles/armcc5/linker.md, "The whole-image gate", has the reasons.
+and compares every byte. profiles/armcc5/linker.md, "The whole-image gate", has the reasons. One
+source file larger than 32 KB (possible without `--split_sections`) cannot be linked by armlink
+under Lite at all: prove it with `profiles/armcc5/tools/objplace.py`, which places its object and
+applies every relocation itself, after `objplace.py check` has shown it gives armlink's bytes on
+the sources armlink can link (linker.md, "A firmware built without --split_sections").
 
 1. Every map row needs an owner: the map's file column (merge.py fills it), else the one source
    that defines the name. A named row nobody defines is a library member and is linked from the
