@@ -98,6 +98,45 @@ optional:
 the end of the data stage's comparison: hooks for a project's own modded build (armmod.py passes
 the same through armgate.run()).
 
+## [c2000] for a TI C2000 image
+
+The ti-c2000 profile's tools (profiles/ti-c2000/tools/) read these, with `[toolchain] home` as
+the compiler's directory (its `bin/cl2000.exe` runs under Wine, or a native `bin/cl2000`) and
+`[toolchain] c_opts` as the default options (the profile's are `-v28 -ml -mt
+--float_support=fpu32 -O1`). `[binary] image` is the image as a binary of 16-bit words.
+
+- `base`: the word address of the image's first word (required). `words`: its length in words
+  (default: the file's).
+- `byte_order`: how the file stores each word, `big` (the default; hex2000 `-order MS`) or
+  `little`. `fill`: the value of erased words (default 0xFFFF).
+- `native`: the `bin` directory of a native CGT, 18.12 or later, for ofd2000, dis2000, ar2000,
+  asm2000, lnk2000, hex2000 and the cl2000 that assembles the gate's blobs.
+- `wine`: the directory holding `wine` and `wineserver` (on a Mac, `/Applications/Wine
+  Devel.app/Contents/Resources/wine/bin`). `prefix`: the Wine prefix the compilers are installed
+  in. Each tool run clones it into `<build>/wine/jobN` (an APFS clone, held with an flock); `jobs`
+  says how many such prefixes (default 8), and `timeout` how many seconds a Wine program may run
+  before its server is stopped and it is tried again (default 300).
+- `others`: a glob of every installed compiler's `bin/cl2000.exe` (or `cl2000`), for
+  `match.py --all-cgt` and for `/* cgt: VERSION */` lines.
+- `rtslib`: the runtime library, relative to the compiler's home or a path (default
+  `lib/rts2800_fpu32.lib`).
+- `park`, `park_data`: where the tools link what has no address, on the program and data pages
+  (default 0x200000 and 0x300000, outside an F2806x's or F2833x's memory map).
+
+`[c2000.gate]`, for `gate.py check` (profiles/ti-c2000/tools/c28gate.py):
+
+- `cinit`: the word address of the image's `.cinit` table. `cinit_order`: the files with
+  initialised data, by stem, in the original link's order, with library members as
+  `rts:member.obj` (profiles/ti-c2000/linker.md, ".cinit"). `cinit_tail`: the words the linker
+  writes after the records (default 2).
+- `stack`, `stack_size`: where `.stack` goes and its size, as the original link had them.
+- `linker`: `native` (the default) or `cgt`, the compiler home's own lnk2000.
+
+A C2000 source may carry `/* cgt: VERSION */` (another installed compiler, a directory name under
+`others` such as `16.9.6.LTS`, or a path), `/* opts: ... */` (replaces the default options) and
+`/* cflags: ... */` (added to them), in C or, after `;`, in assembly. Its variables sit between
+`/* ebss-begin */` and `/* ebss-end */` for the `.ebss` solver.
+
 ## [mod]
 
 The modded build of a linked image (`gate.py game`, profiles/armcc5/tools/armmod.py;

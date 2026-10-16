@@ -1,0 +1,44 @@
+# Toolchain profile: TI C2000 code generation tools (CGT: cl2000, lnk2000, hex2000, ofd2000,
+# dis2000, ar2000) for the C28x with the FPU (TMS320F2806x, F2833x, F2837x and the like), COFF ABI.
+# What is true of the tools, not of one firmware; the evidence is in compiler.md and linker.md.
+#
+# The compiler is TI's Windows build run under Wine: every version TI publishes, from
+#   https://downloads.ti.com/codegen/esd/cgt_public_sw/C2000/<ver>/ti_cgt_c2000_<ver>_windows_installer.exe
+# (the 15.x to 18.x versions I used; the 6.x versions sit behind TI's export form). From 18.12 on TI also builds the
+# tools for macOS x86_64 and Linux; a native 18.12 or later supplies ofd2000, dis2000, ar2000,
+# asm2000, lnk2000 and hex2000 (and the cl2000 that assembles the gate's blobs), which read the
+# COFF objects of every version and run without Wine.
+# A project names its compiler home in exhume.toml ([toolchain] home) and the rest in [c2000]
+# (docs/config.md, "[c2000] for a TI C2000 image").
+#
+# Addresses are 16-bit word addresses. Program and data memory are pages 0 and 1 of one 22-bit
+# space; sizes in the tools and the map are in words.
+
+name = "TI C2000 CGT (cl2000), COFF ABI, C28x with FPU32"
+
+[c]
+# the large memory model, unified memory, the FPU; -O1 matched a whole firmware (compiler.md,
+# "Flags")
+default_opts = "-v28 -ml -mt --float_support=fpu32 -O1"
+
+[c2000]
+# added by the tools to every compile: each function a section of its own (.text:_name), so
+# that each can be linked at its own address. It changed no code in anything I compiled.
+tool_opts = "--gen_func_subsections=on"
+byte_order = "big"                       # how an image file stores each word (hex2000 -order MS)
+fill = 0xFFFF                            # erased flash
+rtslib = "lib/rts2800_fpu32.lib"         # relative to the compiler home, or a path
+park = 0x200000                          # where the tools link what has no address (outside a
+park_data = 0x300000                     # F2806x/F2833x memory map; set others for a bigger part)
+
+[link]
+# the matcher links each source at its real addresses and compares finished words
+# (tools/c28match.py); there is no masked object and no verify step
+object_model = "linked-image"
+match_tool = "c28match"
+gate_tool = "c28gate"
+
+[setup]
+installer_url = "https://downloads.ti.com/codegen/esd/cgt_public_sw/C2000/{ver}/ti_cgt_c2000_{ver}_windows_installer.exe"
+# the native builds (18.12 and later) are on the same server, as macOS and Linux installers
+wine = "/Applications/Wine Devel.app/Contents/Resources/wine/bin"

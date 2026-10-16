@@ -23,8 +23,11 @@ def main(argv):
     path, a = config.pop_config(argv); cfg = config.load(path)
     if cfg.object_model == 'linked-image':
         sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
-        import armmerge
-        return armmerge.main(cfg, a)
+        tool = cfg.profile.get('link', {}).get('merge_tool', 'armmerge' if cfg.profile_name == 'armcc5' else None)
+        if not tool:
+            print(f'the {cfg.profile_name} profile has no merge step: a source counts when the gate proves it'); return 2
+        import importlib
+        return importlib.import_module(tool).main(cfg, a)
     if not a: sys.exit(__doc__)
     src = a[0]; seg = cfg.directives(src)[0]
     extra = ['--config', cfg.file]
