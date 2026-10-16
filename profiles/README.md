@@ -18,7 +18,10 @@ Arm Compiler 5 (armcc 5.06, armasm, armlink, fromelf) from Keil MDK, for Cortex-
 MDK-Lite (no licence; a 32 KB link limit, which the whole-image gate works around by linking in
 pieces) under Wine, in Docker or on the host. Learned on a Cortex-M3 firmware of about 500
 functions: every function matched in C, the image rebuilt byte-identical from its pieces, its const
-data, region table and compressed RW data. The tools read Intel HEX update files and ELF objects;
+data, region table and compressed RW data; then a second, built at `-O0` without
+`--split_sections` with the standard C library, drafted from the image by `tools/o0c.py` and
+rebuilt byte for byte, one of its files (over the Lite link limit) proved by object placement
+(`tools/objplace.py`). The tools read Intel HEX update files and ELF objects;
 `compiler.md` and `linker.md` hold what matching taught, `match-brief.md` is the brief for matching
 agents. Beyond the bytes: differential tests, a Cortex-M system emulator and an open-toolchain
 build (docs/firmware-testing.md, skills/firmware-verify).

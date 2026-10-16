@@ -1,0 +1,9 @@
+addr	size	name	kind	file
+08000000	6	put	code	
+08000006	8	add3	code	
+0800000E	14	clear_table	code	
+08000022	2A	pick	code	
+0800004C	2C	tick	code	
+08000078	10	sum_to	code	
+08000088	16	clamp	code	
+0800009E	3A	report	code	

@@ -208,6 +208,25 @@ to 5.36 (5.06u7) with `tools/armbuilds.py`, settled it:
   vendor releases were identical except a few (a UART set-up, a clock query), which matched only
   the older release. Compile every release of a vendor library, not just the latest.
 
+Two more release tells, from an `-O0` firmware (each a few instructions, but every file built by
+the wrong release fails on them):
+
+- An assignment whose value is tested at once (`if ((r = f()) == 0)`, `while (--n)`) keeps the
+  value with `movs r4,r0` under armcc 5.05 (MDK 5.11 to 5.15) and with `subs r4,r0,#0` under 5.06
+  (MDK 5.16 and later). Checked on a two-line probe under 5.05u1, 5.05u2, 5.06, 5.06u2 and 5.06u3.
+  A `subs rd,rn,#0` anywhere in an image rules out 5.05.
+- A switch's range check: MDK 5.11 to 5.20 (up to 5.06u2) reuse the flags of a compare just
+  before it; 5.21 (5.06u3) and later emit a second `cmp`. This is likely the same change as the
+  constant knowledge above (5.06u3 drops what it knew past compares whose flags serve two
+  branches). Two files of one image matched only under 5.21 or later.
+- The C library dates the link, not the compile: the standard library's `exit` is 12 bytes in
+  MDK 5.11 to 5.15 (no push, ending in a `bl` to `__rt_exit`) and 18 bytes from 5.16 (it pushes
+  `{r4,lr}`, pops and branches). The compile and the library can come from different releases;
+  pin each separately.
+- A library member found by bytes inside the application's code (a short function whose bytes,
+  with call targets masked, look like `abort` or `__alloca`) is a coincidence, not evidence of the
+  release: the real members sit together where armlink put the library.
+
 ## What a file's contents decide
 
 Which functions and globals share a source file changes the code, so it is evidence of the
@@ -392,6 +411,147 @@ Some code armcc deletes still takes part in register allocation; some is deleted
   its own. A data-only file built at `-O0` keeps one section per kind, in declaration order.
 - A section holding a pointer is 4-aligned, so it can't share another file's halfword-aligned
   `.data` run.
+
+## armcc -O0, and files built without --split_sections
+
+Learned on a second Cortex-M3 firmware of about 500 functions, built at `-O0` without
+`--split_sections` throughout (vendor driver files and application alike), and matched in C with
+`tools/o0c.py` drafts. Most rules were checked by compiling a probe; the rest are from matched
+functions.
+
+How to tell such a build:
+
+- `-O0` copies every parameter out of r0-r3 into r4 and up in the prologue of a function that
+  calls out (`mov r4,r0; mov r5,r1`), used or not; a leaf copies one only when it needs the
+  register (`mov r3,r0` so that r0 can hold the result: a leaf that moves r0 away returns a
+  value). `-O1` drops the copies. `-O0` also makes no tail calls (`g(); }` stays `bl g`), and
+  shares one epilogue: later returns branch back to the first `bx lr` or `pop` in layout. Scoring
+  every function under -O0 to -O3, with and without -Otime, gave -O0 three times as many exact
+  functions as any other level and no address range where another level won.
+- Without `--split_sections` a file is one `.text`: its functions in source order with one literal
+  pool after the last, except that armcc emits a callee defined later in the file ahead of its
+  caller (a probe with `report` calling `pick` and `put` defined after it gave pick, put, report),
+  so in the image each callee lies before its first caller. A function can load a literal that
+  lies after later functions, so a function can only be proved by compiling its whole file, and
+  armlink cannot drop unused functions (every function of a vendor driver file is in the image).
+
+Where the files are:
+
+- armcc gives a `.text` 4-byte alignment only when it holds a literal pool, else 2. So 1 to 3 zero
+  bytes between two runs of functions are armlink's padding before a file whose `.text` holds a
+  pool, and a function at an address of the form 4n+2 right after another file's code either
+  starts a pool-less file or continues the file before it. In one image six one-function "files"
+  were one file: only the last function loaded a literal, so only the whole file was 4-aligned,
+  which explained a 2-byte gap of zeros before it.
+- armcc places an intermediate literal pool where the end of the file is out of reach of a load:
+  between functions, or inside a long function with a `b` over it. A pool inside a file does not
+  end it. A file boundary can only lie where no load crosses it: no function before it loads a
+  literal or `adr` block after it, none after it loads one before it, and on a 4-byte boundary.
+  `o0c.py files` proposes files by that rule.
+- The loads only say where a file may end. What armcc knows of a callee (below) shows boundaries
+  the loads cannot: a caller that keeps a value in r1-r3 across a call, or pushes an odd number of
+  registers, shares its file with the callee.
+
+What armcc knows of callees at -O0:
+
+- A callee in the same file lets armcc keep values in r1-r3 across the call and drop the
+  stack-alignment padding from the caller's `push`: a caller pushes an odd number of registers only
+  when every callee it calls is in the file. armcc emits such callees before their caller whatever
+  the source order (a probe with the callees defined after the caller gave the same object, the
+  callees first), so in the image they lie earlier. In one image two handlers pushed nine
+  registers without padding, which told that three functions far before them were in the same
+  file.
+- Only a global callee counts. With the callee `static`, the caller is compiled as if the callee
+  were in another file: a loop calling two static helpers saved its counter in r4 and pushed
+  `{r4-r6, lr}`, where with the helpers global it kept the counter in r2 and pushed `{r4, lr}`
+  (probe); a caller of a static leaf pushed `{r4, lr}` where a caller of the same leaf as a global
+  function pushed only `lr`; and a parser that called two static helpers had a 0x1C frame where
+  with the helpers global it had 0x18. Whether a helper was `static` shows in its callers.
+
+Operand order and stores:
+
+- armcc evaluates an operand reached through a cast pointer (`*(u16 *)(base + 4)`,
+  `((S *)p)->f`) before a named variable, whatever the source order. The same holds for call
+  arguments and compares. Declare a global as the scalar or struct it is (`extern u16 g_count;`)
+  and it is loaded in source order; a draft that reaches globals through casts of a byte array
+  gets the order wrong. Reading one byte through a cast and the other by name also decides which
+  register an `and` gets in `(0xffff & (hi << 8)) + lo`.
+- Two symbols for one address make two literal pool entries, and every later load moves. Keep one
+  name per address across a file (the same name in every function, or one declared typed and the
+  others reaching it through its address).
+- Value first, then address: a store to a member array or to a member of a nested struct at a
+  nonzero offset (`s.buf[1] = 4`, `g.sub.b = 0`), or to a struct array element at a constant
+  index (`tbl[5].c = 0`), evaluates the value into r1 and the address into r0; a plain member
+  store does the opposite. A cast macro (`((struct N *)g_x)->sub.b`) keeps the pattern, so it
+  tells the struct layout. A 1-D member array gives a `mov r0,r1` before its second store.
+- Volatile bitfields: `ldrb r0,[x]; movs r0,#7; strb` is a store to a volatile 8-bit bitfield;
+  `movw r1,#k; ldrh; bfi r0,r1,#0,#16; strh` the same for 16 bits.
+- A `short` member store keeps an `sxth` when the member is declared `short` in a struct, not when
+  the store goes through `*(short *)p`.
+- `u16` promotes to `int`: `v >> 8` on an `unsigned short` local is `asrs`, even right after
+  loading a plainly positive constant (`mov r4,#0x5a0; asrs r0,r4,#8`, probe); `(unsigned)v >> 8`
+  gives `lsrs`. An `asrs` on a value loaded with `ldrh` or `uxth` means a `u16` promoted, not a
+  signed type.
+- `256 * p[1] | p[0]` loads `p[1]` first; `p[1] << 8 | p[0]` and the other orders load `p[0]`
+  first. `buf[2 + i]` computes the index before loading the base, `buf[i + 2]` after.
+- A byte array in a struct indexed by a constant, reached through a pointer plus an offset that
+  is not tiny (`(p + 0x40)[7]`), is `movs rX,#off; ldrb rY,[rX,rBase]`; `p[0x47]` folds the
+  offset into the load.
+- In a run of byte-pair stores armcc adds `mov r0,r1` before the second store when it knows the
+  value fits in a byte (a `ldrb`, `& 1`, a `ubfx`, a constant). `+ 0`, `& 0xff`, casts and `<< 0`
+  keep that knowledge; `+ 0x100 - 0x100` folds away in the code but loses it.
+- Constant reuse: `if (x == 8) g = 8;` stores the compared register; `if (state == 1) return 1;`
+  returns it. A constant can be rebuilt from a known register (`0xFFFFFFFF` as `subs r0,r4,#2`
+  with r4 = 1).
+- A `const` table indexed at run time must stay a symbol: written as a constant address, armcc
+  folds part of the address into the load and the size changes.
+- `abs()` is inlined (`cmp; blt; mov; b; rsbs`). Float code needs real `float` types:
+  `v * 10.0f` is `bl __aeabi_fmul; mov r7,r0; bl __aeabi_f2uiz`, the `mov` being armcc's spill of
+  the float temporary.
+- Packed structs and pointer locals: a pointer local into an array of `__packed` structs
+  (`p = &arr[n]`) can give a write-back store (`strb r0,[r4,#-1]!`); `p = arr; p += 1;` gives
+  `ldr; adds r4,#size`, where `&arr[1]` folds the offset into the literal.
+
+What only leaves a `nop`:
+
+- `-O0` emits a `nop` for a branch to the next instruction and for an assignment that stores the
+  value the variable already holds: `x = x`, `x = 0` when x holds 0 (`for (i = 0; ...)` right after
+  `i = 0`), a self-initialised local (`u16 t = t;`, a `nop` in the prologue).
+- The same `nop` comes from `&& 1` in a condition, `(void)0;` as an if body, an empty
+  `else if (x == 3) { }` at the end of a chain, a block-scope declaration with an initialiser at
+  the end of a block, configuration tests that are constant (`if (0 && ...)`), and a label in front
+  of a `goto`.
+- Switch tails: a last case ending in an `if` gives one `nop` for the if's end and one for the
+  switch's end (breaks jump to the second). `default: break;` after the last case adds one more;
+  `case 0: case 5:` gives case 0 its own. A switch with one `case 0` compiles to `cbnz` like an
+  `if` and still leaves the two `nop`s.
+- `__nop()` is not the same: the intrinsic makes armcc forget register contents, so a register
+  reused after the `nop` turns into a fresh literal load.
+
+Control flow at -O0 follows the source's layout: `while`/`for` is `b test; body; test: bcc body`,
+`do ... while` starts with a `nop`, `while (1)` is `b end; body; end: b body`, `if (x) break;` is
+`b!x skip; b exit`, a conditional branch out of range goes to a `b` island placed in reach,
+conditional branches are threaded through branches on the same flags, identical statement tails
+are merged across paths (`ldr r1,=g; strb r0,[r1]` ending two arms), a function that never
+returns has no `push`, and a switch is its dispatch (a bounds check and `tbb`/`tbh` or a word
+table, or a binary tree of compares for sparse cases) followed by the case bodies in order.
+Locals each get a register of their own for the whole function, by use count, ties by
+declaration order; temporaries are allocated over the whole function, so one statement's registers
+can hang on a statement far away (a random permuter over a hand source found such pairs).
+
+Const data:
+
+- Global `const` arrays go to the object's one `.constdata` in definition order, each at its own
+  natural alignment with no other padding; the section's alignment is the largest in it (a `u16`
+  table followed by byte tables gives a 2-aligned section). armlink puts every object's RO data
+  after all the code, in link order, so the const region is the files' `.constdata` one after
+  another in the order of their code.
+- A function using such an array loads its address from the literal pool whether the array is
+  defined in the same file or not: defining the data in the file that uses it changes no code.
+- A string literal used in code goes into the function's literal pool, taken with `adr`, with or
+  without `--split_sections`. A string that only a data initialiser points at
+  (`const char *const p[] = {"a"}`) goes to `.conststring`, each string 4-aligned; a
+  `const char s[]` goes to `.constdata`.
 
 ## Searching for the source
 

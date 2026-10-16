@@ -72,6 +72,28 @@ class PlaceTest(unittest.TestCase):
         self.assertEqual(dict(placements), {'.text': 0x08008164})
         self.assertNotIn('SysTick_Handler', defined)
 
+    def test_weak_symbols_an_at_line_puts_elsewhere_are_overridden(self):
+        # the startup source names the application's real handler on an at: line (its map row
+        # keeps a placeholder name): the strong Reset_Handler places the section, and the weak
+        # default is left to symdefs at the real handler's address
+        info = armtc.ObjectInfo({1: ('.text', 0x1C)}, [armtc.Sym('Reset_Handler', 1, 'Gb', 1, 'Code', 8),
+                                                       armtc.Sym('NMI_Handler', 9, 'Wk', 1, 'Code', 2)],
+                                {1: 4}, {1: 'SHF_ALLOC + SHF_EXECINSTR'}, {1: 'SHT_PROGBITS'})
+        m = armmap.Map([Row(0x08008164, 0x1C, 'Reset_Handler', 'asm', ''), Row(0x08004200, 0x10, 'sub_08004200', 'code', '')], [])
+        extra = {'Reset_Handler': 0x08008164, 'NMI_Handler': 0x08004200}
+        placements, defined, errors, _ = armmatch.place(info, m, extra)
+        self.assertEqual(errors, [])
+        self.assertEqual(dict(placements), {'.text': 0x08008164})
+        self.assertNotIn('NMI_Handler', defined)
+        self.assertIn((0x08004200, 'T', 'NMI_Handler'), m.symdef_entries(set(defined), extra))
+
+    def test_weak_symbols_alone_that_disagree_are_an_error(self):
+        info = armtc.ObjectInfo({1: ('.text', 0x1C)}, [armtc.Sym('Reset_Handler', 1, 'Wk', 1, 'Code', 8),
+                                                       armtc.Sym('NMI_Handler', 9, 'Wk', 1, 'Code', 2)],
+                                {1: 4}, {1: 'SHF_ALLOC + SHF_EXECINSTR'}, {1: 'SHT_PROGBITS'})
+        _, _, errors, _ = armmatch.place(info, armmap.Map([], []), {'Reset_Handler': 0x08008164, 'NMI_Handler': 0x08004200})
+        self.assertTrue(any('disagree' in e for e in errors), errors)
+
     def test_symbol_size_check_accepts_a_label_whose_row_is_the_whole_section(self):
         self.assertTrue(armmatch.size_fits(sym_size=4, sym_offset=0, row_size=0x150, section_len=0x150))
         self.assertFalse(armmatch.size_fits(sym_size=4, sym_offset=4, row_size=0x150, section_len=0x150))

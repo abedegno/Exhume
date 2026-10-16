@@ -51,6 +51,14 @@ evidence is in profiles/armcc5/compiler.md. What differs:
   edits: `armoutline.py` (inline helpers, or one statement at every point), `armbrute.py` over
   that template or a hand-written one, `armpermute.py`, then `armreduce.py` on the hit and
   match.py on the result. compiler.md, "Searching for the source", has what the searches found.
+- An image built at `-O0` without `--split_sections` (one `.text` per file, compiler.md "armcc -O0,
+  and files built without --split_sections") starts from `profiles/armcc5/tools/o0c.py` drafts
+  rather than Ghidra's: `o0c.py gen` drafts every function from the image alone, `o0c.py score`
+  compiles each and scores it, and `o0c.py file NAME --write F.c` joins a file's drafts into one
+  source for match.py. A function proves only in its whole file there: what armcc knows of a
+  same-file callee changes the caller's registers.
+- A file over MDK-Lite's 32 KB link limit cannot be linked by match.py at all (L6050U):
+  `objplace.py match F.c` proves it by placing the object and applying every relocation itself.
 - Every function is C: no `__asm` functions (all of a file's go into one `.emb_text` section),
   no forced instructions, no register variables; inline `__asm` only for one special-register
   instruction (MSR, MRS, CPSID, WFI).
