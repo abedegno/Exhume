@@ -1,6 +1,6 @@
 ---
 name: match-file
-description: Use when decompiling one C source file of an old DOS program into C that recompiles byte for byte to the original - the per-file loop of writing C, compiling in headless DOS, reading instruction diffs and restructuring until every function matches and verify passes. Also the brief to give an agent that matches a file.
+description: Use when decompiling one C source file of an old DOS program (or of an armcc5 or TI C2000 firmware image) into C that recompiles byte for byte to the original - the per-file loop of writing C, compiling in headless DOS, reading instruction diffs and restructuring until every function matches and verify passes. Also the brief to give an agent that matches a file.
 ---
 
 # Match one C file
@@ -62,6 +62,26 @@ evidence is in profiles/armcc5/compiler.md. What differs:
 - Every function is C: no `__asm` functions (all of a file's go into one `.emb_text` section),
   no forced instructions, no register variables; inline `__asm` only for one special-register
   instruction (MSR, MRS, CPSID, WFI).
+
+## ti-c2000 (C2000 images)
+
+The brief to give an agent is profiles/ti-c2000/match-brief.md, and the evidence is in
+profiles/ti-c2000/compiler.md. What differs:
+
+- Functions take their addresses from the map by name; there is no address line. A ramfunc
+  needs `#pragma CODE_SECTION(f, "ramfuncs")` and is linked at its run address, compared at its
+  load address.
+- match.py links the object with the native lnk2000 at the real addresses, every other symbol
+  from the map, and compares finished words: relocations are filled in, not masked, so there is
+  no verify step. It prints EXACT, or the first difference side by side; `--all-cgt` runs every
+  installed compiler.
+- A file's own variables go between `/* ebss-begin */` and `/* ebss-end */`, and
+  `profiles/ti-c2000/tools/c28ebss.py` puts them where the image has them. cl2000's `.ebss` order
+  depends on every declaration and identifier in the file, so rerun it after any such change.
+- Keep the functions in the original file's order: cl2000 uses what it learnt from a callee
+  defined above the caller.
+- A function that stays off after the budget goes to `c28batch.py --climb` over a choice-point
+  spec; check a hit with match.py under the real name.
 
 ## Why verify matters here
 

@@ -84,6 +84,20 @@ firmware matched by three agents at once:
   everyone: switch it in the main tree, run the full gate with every proved file, then tell the
   agents.
 
+## A C2000 image (ti-c2000)
+
+- Hand out units by original file, not by address range alone: cl2000's code depends on the whole
+  file (earlier callees, the file's own variables and their `.ebss` order), so a function can only
+  be finished inside the file it came from. The `.cinit` records show where one file's variables
+  end and the next one's begin.
+- Give each agent profiles/ti-c2000/match-brief.md. Compiles run under Wine; every tool run
+  takes a cloned prefix of its own (`[c2000] jobs` of them), so agents can compile side by side.
+- A rename in the map or a header can move another file's `.ebss`. After merging renames, run
+  `profiles/ti-c2000/tools/c28ebss.py --all` and the gate before handing out more work.
+- Keep a function nothing matches for the compiler scan (`match.py --all-cgt`) and the batch
+  search (c28batch.py); on one firmware the last hard functions were settled by the compiler
+  version and by which object an access names, not by more hand edits.
+
 ## Reviewing a report
 
 - Check its claims: rerun match and verify yourself through merge.py. On firmware, a score of 0 is

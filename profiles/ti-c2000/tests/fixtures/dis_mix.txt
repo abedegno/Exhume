@@ -1,0 +1,28 @@
+
+
+Disassembly of mix.obj:
+
+TEXT Section .text (Little Endian), 0x14 words at 0x00000000 
+00000000        _mix:
+00000000   e2af   MOV32        R1H, *+XAR4[0], UNCF
+00000001   01c4
+00000002   e700   MPYF32       R1H, R0H, R1H
+00000003   0041
+00000004   e2af   MOV32        R2H, *+XAR5[0], UNCF
+00000005   02c5
+00000006   e004   MPYF32       R0H, R0H, R2H
+                ||MOV32        *+XAR4[2], R1H
+00000007   01d4
+00000008   e2af   MOV32        R2H, *+XAR5[4], UNCF
+00000009   02e5
+0000000a   e203   MOV32        *+XAR5[2], R0H
+0000000b   00d5
+0000000c   e302   MPYF32       R1H, R0H, R1H
+                ||MOV32        R0H, *+XAR4[4]
+0000000d   08e4
+0000000e   e700   MPYF32       R0H, R2H, R0H
+0000000f   0010
+00000010   7700   NOP          
+00000011   e710   ADDF32       R0H, R0H, R1H
+00000012   0040
+00000013   0006   LRETR        

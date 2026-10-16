@@ -1,0 +1,4 @@
+# section, raw data offset in the object, its words (little-endian 16-bit) in hex
+.cinit	1750	ffff 0000 0000 0005
+.econst:_steps	1758	0001 0002 0004
+.text:_bump	1764	9001 58a9 8f00 0000 761f 0000 9294 7200 9300 9200 9701 5264 6903 7640 0000 0006

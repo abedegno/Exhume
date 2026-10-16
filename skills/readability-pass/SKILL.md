@@ -1,6 +1,6 @@
 ---
 name: readability-pass
-description: Use when a byte-matched, exactly linked DOS decompilation (or an armcc5 Cortex-M firmware tree) is to be made readable without changing a byte - a build gate, shared headers, named constants, struct fields and accessors, original file names and subsystem directories, comments and findings - each step proved by the gate; and when running agents to do it.
+description: Use when a byte-matched, exactly linked DOS decompilation (or an armcc5 Cortex-M or TI C2000 firmware tree) is to be made readable without changing a byte - a build gate, shared headers, named constants, struct fields and accessors, original file names and subsystem directories, comments and findings - each step proved by the gate; and when running agents to do it.
 ---
 
 # Readability pass
@@ -175,6 +175,26 @@ array operand, a mask applied in two steps. A reader will want to tidy each of t
 - Commenting: one agent per subsystem, writing comments.py specs only.
 - Regrouping and struct merges: the orchestrator, one global or one destination file at a time,
   the gate after each.
+
+## On a ti-c2000 image (TI C2000 firmware)
+
+The gate is `tools/gate.py check` (one link, IDENTICAL), after every step. What differs from the
+other profiles:
+
+- **Renames move `.ebss`.** cl2000 lays out a file's variables in an order that depends on every
+  identifier the file declares, so renaming a function, a variable or a header's declaration can
+  move another file's variables with no change to any code. After every batch of renames or
+  header changes, run `profiles/ti-c2000/tools/c28ebss.py --all`, then the gate. On one firmware
+  each such move took one solver round, and no name had to stay because of the image.
+- **Files are renamed, never split or joined.** cl2000's code depends on the whole file: what it
+  learnt from earlier callees, the file's own variables and their data pages, the `.ebss` order
+  and its `.cinit` records. So a file keeps its contents; give it a name from what it holds and
+  a subsystem directory, and keep stems unique (objects are named by them, and so is
+  `[c2000.gate] cinit_order`, which must follow the renames). TI's own support files keep TI's
+  names.
+- A faster check between gates: compile every source and compare each object's words,
+  relocations and symbols with a saved copy. When every object is the same, the image is.
+  When only `.ebss` offsets and `.cinit` records moved, the solver puts them back.
 
 ## Orchestration
 

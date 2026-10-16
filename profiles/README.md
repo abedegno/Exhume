@@ -30,6 +30,26 @@ Next for this family: other armcc 5 updates (each update changes code generation
 build first), Arm Compiler 6 (armclang, LLVM-based: a different profile), and GCC for Arm
 (arm-none-eabi-gcc; the profile's open-toolchain build uses clang with GNU ld for testing).
 
+## ti-c2000
+
+TI's C2000 code generation tools (cl2000, lnk2000, hex2000, with ofd2000, dis2000 and ar2000) for
+the C28x with the FPU, COFF ABI. The compiler is TI's Windows build under Wine (every version
+from TI's public download server), and the object tools come from a native macOS or Linux build
+(18.12 and later). Learned on a TMS320F2806x firmware: every word of the image rebuilt from
+source, with no blobs, every function in C except a few that were assembly in the original. The
+tools (`profiles/ti-c2000/tools/`) read the project's config: the toolchain runner, Wine job
+prefixes and object reader (`c28tc.py`), the map (`c28map.py`), disassembly through a patched
+placeholder object (`c28disasm.py`), per-function matching by linking each source at its real
+addresses (`c28match.py`), the whole-image gate (`c28gate.py`), the `.ebss` order solver
+(`c28ebss.py`), the runtime-library fingerprint (`c28libfp.py`) and a batch search for one
+function's variants (`c28batch.py`). `compiler.md` and `linker.md` hold what matching taught,
+`match-brief.md` is the brief for matching agents. Its tests run without the toolchain; the
+integration tests build a synthetic firmware with TI's compiler when one is named in the
+environment (`profiles/ti-c2000/tests/synth.py`).
+
+Next for this family: EABI (from 18.12; other section names and an ELF object reader), the CLA
+compiler, and the C2000 parts without the FPU (`rts2800_ml.lib`).
+
 ## Profiles that would come naturally next (not written)
 
 - **Borland C++ 2.0 / 3.x and Turbo C 2.0.** The nearest neighbours: same object format, same linker family and overlay manager in 3.x, much of compiler.md likely to carry over but every rule to be re-proven (the `_BSS` hash and public order in particular).

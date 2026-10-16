@@ -1,6 +1,6 @@
 ---
 name: fingerprint-toolchain
-description: Use at the start of a byte-matching decompilation of a DOS executable (or, with the armcc5 profile, an Arm Cortex-M firmware image), before any matching, to identify the exact compiler, assembler, linker, memory model and switches that built it, and to prove the identification by compiling a function to the same bytes.
+description: Use at the start of a byte-matching decompilation of a DOS executable (or, with the armcc5 profile, an Arm Cortex-M firmware image; with the ti-c2000 profile, a TI C2000 DSP image), before any matching, to identify the exact compiler, assembler, linker, memory model and switches that built it, and to prove the identification by compiling a function to the same bytes.
 ---
 
 # Fingerprint the toolchain
@@ -38,6 +38,26 @@ The same proof, other tells; profiles/armcc5/compiler.md has the evidence.
   can match one release of its source and not the next (compile every release).
 - `armcc --vsn`, and the `.comment` section of any object, name the build ("ARM Compiler 5.06
   update 2 (build 183)"); several MDK releases ship the same build.
+
+## TI C2000 (the ti-c2000 profile)
+
+The same proof; profiles/ti-c2000/compiler.md, "Fingerprinting the version", has the evidence.
+
+- The runtime library first: `profiles/ti-c2000/tools/c28libfp.py --libs 'GLOB/lib/rts2800_fpu32.lib'`
+  places each release's members in the image with relocated words masked and prints how many
+  each places. The library can be older than the compiler, so it bounds the build, not the
+  compiler.
+- Then the compiler: install every release you can get from TI's public server into one Wine
+  prefix, and run `match.py SRC --all-cgt` on matched files. Defect fixes and changed code shapes
+  pin versions (an interrupt epilogue's `SETC INTM|DBGM` before `POP RB` from 15.12.2; a struct
+  member past 255 words through `MOVL XAR0,#k` from 15.12.7 and 16.9.5; the -Ooff frame layout
+  from 16.9.0). Neighbouring releases break different functions; the right one breaks none.
+- A file that "needs" another compiler is evidence about the whole tree: try the whole tree under
+  that compiler before giving one file a `/* cgt: */` line. On one firmware every file matched
+  under the release a few files seemed to need, once functions bent to fit the first guess were
+  written plainly again.
+- `-O1`, not -O2: one function matched only at -O1. `--gen_func_subsections=on` changes no code
+  and the tools always add it.
 
 ## Record
 

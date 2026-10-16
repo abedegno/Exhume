@@ -1,6 +1,6 @@
 ---
 name: link-and-diff
-description: Use when the matched objects of a DOS decompilation are to be linked into a whole executable with the original linker in headless DOS and compared with the original, region by region; and to prove the result runs and that a source change reaches the screen. Also for an armcc5 Cortex-M firmware, whose whole image is rebuilt in pieces under MDK-Lite's 32 KB limit and compared byte for byte.
+description: Use when the matched objects of a DOS decompilation are to be linked into a whole executable with the original linker in headless DOS and compared with the original, region by region; and to prove the result runs and that a source change reaches the screen. Also for an armcc5 Cortex-M firmware, whose whole image is rebuilt in pieces under MDK-Lite's 32 KB limit and compared byte for byte, and for a TI C2000 image, linked whole in one lnk2000 run and compared word for word.
 ---
 
 # Link and diff
@@ -90,3 +90,32 @@ Reading what fails:
 - The whole gate takes minutes under Wine: give it workers (`[gate] jobs`, default one per core).
   Each has its own Wine prefix and a persistent wineserver; a firmware of about 500 functions
   went from half an hour to under a minute.
+
+## A C2000 image (ti-c2000): one link
+
+lnk2000 has no size limit, so `python3 tools/gate.py check` (profiles/ti-c2000/tools/c28gate.py)
+proves every source, links the whole image in one run and compares it word for word.
+profiles/ti-c2000/linker.md has the reasons for each step.
+
+1. Every source is matched as match.py does; then c28libfp.py places the runtime library's
+   members. Each proved section is linked at its address (a ramfunc with load and run
+   addresses), each member pulled with `-u` and placed as `lib<member>(section)`, and every word
+   nothing supplies yet as a blob of the original's words.
+2. `.cinit` is linked, not copied: fill in `[c2000.gate] cinit` and `cinit_order`, the files with
+   initialised data in the original link's order (docs/config.md). The gate checks that the
+   linked records are the image's, in order; the linker writes the table's last words itself.
+3. hex2000 writes the image (ROMS addresses count bytes: twice the word address), which must be
+   IDENTICAL. The table that follows says how many words came from proved sources, library
+   members, the linker, fill and blobs. `--strict` fails while any blob is left.
+4. `--fail-test` changes one word of a proved function in the linked output and checks that the
+   compare reports exactly that word; run it once when setting the gate up.
+
+Reading what fails:
+
+- A source that does not match is linked as compiled, so the compare points at its words too.
+- Records out of order: a file is missing from `cinit_order` or in the wrong place, or a file's
+  `.ebss` order changed (run c28ebss.py).
+- A library member's words come out as blobs: c28libfp.py did not place it. The image may hold
+  another release's library (`c28libfp.py --libs GLOB`), or a source may define the member's
+  entry point itself.
+
