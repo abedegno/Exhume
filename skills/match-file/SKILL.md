@@ -22,6 +22,34 @@ You are rebuilding one original source file (one code segment) as C that the ori
 4. When the instructions agree but registers or reloads differ, restructure (statement order, nesting against early return or continue, declaration order for SI/DI, `x += y` against `x = x + y`, block-scoped locals). The compiler.md lists which source shapes give which bytes.
 5. Stop at `WHOLE SEGMENT MATCHES`. Then `python3 tools/verify.py src/FILE.C` (without `--update`) must end `-- fixups and data verified`.
 
+## When the search stalls
+
+A function or unit that stays a few instructions off after many variants is usually telling you
+the context is wrong, not that the right statement order is still out there. On two firmwares
+and a DSP image the long tails were broken by context; local sweeps of thousands of variants of
+one function recovered nothing once the instructions agreed but registers or schedule did not.
+Stop varying the function and audit, in this order:
+
+1. **File boundaries.** Is the unit one original source file, with the right first and last
+   function? The compiler's knowledge of callees in the same file (registers kept live across
+   the call, frame and push size, inlining) changes callers; a missing or extra function changes
+   neighbours you think are unrelated.
+2. **What the file owns.** Which globals it defines and which are extern; a value defined in the
+   file, read through an extern, or reached as a member of a struct compiles differently (load
+   reuse, literal pool, base register). The same memory can need two names in one file.
+3. **Types and grouping.** Sizes and signedness of every object the unit touches; a group of
+   variables as one struct or as separate scalars; arrays against pointer arithmetic.
+4. **Linkage and declarations.** Static against global functions and data, prototypes (missing,
+   old-style, or with other parameter types), `volatile`, inline helpers and macros the original
+   had.
+5. **The compiler and options for this file.** Another build of the same compiler, or another
+   option set, before assuming the source is wrong; one file in an image can have been built
+   differently (profiles' compiler.md say how to scan for it).
+
+Then search again, with small hypothesis-driven variant sets. Record each audit's finding in the
+unit's notes even when it changes nothing: the next agent must not repeat it. An exact function
+inside an unfinished unit is diagnostic only; never credit it.
+
 ## Rules
 
 - No guessing: every constant, offset and name comes from the original's bytes or the sibling build. MATCH plus verify is the proof.
