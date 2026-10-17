@@ -23,6 +23,34 @@ Paths are relative to the Exhume checkout. You (the orchestrator) prepare target
 - Codex drafts hide wrong extern names behind masked fixups. The finisher must run verify and use symbols.tsv names; ovr103's draft had about 20 wrong names.
 - Tell Codex explicitly to keep going until WHOLE SEGMENT MATCHES or the budget runs out, and to end with the brief's report including the build count.
 
+- On a firmware toolchain run under Wine, Codex's default sandbox blocks the local sockets that
+  wineserver and Python's multiprocessing need (`bind: Operation not permitted`), so it can edit
+  but never compile or gate. Either start it from the project root with full access
+  (`codex -s danger-full-access`), or have it edit in small batches logged to a file
+  (`build/codex-log.md`: file, kind of change, count) and gate and bisect the batches yourself.
+  Its writable root is the directory it starts in: a project outside that directory is read-only
+  to it.
+- Codex is good at bulk, low-risk edits that a gate then judges: formatting, renaming locals,
+  one mechanical rewrite applied everywhere. Left alone on a hard matching unit it tends to grind
+  local variant sweeps far past the point of return (see match-file, "When the search stalls").
+
+## Handing a run to another agent
+
+When a run stops before its milestone (a usage limit, a change of agent, the owner's request),
+write a handover the next agent can trust, in two parts: a portable one in the repository
+(the state, what is proved, what is left) and a machine-local, gitignored one (`*.local.md`:
+paths, preserved worktrees, scratch, toolchain locations; never the licence or keys). It names:
+
+- the frozen baseline: commit, the gate command and its last lines, the blob count, so the next
+  agent verifies before it trusts anything;
+- every preserved worktree and scratch directory, with the hash of each best draft, and the rule
+  that the next agent reads them and never modifies them;
+- per unfinished unit: the best draft, its exact remaining difference, and the controls (what
+  was tried and ruled out, and how many variants), so nothing exhausted is repeated;
+- corrections: earlier evidence that turned out wrong (an invalid control, a mistranslated
+  constant), so the next agent does not build on it;
+- what is not authorised (push, PR, flashing) and the owner's standing permissions.
+
 ## Session limits and checkpoints
 
 - A usage limit stops every running agent at once, wherever it is. Plan for it: give each agent a unit of work that can be committed on its own, and commit a checkpoint before starting the next large step (UW2Decomp committed its port's Milestone 5 as a checkpoint, c58e5b7, ninety minutes before it was done, 50459d1). After a limit, resume the agents that stopped (SendMessage keeps their context) rather than restarting them, and check what each left on disk first: a half-applied edit is worse than none.
