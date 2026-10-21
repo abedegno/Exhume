@@ -10,7 +10,7 @@ repository): raw() rebuilds the bytes objplace reads from it, the allocatable se
 of the object with .text FIXED at 0x08000100, .constdata at 0x08000200 and g_total defined at
 0x20000010 by a symdefs file. No toolchain is needed: these tests check the placement against
 armlink's own bytes."""
-import os, sys, tempfile, types, unittest
+import os, struct, sys, tempfile, types, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'tools'))
 import armtc, armmap, ehex, objplace
@@ -168,6 +168,141 @@ class PlaceObjectTest(unittest.TestCase):
         self.assertFalse(r.whole)
         self.assertIn('ERROR .text+0x2C R_ARM_ABS32 g_total: unresolved symbol g_total', r.lines)
         self.assertEqual(r.lines[-1], '-- not placed')
+
+
+class RepeatedSectionTest(unittest.TestCase):
+    """One object can hold several sections of one name; placements are kept by section index."""
+
+    def setUp(self):
+        # armcc's two .data sections of one file: scalars, then a table of pointers
+        self.info = armtc.ObjectInfo(
+            {1: ('.text', 8), 5: ('.data', 48), 6: ('.data', 72), 3: ('.bss', 16)},
+            [armtc.Sym('f', 1, 'Gb', 1, 'Code', 8), armtc.Sym('state', 0, 'Gb', 5, 'Data', 1),
+             armtc.Sym('table', 0, 'Gb', 6, 'Data', 72), armtc.Sym('buf', 0, 'Gb', 3, 'Data', 16)],
+            {1: 4, 5: 4, 6: 4, 3: 4},
+            {1: 'SHF_ALLOC + SHF_EXECINSTR', 5: 'SHF_ALLOC + SHF_WRITE', 6: 'SHF_ALLOC + SHF_WRITE',
+             3: 'SHF_ALLOC + SHF_WRITE'},
+            {1: 'SHT_PROGBITS', 5: 'SHT_PROGBITS', 6: 'SHT_PROGBITS', 3: 'SHT_NOBITS'})
+        self.placements = [('.text', 0x08001000), ('.data', 0x20000100), ('.data', 0x20000130), ('.bss', 0x20000400)]
+
+    def test_each_placement_takes_its_own_section(self):
+        self.assertEqual(objplace.section_indexes(self.info, self.placements),
+                         ([(1, 0x08001000), (5, 0x20000100), (6, 0x20000130), (3, 0x20000400)], []))
+
+    def test_sizes_follow_the_section_not_the_name(self):
+        self.assertEqual(objplace.sized_placements(self.info, self.placements),
+                         [('.text', 0x08001000, 8), ('.data', 0x20000100, 48), ('.data', 0x20000130, 72),
+                          ('.bss', 0x20000400, 16)])
+
+    def test_labels_name_repeated_sections_by_index(self):
+        self.assertEqual([objplace.section_label(self.info, i) for i in (1, 5, 6)], ['.text', '.data#5', '.data#6'])
+        o = objplace.Obj('x.o', {i: objplace.Sec(n, 'SHT_PROGBITS', '', 0, z, 4) for i, (n, z) in self.info.sections.items()}, {})
+        self.assertEqual([objplace.label_index(o, l) for l in ('.text', '.data#5', '.data#6')], [1, 5, 6])
+
+    def test_a_repeated_name_left_partly_unplaced_is_an_error(self):
+        _, errors = objplace.section_indexes(self.info, self.placements[:2] + self.placements[3:])
+        self.assertEqual(errors, ['section .data: 2 sections of that name, 1 placed'])
+
+    def test_a_single_section_placed_twice_is_an_error(self):
+        _, errors = objplace.section_indexes(self.info, self.placements + [('.text', 0x08002000)])
+        self.assertEqual(errors, ['section .text: placed 2 times', 'section .text: placed 2 times'])
+
+    def test_unique_names_are_unchanged(self):
+        info = armtc.ObjectInfo({1: ('.text', 8), 2: ('.data', 4)}, [], {}, {}, {})
+        self.assertEqual(objplace.section_indexes(info, [('.data', 0x20000000), ('.text', 0x08000000)]),
+                         ([(2, 0x20000000), (1, 0x08000000)], []))
+
+
+# fixtures/objplace/repeat.c, compiled as unit.c is but at -O1 (`armcc -c --cpu Cortex-M3 -O1
+# repeat.c -o repeat.o`): .text (#1) with two R_ARM_THM_JUMP11 tail calls to bump and an
+# R_ARM_ABS32 to the first .data; two .data sections, #4 (state, count) and #5 (ops, a table of
+# pointers to bump and step). R_TEXT, R_DATA4, R_DATA5 are their bytes before relocation (file
+# offsets 60, 224, 232). R_ARMLINK_TEXT and R_ARMLINK_DATA are what armlink made of the object with
+# .text FIXED at 0x08000100 and both .data (one scatter selector) from 0x20000000.
+R_TEXT = bytes.fromhex('08480168491c01607047002800d0fee704484168491c41607047002800d0fee77047000000000000')
+R_DATA4 = bytes.fromhex('0100000002000000')
+R_DATA5 = bytes.fromhex('000000000000000003000000')
+R_ARMLINK_TEXT = bytes.fromhex('08480168491c01607047002800d0f7e704484168491c41607047002800d0efe77047000000000020')
+R_ARMLINK_DATA = bytes.fromhex('0100000002000000010100080b01000803000000')
+R_PLACEMENTS = [('.text', TEXT), ('.data', 0x20000000), ('.data', 0x20000008)]
+
+
+def repeat_obj():
+    b = bytearray(1672)
+    b[:4] = b'\xf7ORC'
+    for off, data in ((60, R_TEXT), (224, R_DATA4), (232, R_DATA5)): b[off:off + len(data)] = data
+    return objplace.fill(objplace.parse(read('repeat_fromelf.txt'), 'repeat.o'), bytes(b))
+
+
+class RepeatedSectionLinkTest(unittest.TestCase):
+    """The repeat fixture: two .data sections and narrow branches, against armlink's bytes."""
+
+    def setUp(self):
+        self.o = repeat_obj()
+        self.info = armtc.parse_symbols(read('repeat_syms.txt'))
+
+    def test_the_fixture_reads(self):
+        self.assertEqual([(i, s.name, s.size) for i, s in sorted(self.o.sections.items()) if 'SHF_ALLOC' in s.flags],
+                         [(1, '.text', 40), (4, '.data', 8), (5, '.data', 12)])
+        self.assertEqual([(r.offset, r.tname, r.sname) for r in self.o.relocs[1]],
+                         [(0xE, 'R_ARM_THM_JUMP11', 'bump'), (0x1E, 'R_ARM_THM_JUMP11', 'bump'), (0x24, 'R_ARM_ABS32', '.data')])
+
+    def test_same_bytes_as_armlink(self):
+        bases, errors = objplace.bases_for(self.o, self.info, R_PLACEMENTS, [])
+        self.assertEqual(errors, [])
+        self.assertEqual(bases, {1: TEXT, 4: 0x20000000, 5: 0x20000008})
+        out, errors, count = objplace.link(self.o, bases, {})
+        self.assertEqual(errors, [])
+        self.assertEqual(count, 5)
+        self.assertEqual(out[1], R_ARMLINK_TEXT)
+        self.assertEqual(out[4] + out[5], R_ARMLINK_DATA)
+
+    def test_place_object_labels_each_section(self):
+        root = tempfile.mkdtemp(); self.addCleanup(lambda: __import__('shutil').rmtree(root, ignore_errors=True))
+        img = bytearray(b'\xff' * 0x100) + bytearray(R_ARMLINK_TEXT)
+        with open(os.path.join(root, 'fw.hex'), 'w') as f: f.write(ehex.write(0x08000000, bytes(img)))
+        m = armmap.Map([Row(TEXT, 0xA, 'bump', 'code', ''), Row(TEXT + 0xA, 0x10, 'step', 'code', ''),
+                        Row(TEXT + 0x1A, 0xE, 'maybe', 'code', '')],
+                       [Row(0x20000000, 4, 'state', 'rw', ''), Row(0x20000004, 4, 'count', 'rw', ''),
+                        Row(0x20000008, 12, 'ops', 'rw', '')])
+        src = os.path.join(root, 'repeat.c')
+        with open(src, 'w') as f: f.write(read('repeat.c'))
+        cfg = types.SimpleNamespace(image=os.path.join(root, 'fw.hex'), root=root)
+        r = objplace.place_object(cfg, None, src, 'repeat.o', self.info, m, o=self.o)
+        self.assertNotIn('-- not placed', r.lines)
+        self.assertEqual(sorted(r.placed), ['.data#4', '.data#5', '.text'])
+        self.assertEqual(r.placed['.text'], (TEXT, R_ARMLINK_TEXT))
+        self.assertEqual(r.placed['.data#4'], (0x20000000, R_ARMLINK_DATA[:8]))
+        self.assertEqual(r.placed['.data#5'], (0x20000008, R_ARMLINK_DATA[8:]))
+        self.assertIn(f'{"bump":28} 0x{TEXT:08X}  MATCH', r.lines)
+        self.assertIn('.data#5                      0x20000008  placed (RAM, not compared: the image has no region table)', r.lines)
+
+
+class NarrowBranchTest(unittest.TestCase):
+    """R_ARM_THM_JUMP11 (B) and R_ARM_THM_JUMP8 (B<cond>): a 2-byte field, the addend in halfwords."""
+
+    def put(self, tname, h, S, P, T=1):
+        b = bytearray(struct.pack('<H', h))
+        e = objplace.apply(objplace.Rel(0, 0, tname, 0, 's'), b, S, T, P)
+        return e or struct.unpack('<H', b)[0]
+
+    def test_jump11(self):
+        self.assertEqual(self.put('R_ARM_THM_JUMP11', 0xE7FE, 0x08000100, 0x0800010E), 0xE7F7)   # the fixture's first
+        self.assertEqual(self.put('R_ARM_THM_JUMP11', 0xE7FE, 0x08000200, 0x08000100), 0xE07E)
+        self.assertRegex(self.put('R_ARM_THM_JUMP11', 0xE7FE, 0x08000A00, 0x08000100), 'out of range')
+        self.assertRegex(self.put('R_ARM_THM_JUMP11', 0xD0FE, 0x08000100, 0x08000100), 'not a narrow unconditional branch')
+        self.assertRegex(self.put('R_ARM_THM_JUMP11', 0xE7FE, 0x20000000, 0x08000100, T=0), 'not Thumb code')
+
+    def test_jump8(self):
+        self.assertEqual(self.put('R_ARM_THM_JUMP8', 0xD1FE, 0x08000120, 0x08000100), 0xD10E)     # bne +0x20
+        self.assertEqual(self.put('R_ARM_THM_JUMP8', 0xD0FE, 0x08000080, 0x08000100), 0xD0BE)     # beq -0x80
+        self.assertRegex(self.put('R_ARM_THM_JUMP8', 0xD0FE, 0x08000300, 0x08000100), 'out of range')
+        self.assertRegex(self.put('R_ARM_THM_JUMP8', 0xE7FE, 0x08000120, 0x08000100), 'not a narrow conditional branch')
+        self.assertRegex(self.put('R_ARM_THM_JUMP8', 0xDEFE, 0x08000120, 0x08000100), 'not a narrow conditional branch')
+
+    def test_width(self):
+        self.assertEqual([objplace.relocation_width(objplace.Rel(0, 0, t, 0, '')) for t in
+                          ('R_ARM_THM_JUMP11', 'R_ARM_THM_JUMP8', 'R_ARM_THM_CALL', 'R_ARM_ABS32')], [2, 2, 4, 4])
 
 
 HOME = os.environ.get('EXHUME_ARMCC_HOME')

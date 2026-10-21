@@ -1,0 +1,121 @@
+
+========================================================================
+
+** ELF Header Information
+
+    File Name: repeat.o
+
+    Machine class: ELFCLASS32 (32-bit)
+    Data encoding: ELFDATA2LSB (Little endian)
+    Header version: EV_CURRENT (Current version)
+    Operating System ABI: none
+    ABI Version: 0
+    File Type: ET_REL (Relocatable object) (1)
+    Machine: EM_ARM (ARM)
+
+    Entry offset (in SHF_ENTRYSECT section): 0x00000000
+    Flags: None (0x05000000)
+
+    ARM ELF revision: 5 (ABI version 2)
+
+    Built with
+    Component: ARM Compiler 5.06 update 7 (build 960) Tool: armcc [4d365d]
+
+    Header size: 52 bytes (0x34)
+    Program header entry size: 0 bytes (0x0)
+    Section header entry size: 40 bytes (0x28)
+
+    Program header entries: 0
+    Section header entries: 14
+
+    Program header offset: 0 (0x00000000)
+    Section header offset: 1112 (0x00000458)
+
+    Section header string table index: 11
+
+========================================================================
+
+** Section #1 '.text' (SHT_PROGBITS) [SHF_ALLOC + SHF_EXECINSTR]
+    Size   : 40 bytes (alignment 4)
+    Address: 0x00000000
+
+
+** Section #8 '.rel.text' (SHT_REL)
+    Size   : 24 bytes (alignment 4)
+    Symbol table #7 '.symtab'
+    3 relocations applied to section #1 '.text'
+
+
+** Section #2 '.arm_vfe_header' (SHT_PROGBITS)
+    Size   : 4 bytes (alignment 4)
+
+
+** Section #3 '.comment' (SHT_PROGBITS)
+    Size   : 120 bytes
+
+
+** Section #4 '.data' (SHT_PROGBITS) [SHF_ALLOC + SHF_WRITE]
+    Size   : 8 bytes (alignment 4)
+    Address: 0x00000000
+
+
+** Section #5 '.data' (SHT_PROGBITS) [SHF_ALLOC + SHF_WRITE]
+    Size   : 12 bytes (alignment 4)
+    Address: 0x00000000
+
+
+** Section #9 '.rel.data' (SHT_REL)
+    Size   : 16 bytes (alignment 4)
+    Symbol table #7 '.symtab'
+    2 relocations applied to section #5 '.data'
+
+
+** Section #6 '.debug_frame' (SHT_PROGBITS)
+    Size   : 100 bytes
+
+
+** Section #10 '.rel.debug_frame' (SHT_REL)
+    Size   : 48 bytes (alignment 4)
+    Symbol table #7 '.symtab'
+    6 relocations applied to section #6 '.debug_frame'
+
+
+** Section #7 '.symtab' (SHT_SYMTAB)
+    Size   : 256 bytes (alignment 4)
+    String table #12 '.strtab'
+    Last local symbol no. 9
+
+    Symbol table .symtab (15 symbols, 9 local)
+
+      #  Symbol Name                Value      Bind  Sec  Type  Vis  Size
+    ========================================================================
+
+      1  repeat.c                   0x00000000   Lc  Abs  File  De 
+      2  $t                         0x00000000   Lc    1   --   De 
+      3  $d                         0x00000022   Lc    1   --   De 
+      4  .data                      0x00000000   Lc    4  Sect  De   0x8
+      5  .data                      0x00000000   Lc    5  Sect  De   0xc
+      6  .text                      0x00000000   Lc    1  Sect  De 
+      7  BuildAttributes$$THM_ISAv4$P$D$K$B$S$PE$A:L22UL41UL21$X:L11$S22US41US21$IEEE1$IW$USESV6$~STKCKD$USESV7$~SHL$OSPACE$EBA8$REQ8$PRES8$EABIv2
+                                    0x00000000   Lc  Abs   --   De 
+      8  count                      0x00000004   Lc    4  Data  De   0x4
+      9  __ARM_grp_.debug_frame$5   0x00000000   Lc    6  Data  De 
+     10  ops                        0x00000000   Gb    5  Data  Hi   0xc
+     11  state                      0x00000000   Gb    4  Data  Hi   0x4
+     12  bump                       0x00000001   Gb    1  Code  Hi   0xa
+     13  step                       0x0000000b   Gb    1  Code  Hi   0x10
+     14  maybe                      0x0000001b   Gb    1  Code  Hi   0x8
+     15  Lib$$Request$$armlib       0x00000000   Wk  Ref  Code  Hi 
+
+
+** Section #11 '.shstrtab' (SHT_STRTAB)
+    Size   : 105 bytes
+
+
+** Section #12 '.strtab' (SHT_STRTAB)
+    Size   : 244 bytes
+
+
+** Section #13 '.ARM.attributes' (SHT_ARM_ATTRIBUTES)
+    Size   : 72 bytes
+

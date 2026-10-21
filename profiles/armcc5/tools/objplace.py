@@ -7,7 +7,10 @@
 MDK-Lite's armlink refuses a link of more than 32 KB of RO and RW data (L6050U; zero-init does
 not count), so armmatch cannot link a large source file at its address even when every byte is
 right. A file built without --split_sections is one `.text` holding all its functions, and such a
-file can pass 32 KB. This does armlink's job for that one object instead:
+file can pass 32 KB. Nor can it link an object holding two sections of one name that belong at
+different addresses (armcc can give a file two .data sections): its scatter file selects a
+section by name, and armlink refuses the two selectors as ambiguous (L6223E). This does
+armlink's job for that one object instead:
 
 - the object is compiled with the source's own options (as armmatch does) and fromelf lists its
   sections (with their file offsets), its symbols and its relocations (`fromelf --text -v -r -s`).
@@ -17,8 +20,13 @@ file can pass 32 KB. This does armlink's job for that one object instead:
   number of relocations read must equal the relocation section's size divided by 8;
 - each section goes at the address armmatch.place gives it (the map, at: lines), exactly as the
   armlink route places it;
+- one object can hold several sections of one name (armcc can split a file's initialised data
+  into two .data sections, one of them a table of pointers). Placements are kept by section
+  index, so each gets its own address and size; a repeated name is shown as name#index;
 - every relocation is applied: R_ARM_ABS32, R_ARM_REL32, R_ARM_THM_CALL, R_ARM_THM_JUMP24,
-  R_ARM_THM_JUMP19, R_ARM_THM_MOVW_ABS_NC, R_ARM_THM_MOVT_ABS, R_ARM_NONE. The addend is the
+  R_ARM_THM_JUMP19, R_ARM_THM_JUMP11 and R_ARM_THM_JUMP8 (the narrow B and B<cond>, which armcc
+  emits for a branch to another section), R_ARM_THM_MOVW_ABS_NC, R_ARM_THM_MOVT_ABS,
+  R_ARM_NONE. The addend is the
   one in place (REL). A symbol defined in the object resolves to its section's address plus its
   value (bit 0 marks Thumb code); a weak definition gives way to a symdefs one, as armlink lets a
   strong definition override a weak one; any other symbol comes from the symdefs the armlink
@@ -33,7 +41,8 @@ file can pass 32 KB. This does armlink's job for that one object instead:
   match  the placement alone: what armmatch would report, for a file armlink cannot link
   check  for each source, armmatch (armlink) and the placement on the same object, compared
          section by section: they must give the same bytes. Run it over every source that
-         armlink can link before trusting the placement with one it cannot.
+         armlink can link before trusting the placement with one it cannot (a file with a
+         repeated section name is one it cannot: check reports armlink's side as empty).
   show   each function of the unit set against the image at its map address, with every
          relocated field recomputed for that address, so a function the build moved is still
          compared exactly; a function whose size differs gets an instruction diff.
@@ -223,6 +232,20 @@ def _state_at(states, off):
 def apply(r, b, S, T, P):
     """Write relocation r's field in bytearray b (the addend is the field's own value): None, or
     what is wrong."""
+    if r.tname in ('R_ARM_THM_JUMP11', 'R_ARM_THM_JUMP8'):
+        # a 16-bit B (imm11) or B<cond> (imm8); the addend is the field, in halfwords
+        if not T: return 'the target is not Thumb code'
+        h = struct.unpack_from('<H', b, r.offset)[0]
+        bits = 11 if r.tname == 'R_ARM_THM_JUMP11' else 8
+        if bits == 11 and h & 0xF800 != 0xE000: return f'not a narrow unconditional branch ({h:04X})'
+        if bits == 8 and (h & 0xF000 != 0xD000 or h & 0xF00 >= 0xE00): return f'not a narrow conditional branch ({h:04X})'
+        mask = (1 << bits) - 1
+        addend = h & mask
+        if addend & (1 << (bits - 1)): addend -= 1 << bits
+        off = S + 2 * addend - P
+        if off & 1 or not -(1 << bits) <= off < (1 << bits): return f'out of range ({off:+#x})'
+        struct.pack_into('<H', b, r.offset, (h & ~mask) | ((off >> 1) & mask))
+        return None
     w = struct.unpack_from('<I', b, r.offset)[0]
     h1, h2 = struct.unpack_from('<HH', b, r.offset)
     if r.tname == 'R_ARM_ABS32':
@@ -251,7 +274,12 @@ def apply(r, b, S, T, P):
     return None
 
 
-THM_BRANCH = {'R_ARM_THM_CALL', 'R_ARM_THM_JUMP24', 'R_ARM_THM_JUMP19'}
+THM_BRANCH = {'R_ARM_THM_CALL', 'R_ARM_THM_JUMP24', 'R_ARM_THM_JUMP19', 'R_ARM_THM_JUMP11', 'R_ARM_THM_JUMP8'}
+
+
+def relocation_width(r):
+    """The bytes relocation r's field covers: 2 for a narrow branch, else 4."""
+    return 2 if r.tname in ('R_ARM_THM_JUMP11', 'R_ARM_THM_JUMP8') else 4
 
 
 def link(o, bases, table):
@@ -286,7 +314,7 @@ def link(o, bases, table):
                 x = resolve(r.sym)
                 if isinstance(x, str): errors.append(f'{where}: {x}')
                 count += 1; continue
-            if r.offset + 4 > len(b): errors.append(f'{where}: past the end of the section'); continue
+            if r.offset + relocation_width(r) > len(b): errors.append(f'{where}: past the end of the section'); continue
             if code:
                 st = _state_at(states, r.offset)
                 want = '$t' if r.tname in THM_BRANCH or 'MOV' in r.tname else '$d'
@@ -306,20 +334,65 @@ def link(o, bases, table):
     return out, errors, count
 
 
+def section_indexes(info, placements):
+    """([(section index, addr)], errors) for armmatch.place's placements [(name, addr)].
+
+    armmatch.place names a section, but one object can hold several sections of one name. It
+    walks the sections in index order and places each by its own symbols, so the k-th placement
+    of a repeated name is the k-th section of that name. That holds only when every section of
+    the name is placed (none left unplaced); otherwise it is an error."""
+    by_name = {}
+    for i, (n, _) in sorted(info.sections.items()):
+        by_name.setdefault(n, []).append(i)
+    count = {}
+    for name, _ in placements:
+        count[name] = count.get(name, 0) + 1
+    out, errors, seen = [], [], {}
+    for name, a in placements:
+        ix = by_name.get(name, [])
+        if not ix:
+            errors.append(f'section {name}: no section of that name'); continue
+        if len(ix) > 1 and count[name] != len(ix):
+            errors.append(f'section {name}: {len(ix)} sections of that name, {count[name]} placed'); continue
+        if len(ix) == 1 and count[name] > 1:
+            errors.append(f'section {name}: placed {count[name]} times'); continue
+        k = seen.get(name, 0); seen[name] = k + 1
+        out.append((ix[k], a))
+    return out, errors
+
+
+def section_label(info, idx):
+    """A section's name, or name#index when the object holds several sections of that name."""
+    n = info.sections[idx][0]
+    return n if sum(1 for x, _ in info.sections.values() if x == n) == 1 else f'{n}#{idx}'
+
+
+def label_index(o, label):
+    """The section index a section_label names in object o."""
+    if '#' in label:
+        return int(label.rsplit('#', 1)[1])
+    return next(i for i, s in o.sections.items() if s.name == label)
+
+
+def sized_placements(info, placements):
+    """[(name, addr, size)] for placements [(name, addr)], each with its own section's size (a
+    size looked up by name would give every section of a repeated name the last one's size)."""
+    ix, _ = section_indexes(info, placements)
+    return [(info.sections[i][0], a, info.sections[i][1] or 0) for i, a in ix]
+
+
 def bases_for(o, info, placements, unplaced):
     """{section index: addr} for armmatch.place's placements; the unplaced sections go one after
     another from armmatch.UNPLACED (as the armlink route links them, out of the way)."""
     by_name = {}
     for i, s in o.sections.items():
         by_name.setdefault(s.name, []).append(i)
-    bases, errors = {}, []
-    for name, a in placements:
-        ix = by_name.get(name, [])
-        if len(ix) != 1: errors.append(f'section {name}: {len(ix)} sections of that name'); continue
-        bases[ix[0]] = a
+    ix, errors = section_indexes(info, placements)
+    bases = dict(ix)
     at = armmatch.UNPLACED
     for name in unplaced:
         for i in by_name.get(name, []):
+            if i in bases: continue
             al = max(o.sections[i].align, 1)
             at = (at + al - 1) // al * al
             bases[i] = at; at += o.sections[i].size
@@ -337,29 +410,28 @@ class Result:
     lines: list = field(default_factory=list)
     defined: dict = field(default_factory=dict)
     obj: object = None           # the Obj, for a gate's image
-    placed: dict = field(default_factory=dict)          # section name -> (addr, bytes)
+    placed: dict = field(default_factory=dict)          # section label (section_label) -> (addr, bytes)
 
 
 def compare(info, m, img, ram, defined, placements, out):
     """armmatch.match's comparison over placed bytes: (lines, whole, compared bytes, good bytes)."""
     lines = []
-    size_of = {n: z for n, z in info.sections.values()}
     names = {}
     for s in sorted(info.symbols, key=lambda s: -s.value):          # a section is named after its first function
         if s.type == 'Code' and isinstance(s.sec, int): names[info.sections[s.sec][0]] = s.name
-    sec_index = {n: i for i, (n, _) in info.sections.items()}
-    code_sec = {n for i, (n, _) in info.sections.items() if armmatch.is_code(info, i)}
-    zi_sec = {n for i, (n, _) in info.sections.items() if armmatch.is_zi(info, i)}
     good = total = 0; whole = True
-    for section, a in sorted(placements, key=lambda p: p[1]):
-        got = out[sec_index[section]]
-        label = names.get(section, section)
+    ix, _ = section_indexes(info, placements)
+    for idx, a in sorted(ix, key=lambda p: p[1]):
+        section = info.sections[idx][0]
+        got = out[idx]
+        label = names.get(section, section_label(info, idx))
+        zi = armmatch.is_zi(info, idx)
         problems = []; padded = 0
-        if section in code_sec:
+        if armmatch.is_code(info, idx):
             row = m.row_at(a)
             if row is not None:
                 own = {defined[sym.name] for sym in info.symbols
-                       if sym.sec == sec_index[section] and sym.name in defined and sym.type == 'Code'}
+                       if sym.sec == idx and sym.name in defined and sym.type == 'Code'}
                 rows_in = [r for r in m.functions if r.addr in own and a <= r.addr < a + len(got) + 4]
                 end = max([r.addr + r.size for r in rows_in] + [row.addr + row.size])
                 row = armmap.Row(a, end - a, row.name, row.kind, row.file)
@@ -380,10 +452,10 @@ def compare(info, m, img, ram, defined, placements, out):
             n = len(got)
             if a >= RAM and ram is not None and n:
                 kinds = {ram.kind_at(x) for x in range(a, a + n)}
-                if section in zi_sec and kinds != {'zero'}: problems.append('zero-init section over initialised RAM in the original')
-                if section not in zi_sec and 'zero' in kinds: problems.append('initialised section over zero-init RAM in the original')
+                if zi and kinds != {'zero'}: problems.append('zero-init section over initialised RAM in the original')
+                if not zi and 'zero' in kinds: problems.append('initialised section over zero-init RAM in the original')
             for sym in info.symbols:
-                if sym.sec != sec_index[section] or sym.type != 'Data' or sym.size is None: continue
+                if sym.sec != idx or sym.type != 'Data' or sym.size is None: continue
                 row = m.row_at(a + armmatch.offset(sym))
                 if row is None: problems.append(f'{sym.name}: no map row (size unknown)')
                 elif not armmatch.size_fits(sym.size, armmatch.offset(sym), row.size, len(got)):
@@ -479,8 +551,8 @@ def finish(cfg, info, o, m, text, extra, placements, defined, unplaced, libsyms=
     whole = whole and total > 0 and not blocked
     lines.append(f'-- {good}/{total} bytes matched, {count} relocations resolved (object placement)' +
                  ('; WHOLE FILE MATCHES' if whole else ''))
-    placed = {o.sections[i].name: (a, out[i]) for i, a in bases.items() if a < armmatch.UNPLACED or a >= RAM}
-    placed = {n: v for n, v in placed.items() if n in dict(placements)}
+    ix, _ = section_indexes(info, placements)
+    placed = {section_label(info, i): (a, out[i]) for i, a in ix if a < armmatch.UNPLACED or a >= RAM}
     return lines, whole, placed, []
 
 
@@ -536,9 +608,10 @@ def check(cfg, srcs):
         # armlink's bytes per section, from armmatch's regions
         with open(src, encoding='latin1') as f: text = f.read()
         placements, _, _, _ = armmatch.place(info, m, armmap.annotations(text), armmap.unused_dropped(text))
-        size_of = {n: z for n, z in info.sections.values()}
-        sized = [(sec, a, size_of.get(sec) or 0) for sec, a in placements]
+        sized = sized_placements(info, placements)
         _, regions = armmap.scatter_text(os.path.basename(obj), sized)
+        ix, _ = section_indexes(info, placements)
+        at = {(info.sections[i][0], a): i for i, a in ix}
         bindir = os.path.join(work, 'bin')
         bins = {}
         if os.path.isdir(bindir):
@@ -548,13 +621,15 @@ def check(cfg, srcs):
         for region, members in regions.items():
             rbase = members[0][1] & ~3
             for sec, a in members:
-                if sec not in p.placed: notes.append(f'{sec}: not placed by objplace'); diff += 1; continue
-                pa, pb = p.placed[sec]
-                zi = armmatch.is_zi(info, next(i for i, (n, _) in info.sections.items() if n == sec))
-                lb = bytes(size_of.get(sec) or 0) if zi else bins.get(region, b'')[a - rbase:a - rbase + (size_of.get(sec) or 0)]
+                i = at.get((sec, a))
+                label = section_label(info, i) if i is not None else sec
+                if label not in p.placed: notes.append(f'{label}: not placed by objplace'); diff += 1; continue
+                pa, pb = p.placed[label]
+                size = info.sections[i][1] or 0
+                lb = bytes(size) if armmatch.is_zi(info, i) else bins.get(region, b'')[a - rbase:a - rbase + size]
                 if pa != a or lb != pb:
                     k = next((i for i in range(min(len(lb), len(pb))) if lb[i] != pb[i]), min(len(lb), len(pb)))
-                    notes.append(f'{sec} 0x{a:08X}: armlink and placement differ at +0x{k:X} (armlink {len(lb)} bytes, placement {len(pb)})'); diff += 1
+                    notes.append(f'{label} 0x{a:08X}: armlink and placement differ at +0x{k:X} (armlink {len(lb)} bytes, placement {len(pb)})'); diff += 1
                 else:
                     same += len(pb)
         nrel = re.search(r'(\d+) relocations resolved', p.lines[-1]) if p.lines else None
@@ -592,7 +667,7 @@ def show(cfg, src, force):
     with open(src, encoding='latin1') as f: extra = armmap.annotations(f.read())
     o = r.obj
     table = symbol_table(m.symdef_entries(set(r.defined), extra))
-    sec_at = {next(i for i, s in o.sections.items() if s.name == n): a for n, (a, _) in r.placed.items()}
+    sec_at = {label_index(o, n): a for n, (a, _) in r.placed.items()}
 
     def at_map(si):
         """(S, T) of a symbol with every named symbol at its map address."""
@@ -615,7 +690,7 @@ def show(cfg, src, force):
         return out
     total_bad = 0
     for sec, (a, data) in sorted(r.placed.items(), key=lambda x: x[1][0]):
-        idx = next(i for i, s in o.sections.items() if s.name == sec)
+        idx = label_index(o, sec)
         if 'SHF_EXECINSTR' not in o.sections[idx].flags: continue
         funcs = sorted((s.value & ~1, s.name) for s in o.symbols.values() if s.sec == idx and s.type == 'Code')
         rels = sorted(o.relocs.get(idx, []), key=lambda x: x.offset)
@@ -637,14 +712,15 @@ def show(cfg, src, force):
                 exp = bytearray(got); fields = set(); badrel = []
                 for rr in rels:
                     if off <= rr.offset < end:
-                        fields |= set(range(rr.offset - off, rr.offset - off + 4))
                         if rr.tname == 'R_ARM_NONE': continue
-                        b0 = bytearray(o.sections[idx].data[rr.offset:rr.offset + 4])
+                        width = relocation_width(rr)
+                        fields |= set(range(rr.offset - off, rr.offset - off + width))
+                        b0 = bytearray(o.sections[idx].data[rr.offset:rr.offset + width])
                         tmp = Rel(0, rr.type, rr.tname, rr.sym, rr.sname)
                         S, T = at_map(rr.sym)
-                        apply(tmp, b0, S, T, row.addr + rr.offset - off)
-                        exp[rr.offset - off:rr.offset - off + 4] = b0
-                        if bytes(b0) != want[rr.offset - off:rr.offset - off + 4]: badrel.append(rr)
+                        error = apply(tmp, b0, S, T, row.addr + rr.offset - off)
+                        exp[rr.offset - off:rr.offset - off + width] = b0
+                        if error or bytes(b0) != want[rr.offset - off:rr.offset - off + width]: badrel.append(rr)
                 nb = sum(1 for i in range(len(got)) if i not in fields and got[i] != want[i])
                 if nb == 0 and not badrel: res = 'same bytes' if shift == 0 else 'same bytes at its map address (relocated fields agree)'
                 else:
