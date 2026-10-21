@@ -279,6 +279,25 @@ spelling of the statements around it, the source probably called a helper there.
   leave this trace.
 - `tools/armrepeats.py` finds instruction runs the image repeats at several places: inlined
   helpers and macros of the original. A function holding such a run probably called the helper.
+- `static __inline` is only a hint. armcc at `-O1` inlined the small helpers above, but in
+  another firmware it kept two larger helpers (a loop with a float expression, and a float
+  conversion) as separate functions in every build. `static __forceinline` inlined them every
+  time. A helper that was not inlined shows as a `bl` and wrong sizes and entries, so check the
+  listing before reading its registers.
+- Moving a whole block into a helper that returns its result is the strongest form of this. A
+  function with two sampling loops had the second loop's extrema coloured ahead of the first
+  loop's sum and a divisor, and no spelling of the statements moved them. The first loop and the
+  computation that used its sum, moved into `static __forceinline float read_first(int *sum)`
+  and called as `first = read_first(&sum1);`, gave both loops the image's registers (64
+  differing instructions to 34). The same split of the second loop changed nothing, and so did
+  helpers for the expressions alone: the block whose values must be coloured later is the one to
+  move. A second small helper (`to_volts(adc)`, used in the four arms of the other result) then
+  made a reference value a later value of the caller and gave the image's spill: exact. In
+  another function the first step of a running maximum, as a `static __forceinline` helper that
+  returned it, put the result, zero and the first input in the image's registers (117 to 74).
+- Inside such a helper, the shape of the return still counts: one returned conditional
+  expression made one `mov` at the join, where the image had one in each arm; four `return`
+  statements, one per arm, gave each arm its own move.
 
 ## Dead code that steers allocation
 
@@ -309,6 +328,28 @@ Some code armcc deletes still takes part in register allocation; some is deleted
   pointers, live from before the load to the comparisons, take ip and r6, so the half-masked `v`
   went to fp as in the image. They and the comparisons are gone after allocation. Found by a
   placement search: 615 variants, 3 matches, all with three pointers opened before the load.
+- Comparisons of a global's address with 0 are folded before allocation: about 1,100 builds with
+  one at every statement of a function changed nothing. Comparisons of two different globals'
+  addresses, or of a global's address with an element's address, survive to allocation and then
+  vanish. In a loop whose count address was used once before the loop, and so was coloured
+  after every value used inside it, one such comparison in the loop body made the address a
+  loop value and gave the loop the image's registers:
+
+      for (; i < g_count; i = i + 1 & 0xff) {
+          g_out[i] = (short)((uint)g_in[i] / 50);
+          { uint check; check = (uint)((const void *)&g_count != (const void *)&g_out[i + 1]); }
+      }
+
+- In another firmware an unread comparison of a global byte with a local, assigned to a
+  block-scoped local (`{ uchar t; t = (g_peak_in == ret); }`), also survived and held both
+  values through allocation, with `==` or `!=` and `uchar` or `uint` alike, while
+  `(void)(g_peak_in != ret)`, an empty `if`, an unread plain read of the global and a copy of the
+  local did not. So "scalar comparisons are deleted" holds for a bare statement, not always for a
+  comparison stored in a local. Try both.
+- In short, what has survived to allocation: unread comparisons of pointers or addresses, unread
+  pointer locals, an unread comparison stored in a local, and unread uses of a parameter. What
+  is deleted before it: `(void)E`, `if (E) {}`, plain reads, plain copies, comparisons of a
+  global's address with 0, and dead or duplicate stores. Only the first kind can move a register.
 - Dead, duplicate and redundant stores are deleted before allocation and change nothing.
 
 ## Hoisted values and their registers
@@ -331,10 +372,87 @@ Some code armcc deletes still takes part in register allocation; some is deleted
   temporary for a copied field. Neither change alone worked in either.
 - A field read once and used twice wants a local: `u16 lim = g.f14;` for two reads gave the
   image's registers (the field in r1, temporaries in r2).
+- A copy merges with its source when the source dies at the copy. In a running maximum
+  (`ret = g_a; if (ret < g_b) ret = g_b; ...`) armcc merged `ret` with the first input's
+  register, where the image copied it out (`mov r4, sl`) and kept the input in its own. A later
+  unread use of the input (the stored comparison above, in a later branch that also read `ret`)
+  kept it live past the copy, and the function matched. A `mov` the image has and the build
+  lacks usually means the source of that copy was still live after it in the original.
 - Reading fields in a condition decides a helper's registers: cached locals in any order gave
   `ldrb.w ip; ldrh.w r3; add.w r4,ip,r3` (0x6A bytes); `if ((p->w & 0xff) + p->count <= n && ...)`
   gave the image's `ldrb.w r3; ldrh.w r4; add.w ip,r3,r4` (0x66). Sibling functions already
   matched are the template for the style.
+
+## How the register allocator chooses
+
+This is armcc 5.06's register allocator at `-O1` (update 3), as I came to know it while matching
+the largest function of a firmware. A replay written from these rules gave the compiler's own
+choice at every step for that function (about 9,000 values, two passes, 41 spills), so the
+rules can be used to reason about a swap. They also explain why so many swaps resist local
+edits. armcc has no option that prints any of this (`--stats_file` gives only counts).
+
+- It colours a graph in the Chaitin and Briggs way. Each value is a node; two nodes clash when
+  they are live at the same time; a copy between two values is a move. There are 14 registers.
+- Each node is in one of four work lists, by its degree against those 14: extra low (colourable
+  even when its move clashes, below, are counted), low (colourable when only its real clashes
+  are counted), high (may be spilled) and high non-spill (may not be). The real registers are
+  never removed.
+- Simplification removes one node at a time from the first list that is not empty, in the order
+  extra low, low, high, high non-spill. From the extra-low and low lists it takes the node with
+  the fewest references (weighted, so a reference inside a loop counts more), then the fewest
+  moves, then the smallest degree counting move clashes, then the smallest degree, then the
+  highest node number. The high list takes the fewest references, the fewest moves, then the
+  largest degree. The high non-spill list takes the smallest degree first.
+- The lists are indexed heaps whose keys are read when they are compared. A key that changes (a
+  degree falls, a move or a move clash is added) does not re-sort the heap; only a change of
+  list does. So the order of removal depends on the heap's history as well as on the keys, and
+  no ranking of a function's values made up front predicts it.
+- Colouring runs in the reverse order of removal: the node removed last is coloured first. Among
+  nodes in the same list, the value with the most references is coloured first; on a tie of
+  every other key, the one with the lower node number.
+- Node numbers follow the order in which the compiler makes its intermediate code, which is
+  mostly source order. The values of inlined code are made after the caller's own, so they have
+  higher numbers and, on a tie, are coloured after the caller's values (above, "Inline helpers").
+  Parameters seem to be numbered after the body's values.
+- The colour: first a vote among the node's copy partners that already have a colour. Each
+  partner whose register is still free votes for it, twice for a direct copy; the most votes
+  win, and a tie goes to the lower register. With no vote, the node takes the first free
+  register in the order r0-r7, ip, r8-r11, lr, from a preferred set when it can: the free
+  registers among r0-r3 and ip, plus the registers this pass has already handed out this way.
+  The preferred set is used only when the node has fewer uncoloured neighbours than the set has
+  members. In practice it matters when r0-r3 are all taken: the value then goes to a callee-saved
+  register already in use, and to ip before a callee-saved register that is not.
+- Move clashes: when a node is removed, each copy partner still in the graph takes on the node's
+  clashes as move clashes (only while the node's clashes times its moves are under 1,000). When a
+  node is coloured, the registers of its move-clash neighbours are struck out first, unless that
+  leaves none. This is how a value avoids a register that is free where it lives: its copy
+  partner clashes with that register somewhere else.
+- Coalescing happens only when a node is removed, and only when the node has exactly one move,
+  its partner is still low or extra low, and every clash of the node is already a clash of the
+  partner. That last test is stricter than George's. The merged node takes its partner's colour.
+  Every other copy is left to the vote.
+- There are two passes. The first colours and spills. The second starts again from the whole
+  graph, removes the values the first pass spilled first, and gives the final registers. A
+  function that spills nothing is done in one pass.
+- The `register` keyword changes nothing: the reference bonus it would give is behind an
+  internal option that is off. `register` on each local of a large function, and on all of them,
+  gave the same bytes.
+
+What follows for matching:
+
+- Two short temporaries with one definition and one use each, and no copies (an address and a
+  value for one store, say), are decided by degree and then by node number: by which of them the
+  compiler made first. Respelling the statement rarely changes that. Changing what is live
+  around them can, as can making one of them in an inlined helper.
+- A value used inside a loop has a large weighted count and is coloured before the values used
+  only outside it. When the image gives a value used before a loop one of the loop's low
+  registers, the original used it inside the loop (above, "Dead code that steers allocation").
+- A copy is merged only if its source dies there (the subset test). Two values in two registers
+  joined by a `mov` in the image mean both were live at the copy.
+- In a large function an edit anywhere moves registers everywhere: each change of references,
+  moves, degree or numbering changes the removal order of many nodes and the votes after them.
+  There, a swap that no local edit moves is usually decided by the function's context, not by
+  the statement (skills/match-file, "When the search stalls").
 
 ## Literal pools and scheduling
 
@@ -560,6 +678,9 @@ load orders that no single edit moves; these took searches over combinations, no
 
 - The tools: `armvariant.py` scores one source against the image without linking (a second or
   two under Wine; a batch of 40 to 150 variants in one armcc call costs little more);
+  `fnscore.py` scores every function of a file at once, with or without `--split_sections`, and
+  flags a function whose size or entry moved, so a search can reject a variant that fixes one
+  function by breaking its neighbour;
   `armpermute.py` mutates a function at random and keeps what scores no worse;
   `armoutline.py` writes templates of a function's statement runs as inline helpers, or of one
   statement at every point of its body; `armbrute.py` runs a template's combinations exhaustively,
@@ -568,6 +689,12 @@ load orders that no single edit moves; these took searches over combinations, no
 - The score masks registers when asked (`--regs`): first get the structure (the same instructions
   in the same order), then search the allocation. Structural differences are source shape;
   register differences are helpers, temporaries, declaration order, types and dead uses (above).
+- Search from the plain source. Strip the dead uses, temporaries, carriers and helpers that
+  earlier rounds added to make up for something else first: each was fitted to a context that
+  may have been wrong, and once the context is right they usually make things worse. A draft
+  tuned under one compiler build scored worse under the right build than the plain source did,
+  and when a wrongly placed local was removed, the two forms added to make up for it swapped
+  registers until they were taken out as well.
 - Search the combinations, not one change at a time: the matches above needed two to four
   changes together, and for one function every partial set scored worse than none.
 - armcc compiles its command line's files in order and stops at the first with an error, writing

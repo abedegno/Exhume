@@ -46,7 +46,11 @@ Stop varying the function and audit, in this order:
    option set, before assuming the source is wrong; one file in an image can have been built
    differently (profiles' compiler.md say how to scan for it).
 
-Then search again, with small hypothesis-driven variant sets. Record each audit's finding in the
+Before searching again, go back to the plain source: take out the dead uses, temporaries and
+helpers that earlier rounds added to make up for a difference. They were fitted to the old
+context, and once the context is right they usually make things worse (a draft tuned under one
+compiler build scored worse under the right build than the plain source did). Then search again,
+with small hypothesis-driven variant sets. Record each audit's finding in the
 unit's notes even when it changes nothing: the next agent must not repeat it. An exact function
 inside an unfinished unit is diagnostic only; never credit it.
 
@@ -74,7 +78,14 @@ evidence is in profiles/armcc5/compiler.md. What differs:
   verify step. WHOLE FILE MATCHES, then `merge.py`.
 - Between builds, `profiles/armcc5/tools/armvariant.py score SRC NAME --diff` compiles only (a
   second or two) and scores one function against the image; `--regs` tells structure from
-  register allocation, and `pool` shows the literal pool's order.
+  register allocation, and `pool` shows the literal pool's order. `fnscore.py SRC` scores every
+  function of the file the same way (also without `--split_sections`) and reports any function
+  whose size or entry moved, which a change to one function can do to its neighbours.
+- For a register swap that resists edits, read compiler.md, "How the register allocator
+  chooses": the allocator's keys (references, moves, degree, the order values are made) say
+  which change can reach a swap. Moving a whole block into a `static __forceinline` helper that
+  returns its result, and an unread comparison of addresses or a stored comparison that keeps a
+  value live, are the levers that worked when respelling statements did not.
 - A function that stays a register swap after the budget goes to a search rather than more hand
   edits: `armoutline.py` (inline helpers, or one statement at every point), `armbrute.py` over
   that template or a hand-written one, `armpermute.py`, then `armreduce.py` on the hit and
@@ -85,8 +96,10 @@ evidence is in profiles/armcc5/compiler.md. What differs:
   compiles each and scores it, and `o0c.py file NAME --write F.c` joins a file's drafts into one
   source for match.py. A function proves only in its whole file there: what armcc knows of a
   same-file callee changes the caller's registers.
-- A file over MDK-Lite's 32 KB link limit cannot be linked by match.py at all (L6050U):
-  `objplace.py match F.c` proves it by placing the object and applying every relocation itself.
+- A file over MDK-Lite's 32 KB link limit cannot be linked by match.py at all (L6050U), nor can a
+  file whose object has two sections of one name, such as two `.data` sections (L6223E):
+  `objplace.py match F.c` proves either by placing the object and applying every relocation
+  itself.
 - Every function is C: no `__asm` functions (all of a file's go into one `.emb_text` section),
   no forced instructions, no register variables; inline `__asm` only for one special-register
   instruction (MSR, MRS, CPSID, WFI).
