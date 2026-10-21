@@ -171,13 +171,29 @@ rebuilt byte for byte.
   file of 15 functions could not be linked by MDK-Lite at all. `tools/objplace.py` proves such a
   file by doing armlink's job for its one object: each section placed where the matcher places it,
   every relocation applied with the addend in place (REL: `R_ARM_ABS32`, `R_ARM_REL32`,
-  `R_ARM_THM_CALL`, `R_ARM_THM_JUMP24`, `R_ARM_THM_JUMP19`, MOVW/MOVT, `R_ARM_NONE`), symbols
+  `R_ARM_THM_CALL`, `R_ARM_THM_JUMP24`, `R_ARM_THM_JUMP19`, the narrow `R_ARM_THM_JUMP11` and
+  `R_ARM_THM_JUMP8`, MOVW/MOVT, `R_ARM_NONE`), symbols
   resolved from the object and the same symdefs the armlink route gets, a weak definition giving
   way to a symdefs one, every placed byte compared, nothing masked. An unresolved symbol, an
   unknown relocation, a branch to data or out of range, or a relocation in the wrong mapping state
   (`$t` for branches, `$d` for literal words) fails. Before it was trusted it was run beside
   armlink over every source armlink could link (115 sources, 2,476 relocations): the same bytes
   each time. armcc emitted only `R_ARM_THM_CALL` and `R_ARM_ABS32` in that firmware.
+- At `-O1` armcc leaves a narrow tail call to a global function (`b bump` as a 16-bit B) to an
+  `R_ARM_THM_JUMP11`, even inside one `.text`; the field is 2 bytes and the addend is in
+  halfwords. A third firmware needed it.
+- One object can hold two sections of one name: armcc gave a file its scalars in one `.data`
+  section and a table of pointers to its functions in another. armmatch's scatter file selects
+  sections by name, so armlink refuses the two selectors as ambiguous (L6223E) when they belong
+  at different addresses, and match.py cannot prove the file. objplace keeps placements by
+  section index (the k-th placement of a name is the k-th section of that name, which holds when
+  every section of the name is placed) and names a repeated one `name#index`.
+- A gate can send such files around its piecewise link. One firmware's gate keeps a list of
+  files in its project config that it proves by `objplace.placed_match` instead of in a piece,
+  and takes their placed bytes (`Result.placed`, by section label) into the image it compares:
+  a file whose tables overflowed a 32 KB piece, and the file with two `.data` sections. With
+  every source routed that way, the gate still rebuilt the image byte for byte. armgate.py does
+  not have this route yet.
 - Alignment padding between two files: where 1 to 3 zero bytes lie between two sections and end on
   the second's alignment, they are armlink's padding, made by linking the two in one region (the
   first `+FIRST`). It only applies when the second section is 4-aligned in its object, which for a

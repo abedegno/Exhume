@@ -1,0 +1,313 @@
+
+========================================================================
+
+** ELF Header Information
+
+    File Name: repeat.o
+
+    Machine class: ELFCLASS32 (32-bit)
+    Data encoding: ELFDATA2LSB (Little endian)
+    Header version: EV_CURRENT (Current version)
+    Operating System ABI: none
+    ABI Version: 0
+    File Type: ET_REL (Relocatable object) (1)
+    Machine: EM_ARM (ARM)
+
+    Entry offset (in SHF_ENTRYSECT section): 0x00000000
+    Flags: None (0x05000000)
+
+    ARM ELF revision: 5 (ABI version 2)
+
+    Built with
+    Component: ARM Compiler 5.06 update 7 (build 960) Tool: armcc [4d365d]
+
+    Header size: 52 bytes (0x34)
+    Program header entry size: 0 bytes (0x0)
+    Section header entry size: 40 bytes (0x28)
+
+    Program header entries: 0
+    Section header entries: 14
+
+    Program header offset: 0 (0x00000000)
+    Section header offset: 1112 (0x00000458)
+
+    Section header string table index: 11
+
+========================================================================
+
+** Section #1
+
+    Name        : .text
+    Type        : SHT_PROGBITS (0x00000001)
+    Flags       : SHF_ALLOC + SHF_EXECINSTR (0x00000006)
+    Addr        : 0x00000000
+    File Offset : 60 (0x3c)
+    Size        : 40 bytes (0x28)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 4
+    Entry Size  : 0
+
+
+====================================
+
+** Section #8
+
+    Name        : .rel.text
+    Type        : SHT_REL (0x00000009)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 600 (0x258)
+    Size        : 24 bytes (0x18)
+    Link        : Section 7 (.symtab)
+    Info        : Section 1 (.text)
+    Alignment   : 4
+    Entry Size  : 8
+
+    #      Offset    Relocation Type               Wrt Symbol                   Defined in
+    ========================================================================
+
+      0  0x0000000e  102 R_ARM_THM_JUMP11         12 bump                     #1 '.text'
+      1  0x0000001e  102 R_ARM_THM_JUMP11         12 bump                     #1 '.text'
+      2  0x00000024    2 R_ARM_ABS32               4 .data                    #4 '.data'
+
+
+====================================
+
+** Section #2
+
+    Name        : .arm_vfe_header
+    Type        : SHT_PROGBITS (0x00000001)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 100 (0x64)
+    Size        : 4 bytes (0x4)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 4
+    Entry Size  : 0
+
+
+====================================
+
+** Section #3
+
+    Name        : .comment
+    Type        : SHT_PROGBITS (0x00000001)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 104 (0x68)
+    Size        : 120 bytes (0x78)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 1
+    Entry Size  : 0
+
+    Component: ARM Compiler 5.06 update 7 (build 960) Tool: armcc [4d365d]
+    armcc -c -orepeat.o --cpu=Cortex-M3 -O1 repeat.c
+
+====================================
+
+** Section #4
+
+    Name        : .data
+    Type        : SHT_PROGBITS (0x00000001)
+    Flags       : SHF_ALLOC + SHF_WRITE (0x00000003)
+    Addr        : 0x00000000
+    File Offset : 224 (0xe0)
+    Size        : 8 bytes (0x8)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 4
+    Entry Size  : 0
+
+
+====================================
+
+** Section #5
+
+    Name        : .data
+    Type        : SHT_PROGBITS (0x00000001)
+    Flags       : SHF_ALLOC + SHF_WRITE (0x00000003)
+    Addr        : 0x00000000
+    File Offset : 232 (0xe8)
+    Size        : 12 bytes (0xc)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 4
+    Entry Size  : 0
+
+
+====================================
+
+** Section #9
+
+    Name        : .rel.data
+    Type        : SHT_REL (0x00000009)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 624 (0x270)
+    Size        : 16 bytes (0x10)
+    Link        : Section 7 (.symtab)
+    Info        : Section 5 (.data)
+    Alignment   : 4
+    Entry Size  : 8
+
+    #      Offset    Relocation Type               Wrt Symbol                   Defined in
+    ========================================================================
+
+      0  0x00000000    2 R_ARM_ABS32              12 bump                     #1 '.text'
+      1  0x00000004    2 R_ARM_ABS32              13 step                     #1 '.text'
+
+
+====================================
+
+** Section #6
+
+    Name        : .debug_frame
+    Type        : SHT_PROGBITS (0x00000001)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 244 (0xf4)
+    Size        : 100 bytes (0x64)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 1
+    Entry Size  : 0
+
+
+====================================
+
+** Section #10
+
+    Name        : .rel.debug_frame
+    Type        : SHT_REL (0x00000009)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 640 (0x280)
+    Size        : 48 bytes (0x30)
+    Link        : Section 7 (.symtab)
+    Info        : Section 6 (.debug_frame)
+    Alignment   : 4
+    Entry Size  : 8
+
+    #      Offset    Relocation Type               Wrt Symbol                   Defined in
+    ========================================================================
+
+      0  0x00000038    2 R_ARM_ABS32               9 __ARM_grp_.debug_frame$5 #6 '.debug_frame'
+      1  0x0000003c    2 R_ARM_ABS32               6 .text                    #1 '.text'
+      2  0x00000048    2 R_ARM_ABS32               9 __ARM_grp_.debug_frame$5 #6 '.debug_frame'
+      3  0x0000004c    2 R_ARM_ABS32               6 .text                    #1 '.text'
+      4  0x00000058    2 R_ARM_ABS32               9 __ARM_grp_.debug_frame$5 #6 '.debug_frame'
+      5  0x0000005c    2 R_ARM_ABS32               6 .text                    #1 '.text'
+
+
+====================================
+
+** Section #7
+
+    Name        : .symtab
+    Type        : SHT_SYMTAB (0x00000002)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 344 (0x158)
+    Size        : 256 bytes (0x100)
+    Link        : Section 12 (.strtab)
+    Info        : Last local symbol no = 9
+    Alignment   : 4
+    Entry Size  : 16
+
+    Symbol table .symtab (15 symbols, 9 local)
+
+      #  Symbol Name                Value      Bind  Sec  Type  Vis  Size
+    ========================================================================
+
+      1  repeat.c                   0x00000000   Lc  Abs  File  De 
+      2  $t                         0x00000000   Lc    1   --   De 
+      3  $d                         0x00000022   Lc    1   --   De 
+      4  .data                      0x00000000   Lc    4  Sect  De   0x8
+      5  .data                      0x00000000   Lc    5  Sect  De   0xc
+      6  .text                      0x00000000   Lc    1  Sect  De 
+      7  BuildAttributes$$THM_ISAv4$P$D$K$B$S$PE$A:L22UL41UL21$X:L11$S22US41US21$IEEE1$IW$USESV6$~STKCKD$USESV7$~SHL$OSPACE$EBA8$REQ8$PRES8$EABIv2
+                                    0x00000000   Lc  Abs   --   De 
+      8  count                      0x00000004   Lc    4  Data  De   0x4
+      9  __ARM_grp_.debug_frame$5   0x00000000   Lc    6  Data  De 
+     10  ops                        0x00000000   Gb    5  Data  Hi   0xc
+     11  state                      0x00000000   Gb    4  Data  Hi   0x4
+     12  bump                       0x00000001   Gb    1  Code  Hi   0xa
+     13  step                       0x0000000b   Gb    1  Code  Hi   0x10
+     14  maybe                      0x0000001b   Gb    1  Code  Hi   0x8
+     15  Lib$$Request$$armlib       0x00000000   Wk  Ref  Code  Hi 
+
+
+====================================
+
+** Section #11
+
+    Name        : .shstrtab
+    Type        : SHT_STRTAB (0x00000003)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 688 (0x2b0)
+    Size        : 105 bytes (0x69)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 1
+    Entry Size  : 0
+
+
+====================================
+
+** Section #12
+
+    Name        : .strtab
+    Type        : SHT_STRTAB (0x00000003)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 793 (0x319)
+    Size        : 244 bytes (0xf4)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 1
+    Entry Size  : 0
+
+
+====================================
+
+** Section #13
+
+    Name        : .ARM.attributes
+    Type        : SHT_ARM_ATTRIBUTES (0x70000003)
+    Flags       : None (0x00000000)
+    Addr        : 0x00000000
+    File Offset : 1037 (0x40d)
+    Size        : 72 bytes (0x48)
+    Link        : SHN_UNDEF
+    Info        : 0
+    Alignment   : 1
+    Entry Size  : 0
+
+    'aeabi' file build attributes:
+    0x000000:   43 32 2e 30 39 00 05 43 6f 72 74 65 78 2d 4d 33    C2.09..Cortex-M3
+    0x000010:   00 06 0a 07 4d 09 02 11 01 12 02 14 02 17 01 18    ....M...........
+    0x000020:   01 19 01 1a 01 1e 05 22 01                         .......".
+        Tag_conformance = "2.09"
+        Tag_CPU_name = "Cortex-M3"
+        Tag_CPU_arch = ARM v7 (=10)
+        Tag_CPU_arch_profile = The microcontroller profile 'M' (e.g. for Cortex M3) (=77)
+        Tag_THUMB_ISA_use = Thumb2 instructions were permitted (implies Thumb instructions permitted) (=2)
+        Tag_ABI_PCS_GOT_use = Data are imported directly (=1)
+        Tag_ABI_PCS_wchar_t = Size of wchar_t is 2 (=2)
+        Tag_ABI_FP_denormal = This code was permitted to require that the sign of a flushed-to-zero number be preserved in the sign of 0 (=2)
+        Tag_ABI_FP_number_model = This code was permitted to use only IEEE 754 format FP numbers (=1)
+        Tag_ABI_align_needed = Code was permitted to depend on the 8-byte alignment of 8-byte data items (=1)
+        Tag_ABI_align_preserved = Code was required to preserve 8-byte alignment of 8-byte data objects (=1)
+        Tag_ABI_enum_size = Enum values occupy the smallest container big enough to hold all values (=1)
+        Tag_ABI_optimization_goals = Optimized for good debugging, but speed and small size preserved (=5)
+        Tag_CPU_unaligned_access = The producer was permitted to generate architecture v6-style unaligned data accesses (=1)
+
+    'ARM' file build attributes:
+    0x000000:   12 01                                              ..
+
+
+====================================

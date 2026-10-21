@@ -130,7 +130,7 @@ firmware matched by three agents at once:
 
 - Check its claims: rerun match and verify yourself through merge.py. On firmware, a score of 0 is
   not a proof (the score masks pool words and call targets) and "every byte equal" from a masked
-  compare is not either: the proof is match.py's WHOLE FILE MATCHES, or objplace.py for a file over
-  the Lite limit, which applies every relocation instead of masking it. Rerun it yourself.
+  compare is not either: the proof is match.py's WHOLE FILE MATCHES, or objplace.py for a file the
+  Lite link cannot take, which applies every relocation instead of masking it. Rerun it yourself.
 - New compiler behaviour goes into the profile's compiler.md or assembler.md only when tested.
 - Renames go into the tables (`tools/syncnames.py src/FILE.C` renames rows to the publics the file defines) and then symbols.tsv is rebuilt from scratch.

@@ -23,6 +23,7 @@ $PY ~/Exhume/tools/match.py src/AREA/FILE.c              # build, place, link, c
 $PY ~/Exhume/tools/match.py src/AREA/FILE.c --dis NAME   # side-by-side Thumb-2 diff
 $PY $T/armvariant.py score src/AREA/FILE.c NAME --diff   # compile only: NAME's score, 0 = same code
 $PY $T/armvariant.py pool src/AREA/FILE.c NAME           # NAME's literal loads and pool, in order
+$PY $T/fnscore.py src/AREA/FILE.c [NAME] [--pool]        # compile only: every function's score, = is the same code
 ```
 
 A score is not a match (it masks call targets and pool words); match.py is the proof.
