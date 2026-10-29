@@ -62,9 +62,9 @@ placement and proof work for little gain.
 ## 3. Carry the map
 
 - Functions keep their names and files at their new addresses. Data that moved keeps its
-  placeholder name with the old address (`g_200033C0` in the old map stays `g_200033C0` though it
-  now lives at 0x200039E0); `map/data.tsv` gives each item's real address in this release. Name
-  data that is new in this release with a prefix of its own and its new address (`g15_20000084`).
+  placeholder name with the old address (`g_20001000` in the old map stays `g_20001000` though it
+  now lives at 0x20001200); `map/data.tsv` gives each item's real address in this release. Name
+  data that is new in this release with a prefix of its own and its new address (`g2_20000100`).
   Record both in the names file.
 - `/* at: */` lines in the sources hold one release's addresses. Where they differ per release
   or board, let the tools take the address from the map for any name the map holds.
