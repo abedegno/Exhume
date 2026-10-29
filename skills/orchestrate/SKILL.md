@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Use when running a whole byte-matching decompilation with several AI agents - choosing models, how many agents at once, per-file build budgets, Codex drafts with Claude finishers, the build queue for sandboxed agents, and keeping agents from clobbering each other; with the costs measured on UW2. Also for an armcc5 firmware - a git worktree and a cloned Wine prefix per agent, the full gate before every merge.
+description: Use when running a whole byte-matching decompilation with several AI agents - choosing models, how many agents at once, per-file build budgets, Codex drafts with Claude finishers, the build queue for sandboxed agents, and keeping agents from clobbering each other; with the costs measured on UW2. Also for an armcc5 firmware - a git worktree and a cloned Wine prefix per agent, the full gate before every merge - and for long searches: deadlines, worker and disk budgets, and stopping only the processes and prefixes a run owns.
 ---
 
 # Orchestrate matching agents
@@ -111,6 +111,34 @@ firmware matched by three agents at once:
 - A release finding (one file only matches under a later MDK) changes the compile home for
   everyone: switch it in the main tree, run the full gate with every proved file, then tell the
   agents.
+
+## Long searches: budgets, resources and ownership
+
+A search for the last hard functions can run for hours with compilers, observers, models and
+solvers in parallel, beside other people's work on the same machine. What kept such runs honest
+and safe on one firmware:
+
+- Give each run a fixed deadline and fixed quotas (sources, compiler calls, retained evidence),
+  with a reserve at the end for audits and cleanup: stop admitting new work while the reserve
+  is still there. Never extend a finished run's deadline or reuse its records; a new run gets a
+  new directory.
+- One budget for workers across every stage. Leave at least two cores free and count the
+  compile, observe, model and solver workers together. More workers stop paying early: on one
+  sample of full compile-and-audit work, 1, 2 and 4 workers took 551, 310 and 250 seconds (four
+  gave 2.2 times one). Under Wine that run kept at most two prefix slots at once.
+- Disk. Prefixes add up: one cleanup of inactive generated prefixes recovered 53 GB. Keep a
+  free-space floor, reserve space for each prefix slot before starting it, cap the evidence a
+  run keeps, and remove the prefixes a run made when it ends.
+- Ownership. Stop only what you can prove you started: record each process with its id, its
+  start time and its group, and each prefix you create. Never kill Wine globally or stop the
+  server of a prefix you did not make; a gate or another agent may be using it. A recorded
+  process-group number can later belong to someone else's process, so check its start time
+  before signalling it.
+- Old experiment scripts often do their work when imported. Never import one as a library;
+  copy the helper you need into a new module. A model library that keeps its state in globals
+  holds one graph per process: run each model in its own process.
+- Rebuild the controls first: before a batch, check that the current best source and a known
+  control still give their recorded scores under this run's tools and options.
 
 ## A C2000 image (ti-c2000)
 

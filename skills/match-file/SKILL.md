@@ -44,7 +44,14 @@ Stop varying the function and audit, in this order:
    had.
 5. **The compiler and options for this file.** Another build of the same compiler, or another
    option set, before assuming the source is wrong; one file in an image can have been built
-   differently (profiles' compiler.md say how to scan for it).
+   differently (profiles' compiler.md say how to scan for it). Compile a small control (a
+   matched sibling, or a few lines with the same idiom) under every installed build first, and
+   when a tool runs under another build than the gate's, check that the function's listing is
+   the same under both.
+6. **Another build of the same code.** When the vendor's earlier or later release, or another
+   board, has the same function, the source must rebuild both with only the changed lines
+   different. A form that fits one image only is compensation for something else
+   (skills/carry-forward, "One source for both").
 
 Before searching again, go back to the plain source: take out the dead uses, temporaries and
 helpers that earlier rounds added to make up for a difference. They were fitted to the old
@@ -53,6 +60,15 @@ compiler build scored worse under the right build than the plain source did). Th
 with small hypothesis-driven variant sets. Record each audit's finding in the
 unit's notes even when it changes nothing: the next agent must not repeat it. An exact function
 inside an unfinished unit is diagnostic only; never credit it.
+
+Two steps come before any search. First, look for the same code elsewhere in the image
+(armcc5: `armrepeats.py --func NAME`): a matched function that repeats the same instructions
+shows how the vendor wrote them. Second, when only registers differ and every edit moves the swap
+somewhere else, look inside the compiler rather than at more source: on armcc5, trace the
+register allocator and replay it (profiles/armcc5/compiler.md, "Tracing the register
+allocator"). On one function about 100,000 searched sources stalled three instructions off; the
+trace showed a tie that the allocator's heap history decided, which no edit to the lines around
+it could move, and a replay over declaration orders then found the source.
 
 ## Rules
 
@@ -87,9 +103,13 @@ evidence is in profiles/armcc5/compiler.md. What differs:
   returns its result, and an unread comparison of addresses or a stored comparison that keeps a
   value live, are the levers that worked when respelling statements did not.
 - A function that stays a register swap after the budget goes to a search rather than more hand
-  edits: `armoutline.py` (inline helpers, or one statement at every point), `armbrute.py` over
-  that template or a hand-written one, `armpermute.py`, then `armreduce.py` on the hit and
-  match.py on the result. compiler.md, "Searching for the source", has what the searches found.
+  edits. First `armrepeats.py --func NAME` (a matched function with the same instructions is the
+  template); then, when the instructions agree and the registers will not settle, an allocator
+  trace (`armtrace.py run`, `armreplay.py check`, `tie`, `sweep`); then `armoutline.py` (inline
+  helpers, or one statement at every point), `armbrute.py` over that template or a hand-written
+  one, `armpermute.py`, then `armreduce.py` on the hit and match.py on the result. Screen every
+  generated source for undefined C before trusting its score. compiler.md, "Tracing the register
+  allocator" and "Searching for the source", has what each found.
 - An image built at `-O0` without `--split_sections` (one `.text` per file, compiler.md "armcc -O0,
   and files built without --split_sections") starts from `profiles/armcc5/tools/o0c.py` drafts
   rather than Ghidra's: `o0c.py gen` drafts every function from the image alone, `o0c.py score`
