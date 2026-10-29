@@ -1,0 +1,346 @@
+Synthetic allocator trace for armtrace/armreplay tests: written by a script from the replay model, not compiler output.
+
+***** Start of graph colouring, num_nodes=42, second_clash_set=1, thumb2_regalloc=0, spill_all_vars=0
+
+---- BEGIN CLASH GRAPH ----
+graph G {
+orientation=portrait;
+node [shape=box];
+N0 -- N30 [style=solid, width=3];
+N0 -- N31 [style=solid, width=3];
+N0 -- N32 [style=solid, width=3];
+N0 -- N40 [style=solid, width=3];
+N0 -- N41 [style=solid, width=3];
+N1 -- N30 [style=solid, width=3];
+N1 -- N31 [style=solid, width=3];
+N1 -- N32 [style=solid, width=3];
+N1 -- N40 [style=solid, width=3];
+N1 -- N41 [style=solid, width=3];
+N2 -- N30 [style=solid, width=3];
+N2 -- N31 [style=solid, width=3];
+N2 -- N32 [style=solid, width=3];
+N2 -- N40 [style=solid, width=3];
+N2 -- N41 [style=solid, width=3];
+N3 -- N30 [style=solid, width=3];
+N3 -- N31 [style=solid, width=3];
+N3 -- N32 [style=solid, width=3];
+N3 -- N40 [style=solid, width=3];
+N3 -- N41 [style=solid, width=3];
+N31 -- N32 [style=solid, width=3];
+N40 -- N41 [style=solid, width=3];
+N32 -- N33 [style=dotted, width=5];
+N0 [style=filled, label="n0=0\n(REAL)", fillcolor="0 1.0 1.0",];
+N1 [style=filled, label="n1=1\n(REAL)", fillcolor="0 1.0 1.0",];
+N2 [style=filled, label="n2=2\n(REAL)", fillcolor="0 1.0 1.0",];
+N3 [style=filled, label="n3=3\n(REAL)", fillcolor="0 1.0 1.0",];
+N4 [style=filled, label="n4=4\n(REAL)", fillcolor="0 1.0 1.0",];
+N5 [style=filled, label="n5=5\n(REAL)", fillcolor="0 1.0 1.0",];
+N6 [style=filled, label="n6=6\n(REAL)", fillcolor="0 1.0 1.0",];
+N7 [style=filled, label="n7=7\n(REAL)", fillcolor="0 1.0 1.0",];
+N8 [style=filled, label="n8=8\n(REAL)", fillcolor="0 1.0 1.0",];
+N9 [style=filled, label="n9=9\n(REAL)", fillcolor="0 1.0 1.0",];
+N10 [style=filled, label="n10=10\n(REAL)", fillcolor="0 1.0 1.0",];
+N11 [style=filled, label="n11=11\n(REAL)", fillcolor="0 1.0 1.0",];
+N12 [style=filled, label="n12=12\n(REAL)", fillcolor="0 1.0 1.0",];
+N14 [style=filled, label="n14=14\n(REAL)", fillcolor="0 1.0 1.0",];
+N30 [style=filled, label="n30=-2\n(INT32)", fillcolor="0 1.0 1.0",];
+N31 [style=filled, label="n31=-2\n(INT32)", fillcolor="0 1.0 1.0",];
+N32 [style=filled, label="n32=-2\n(INT32)", fillcolor="0 1.0 1.0",];
+N33 [style=filled, label="n33=-2\n(INT32)", fillcolor="0 1.0 1.0",];
+N40 [style=filled, label="n40=-2\n(INT32)", fillcolor="0 1.0 1.0",];
+N41 [style=filled, label="n41=-2\n(INT32)", fillcolor="0 1.0 1.0",];
+};
+---- END CLASH GRAPH ----
+
+Ensuring graph colourability
+
+Pass 1
+node 0 (size 1, type REAL) initialised to status NS_PreColoured and colour 0
+node 1 (size 1, type REAL) initialised to status NS_PreColoured and colour 1
+node 2 (size 1, type REAL) initialised to status NS_PreColoured and colour 2
+node 3 (size 1, type REAL) initialised to status NS_PreColoured and colour 3
+node 4 (size 1, type REAL) initialised to status NS_PreColoured and colour 4
+node 5 (size 1, type REAL) initialised to status NS_PreColoured and colour 5
+node 6 (size 1, type REAL) initialised to status NS_PreColoured and colour 6
+node 7 (size 1, type REAL) initialised to status NS_PreColoured and colour 7
+node 8 (size 1, type REAL) initialised to status NS_PreColoured and colour 8
+node 9 (size 1, type REAL) initialised to status NS_PreColoured and colour 9
+node 10 (size 1, type REAL) initialised to status NS_PreColoured and colour 10
+node 11 (size 1, type REAL) initialised to status NS_PreColoured and colour 11
+node 12 (size 1, type REAL) initialised to status NS_PreColoured and colour 12
+node 13 (size 1, type REAL) initialised to status NS_Uninitialised and colour -2
+node 14 (size 1, type REAL) initialised to status NS_PreColoured and colour 14
+node 30 (size 1, type INT32) initialised to status NS_ExtraLowNode and colour -6
+node 31 (size 1, type INT32) initialised to status NS_ExtraLowNode and colour -6
+node 32 (size 1, type INT32) initialised to status NS_ExtraLowNode and colour -6
+node 33 (size 1, type INT32) initialised to status NS_ExtraLowNode and colour -6
+node 40 (size 1, type INT32) initialised to status NS_ExtraLowNode and colour -6
+node 41 (size 1, type INT32) initialised to status NS_ExtraLowNode and colour -6
+
+lownodes:      
+extralownodes: 31 30 32 41 40 
+highnodes:     
+highnonspills: 
+
+*** Simplify called for register 33 status = NS_ExtraLowNode refs = 0
+
+Before clash adjustment:
+Clashes (0)            = 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (1)             = 32 
+Opt clashes (0)       = 
+
+
+Simplifying 33 (fragment 0 of 33). Sort is INT32.
+Adding move clashes for the move-neighbours of 33:
+ adding move clashes of 33 to 32
+Making move-neighbours of 33 move-related to each other
+
+Trying to coalesce 33
+ coalescing with 32
+
+lownodes:      
+extralownodes: 30 41 32 40 
+highnodes:     
+highnonspills: 
+
+*** Simplify called for register 31 status = NS_ExtraLowNode refs = 1
+
+Before clash adjustment:
+Clashes (5)            = 32 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+
+
+Simplifying 31 (fragment 0 of 31). Sort is INT32.
+Adding move clashes for the move-neighbours of 31:
+Making move-neighbours of 31 move-related to each other
+
+Trying to coalesce 31
+ can't coalesce - has no direct moves
+
+lownodes:      
+extralownodes: 32 41 40 
+highnodes:     
+highnonspills: 
+
+*** Simplify called for register 30 status = NS_ExtraLowNode refs = 2
+
+Before clash adjustment:
+Clashes (4)            = 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+
+
+Simplifying 30 (fragment 0 of 30). Sort is INT32.
+Adding move clashes for the move-neighbours of 30:
+Making move-neighbours of 30 move-related to each other
+
+Trying to coalesce 30
+ can't coalesce - has no direct moves
+
+lownodes:      
+extralownodes: 41 40 
+highnodes:     
+highnonspills: 
+
+*** Simplify called for register 32 status = NS_ExtraLowNode refs = 3
+
+Before clash adjustment:
+Clashes (4)            = 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (1)             = 33 
+Opt clashes (0)       = 
+
+
+Simplifying 32 (fragment 0 of 32). Sort is INT32.
+Adding move clashes for the move-neighbours of 32:
+Making move-neighbours of 32 move-related to each other
+
+Trying to coalesce 32
+ can't coalesce - has no direct moves
+
+lownodes:      
+extralownodes: 40 
+highnodes:     
+highnonspills: 
+
+*** Simplify called for register 41 status = NS_ExtraLowNode refs = 5
+
+Before clash adjustment:
+Clashes (5)            = 40 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+
+
+Simplifying 41 (fragment 0 of 41). Sort is INT32.
+Adding move clashes for the move-neighbours of 41:
+Making move-neighbours of 41 move-related to each other
+
+Trying to coalesce 41
+ can't coalesce - has no direct moves
+
+lownodes:      
+extralownodes: 
+highnodes:     
+highnonspills: 
+
+*** Simplify called for register 40 status = NS_ExtraLowNode refs = 5
+
+Before clash adjustment:
+Clashes (4)            = 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+
+
+Simplifying 40 (fragment 0 of 40). Sort is INT32.
+Adding move clashes for the move-neighbours of 40:
+Making move-neighbours of 40 move-related to each other
+
+Trying to coalesce 40
+ can't coalesce - has no direct moves
+
+Colouring 40. Refs = 5. Type = INT32.
+ Register 40:
+Clashes (4)            = 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+  Available regs (move_clashes): [4, 5, 6, 7, 8, 9, 10, 11, 12, 14]
+  Available regs: [4, 5, 6, 7, 8, 9, 10, 11, 12, 14]
+minpos = 0, maxcount = 0.
+  Colour = 12. 
+
+Colouring 41. Refs = 5. Type = INT32.
+ Register 41:
+Clashes (5)            = 40 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+  Available regs (move_clashes): [4, 5, 6, 7, 8, 9, 10, 11, 14]
+  Available regs: [4, 5, 6, 7, 8, 9, 10, 11, 14]
+minpos = 0, maxcount = 0.
+  Colour = 4. 
+
+Colouring 32. Refs = 3. Type = INT32.
+ Register 32:
+Clashes (4)            = 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (1)             = 33 
+Opt clashes (0)       = 
+  Available regs (move_clashes): [4, 5, 6, 7, 8, 9, 10, 11, 12, 14]
+  Available regs: [4, 5, 6, 7, 8, 9, 10, 11, 12, 14]
+minpos = 0, maxcount = 0.
+  Colour = 12. 
+
+Colouring 30. Refs = 2. Type = INT32.
+ Register 30:
+Clashes (4)            = 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+  Available regs (move_clashes): [4, 5, 6, 7, 8, 9, 10, 11, 12, 14]
+  Available regs: [4, 5, 6, 7, 8, 9, 10, 11, 12, 14]
+minpos = 0, maxcount = 0.
+  Colour = 12. 
+
+Colouring 31. Refs = 1. Type = INT32.
+ Register 31:
+Clashes (5)            = 32 3 2 1 0 
+Whole node clashes (0) = 
+Extra clashes (0)      = 
+Moves (0)             = 
+Opt clashes (0)       = 
+  Available regs (move_clashes): [4, 5, 6, 7, 8, 9, 10, 11, 14]
+  Available regs: [4, 5, 6, 7, 8, 9, 10, 11, 14]
+minpos = 0, maxcount = 0.
+  Colour = 4. 
+
+Node 33 coalesced with 32
+ whose colour is 12
+
+Checking colours
+ node 0 colour 0
+ node 1 colour 1
+ node 2 colour 2
+ node 3 colour 3
+ node 4 colour 4
+ node 5 colour 5
+ node 6 colour 6
+ node 7 colour 7
+ node 8 colour 8
+ node 9 colour 9
+ node 10 colour 10
+ node 11 colour 11
+ node 12 colour 12
+ node 13 colour -2
+ node 14 colour 14
+ node 30 colour 12
+ node 31 colour 4
+ node 32 colour 12
+ node 33 colour 12
+ node 40 colour 12
+ node 41 colour 4
+---- BEGIN CLASH GRAPH ----
+graph G {
+orientation=portrait;
+node [shape=box];
+N0 -- N30 [style=solid, width=3];
+N0 -- N31 [style=solid, width=3];
+N0 -- N32 [style=solid, width=3];
+N0 -- N40 [style=solid, width=3];
+N0 -- N41 [style=solid, width=3];
+N1 -- N30 [style=solid, width=3];
+N1 -- N31 [style=solid, width=3];
+N1 -- N32 [style=solid, width=3];
+N1 -- N40 [style=solid, width=3];
+N1 -- N41 [style=solid, width=3];
+N2 -- N30 [style=solid, width=3];
+N2 -- N31 [style=solid, width=3];
+N2 -- N32 [style=solid, width=3];
+N2 -- N40 [style=solid, width=3];
+N2 -- N41 [style=solid, width=3];
+N3 -- N30 [style=solid, width=3];
+N3 -- N31 [style=solid, width=3];
+N3 -- N32 [style=solid, width=3];
+N3 -- N40 [style=solid, width=3];
+N3 -- N41 [style=solid, width=3];
+N31 -- N32 [style=solid, width=3];
+N40 -- N41 [style=solid, width=3];
+N0 [style=filled, label="n0=0\n(REAL)", fillcolor="0 1.0 1.0",];
+N1 [style=filled, label="n1=1\n(REAL)", fillcolor="0 1.0 1.0",];
+N2 [style=filled, label="n2=2\n(REAL)", fillcolor="0 1.0 1.0",];
+N3 [style=filled, label="n3=3\n(REAL)", fillcolor="0 1.0 1.0",];
+N4 [style=filled, label="n4=4\n(REAL)", fillcolor="0 1.0 1.0",];
+N5 [style=filled, label="n5=5\n(REAL)", fillcolor="0 1.0 1.0",];
+N6 [style=filled, label="n6=6\n(REAL)", fillcolor="0 1.0 1.0",];
+N7 [style=filled, label="n7=7\n(REAL)", fillcolor="0 1.0 1.0",];
+N8 [style=filled, label="n8=8\n(REAL)", fillcolor="0 1.0 1.0",];
+N9 [style=filled, label="n9=9\n(REAL)", fillcolor="0 1.0 1.0",];
+N10 [style=filled, label="n10=10\n(REAL)", fillcolor="0 1.0 1.0",];
+N11 [style=filled, label="n11=11\n(REAL)", fillcolor="0 1.0 1.0",];
+N12 [style=filled, label="n12=12\n(REAL)", fillcolor="0 1.0 1.0",];
+N14 [style=filled, label="n14=14\n(REAL)", fillcolor="0 1.0 1.0",];
+N30 [style=filled, label="n30=12\n(INT32)", fillcolor="0 1.0 1.0",];
+N31 [style=filled, label="n31=4\n(INT32)", fillcolor="0 1.0 1.0",];
+N32 [style=filled, label="n32=12\n(INT32)", fillcolor="0 1.0 1.0",];
+N33 [style=filled, label="n33=12\n(INT32)", fillcolor="0 1.0 1.0",];
+N40 [style=filled, label="n40=12\n(INT32)", fillcolor="0 1.0 1.0",];
+N41 [style=filled, label="n41=4\n(INT32)", fillcolor="0 1.0 1.0",];
+};
+---- END CLASH GRAPH ----
+
