@@ -108,8 +108,13 @@ A score is not a match (it masks call targets and pool words); match.py is the p
    - the declaration order of the locals, even within one declaration;
    - the clamp's or the condition's spelling, far from the swap;
    - a dead use that survives to register allocation (an unread pointer comparison).
-   These usually take two or more changes together. Past your budget, report the function with
-   its `--regs` score: it goes to a search (`armoutline.py`, `armbrute.py`, `armpermute.py`).
+   These usually take two or more changes together. Before any search, run
+   `armrepeats.py --func NAME`: a matched function with the same instructions shows how the
+   vendor wrote them, so start from its source. Past your budget, report the function with its
+   `--regs` score. When the instructions agree and every edit moves the swap somewhere else, it
+   goes to an allocator trace before brute force (compiler.md, "Tracing the register
+   allocator": a replay over declaration orders found one such function after about 100,000
+   searched sources had not), then to a search (`armoutline.py`, `armbrute.py`, `armpermute.py`).
 
 ## Report (your final message)
 

@@ -213,7 +213,11 @@ rebuilt byte for byte.
   (and `fz_ws.l` for float helpers) by requesting the entry points the objects reference. armcc
   defines `__ARM_use_no_argv` in a file with `int main(void)`; a library link without it adds the
   argv set-up. `__user_libspace` must sit at the original's address, so the zero-init region is
-  laid out around the library's own `.bss`.
+  laid out around the library's own `.bss`. So keep the entry's real name: in one firmware the
+  entry was renamed for reading (`firmware_main`), and the link only worked while a stub for a
+  gap still supplied `main` and the selector. When the last gap became source, the entry had to
+  be `int main(void)` again (the readable name kept as an alias), and armcc then emitted the
+  selector itself with no change to the bytes.
 - A startup file's default handlers are weak, and the application's real handlers override them
   at their own addresses. The startup source names those addresses on its `; at:` lines; the
   matcher (armmatch.place) then places its section by its strong symbols and takes each weak name

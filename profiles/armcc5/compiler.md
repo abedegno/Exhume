@@ -194,6 +194,11 @@ to 5.36 (5.06u7) with `tools/armbuilds.py`, settled it:
   compares). 5.06u2 and earlier keep that knowledge past compares whose flags serve two branches;
   5.06u3 onwards drop it and load the constant (`mov.w r1,#0x100`, 2 bytes longer). No option
   changed it (-O0 to -O3, -Otime or not, -g, --c99, --no_inline and others).
+- Before blaming a source, compile a small control under every installed release: a matched
+  sibling, or a few lines with the same idiom. When a tool runs under another release than the
+  gate's (a trace, a search), check first that the function's listing is the same under both.
+  One allocator trace ran under MDK 5.21 for a firmware built with 5.20; the traced function's
+  listing was the same under both, so the trace stood for the original compiler.
 - So: build every merged file under every release you can get, and look for the files that only
   some releases match. A function nothing matches after long work is worth trying under the
   neighbouring releases before more hours on its source; here it was the compiler.
@@ -389,7 +394,10 @@ This is armcc 5.06's register allocator at `-O1` (update 3), as I came to know i
 the largest function of a firmware. A replay written from these rules gave the compiler's own
 choice at every step for that function (about 9,000 values, two passes, 41 spills), so the
 rules can be used to reason about a swap. They also explain why so many swaps resist local
-edits. armcc has no option that prints any of this (`--stats_file` gives only counts).
+edits. No option prints any of this (`--stats_file` gives only counts), but the release build
+holds a trace of it that can be turned on from outside the compiler ("Tracing the register
+allocator", below). On another firmware, built with `-Otime`, the trace confirmed these rules
+with one difference in the colour order.
 
 - It colours a graph in the Chaitin and Briggs way. Each value is a node; two nodes clash when
   they are live at the same time; a copy between two values is a move. There are 14 registers.
@@ -422,6 +430,12 @@ edits. armcc has no option that prints any of this (`--stats_file` gives only co
   The preferred set is used only when the node has fewer uncoloured neighbours than the set has
   members. In practice it matters when r0-r3 are all taken: the value then goes to a callee-saved
   register already in use, and to ip before a callee-saved register that is not.
+- With `-Otime` the order with no vote is r0-r3, ip, r4-r11, lr, and the preferred set plays no
+  part. ip then comes before every callee-saved register, even one already in use; without
+  `-Otime` a callee-saved register already handed out comes before ip. A replay with the rule for
+  builds without `-Otime` missed 41 to 46 of 211 memory accesses of one `-Otime` function. With
+  this rule, 869 traced compiles of that function (5.06u3) replayed with every removal, every
+  heap and every colour the same.
 - Move clashes: when a node is removed, each copy partner still in the graph takes on the node's
   clashes as move clashes (only while the node's clashes times its moves are under 1,000). When a
   node is coloured, the registers of its move-clash neighbours are struck out first, unless that
@@ -453,6 +467,98 @@ What follows for matching:
   moves, degree or numbering changes the removal order of many nodes and the votes after them.
   There, a swap that no local edit moves is usually decided by the function's context, not by
   the statement (skills/match-file, "When the search stalls").
+- A tie can be decided by the heap's history. In one firmware a function had four identical
+  blocks, each a `sprintf` and an 8-byte copy loop. The vendor's next release added a few
+  statements at the end of the function; after that, three of the loops compiled as before and
+  one had two registers swapped. In each loop the loaded byte and the address `buf + i` tie on
+  the first keys (257 weighted references, no moves). Whichever is removed first is coloured
+  last and gets ip; the other gets r3. In my sources the address left first, as its smaller
+  degree says. In the image's source the byte left first although its key was larger at that
+  moment: positions left in the heap by earlier removals elsewhere in the function decided it.
+  No edit to that loop could move it, and every edit elsewhere that fixed it broke another case.
+  About 100,000 source variants (helpers, getters, dead uses, block temporaries, declaration
+  orders, every MDK from 5.14 to 5.36, per-file options) stopped at three instructions off. A
+  trace of the allocator showed the cause (below).
+- Declaration order only renumbers. Changing the order of a function's locals gives the same
+  graph with the variables' homes renumbered: the homes are numbered one after another in
+  declaration order, and nothing else changes. I checked it against a real trace of another
+  order: all 807 coloured nodes came out as predicted. So every order can be scored in a replay
+  without compiling; the 720 orders of six locals take about two seconds
+  (`tools/armreplay.py sweep`). For the function above I traced 864 structural forms and
+  replayed all 720 orders of each. One form had 30 orders that scored 0 in the replay, and two
+  of them, built for real, matched. The source that matched has no dead code; only its
+  declaration order carries a `match:` comment.
+
+## Tracing the register allocator
+
+armcc 5's back end keeps a trace of its register allocator in the release build. It prints when
+the back end's debug level is 5 or more, and no option sets that level. I turned it on by
+starting armcc under winedbg and, before the compile began, writing to the running process's
+memory so that the level the back end reads is 5. That is a write to one process, in my own Wine
+prefix: nothing on disk is read, copied or changed, and the next compile is the stock compiler
+again. The project's owner approved it; whether you may do it is a question for your compiler's
+licence. The addresses involved belong to one armcc.exe build, and Exhume ships none:
+`tools/armtrace.py run` reads the debugger commands from a local, git-ignored
+`armtrace.local.toml` (profiles/armcc5/armtrace.local.example.toml).
+
+The trace goes where armcc's diagnostics go (`--errors=FILE`). For one graph colouring it holds:
+
+- the first clash graph, as a Graphviz dump: clashes drawn solid, copies dotted, width 5 for a
+  direct copy;
+- each node's starting status (precoloured, extra low, low, high, high non-spill);
+- for each removal, the four work lists in heap order, with an entry that sorts after one of its
+  children marked `x`; then the node with its weighted references, its clash, move-clash and
+  move sets, the status changes, the move clashes it adds, and the coalescing test;
+- each colouring, with the free registers before and after the move clashes, the votes and the
+  colour; the spills; a second pass when there are spills; and the final graph.
+
+A function of 1,338 nodes gave about 57,000 lines. Trace one function at a time, in a source that
+holds only it and the declarations it needs: a whole file gives a colouring for every function.
+`armtrace.py parse` lists what a trace holds.
+
+`tools/armreplay.py check` replays the traced graph with the rules above and compares every
+removal, every heap, every colour and every spill with the trace. On 869 traced compiles of one
+`-Otime` function the replay agreed at every step. None of those compiles spilled, so the
+replay's second pass and its rule for builds without `-Otime` are written from the earlier model
+(above) and have not yet been checked against a trace. Once the replay agrees, it can stand for
+the compiler on that graph:
+
+- `armreplay.py tie TRACE A B` follows two nodes (two values the image has the other way round)
+  through the removals and says why the first one left first: its keys, a tie broken by node
+  number, or a stale heap position. A stale position means no edit to their own statements will
+  move them.
+- `armreplay.py sweep` scores every declaration order in the replay, against the trace's own
+  colours with two nodes swapped or against a list of wanted registers. It needs each variable's
+  home nodes (below).
+- Every other change of the source needs a real compile and its own trace.
+
+When to trace: when a function is down to a few swapped registers, the instructions agree
+(`armvariant.py score --regs` is 0), and edits move the swap somewhere else each time. A replay
+checked against the trace scores thousands of candidates a second and shows which tie to break;
+brute force over the source does not.
+
+What the trace does not give, and what it must not be taken for:
+
+- It starts at the allocator. It does not say what graph a changed source will make. A replay of
+  a captured graph that agrees with the compiler is an observed replay, not a prediction from
+  source: in one project a model of the front end could predict the graph for 204 of 10,000
+  generated sources, and the rest needed real compiles.
+- A passing allocation found by changing the model is not a source. In one firmware, swapping
+  two nodes' numbers in the replay fixed the two registers wanted and moved exactly two removals,
+  and a complete allocation with every register right existed in the model. That allocation
+  departed from the real heap's next choice thousands of times, and no C was found that made
+  armcc produce it. Use a change to the model to learn what must change, then look for C that
+  changes it, and build every candidate.
+- Two sources can give a node the same static clashes and moves and still give it different
+  registers: simplification adds move and move-clash relations as it goes, and select sees
+  different neighbours already coloured. Compare the traces, not the starting graphs.
+- A difference in one event is not a cause until it is tested: a coalescing that one source had
+  and another lacked, suppressed in the model, changed no register.
+- The variables' home nodes, and which node is which operand of which instruction, come from the
+  compiler's intermediate code. I captured it the same way, at breakpoints in the running
+  compiler; that needs the layouts of the compiler's own structures, which are build-specific
+  too and are not in Exhume. Without them, identify nodes from the trace: their references and
+  degree, and the registers the trace gives them against the listing's.
 
 ## Literal pools and scheduling
 
@@ -629,6 +735,11 @@ Operand order and stores:
 - Packed structs and pointer locals: a pointer local into an array of `__packed` structs
   (`p = &arr[n]`) can give a write-back store (`strb r0,[r4,#-1]!`); `p = arr; p += 1;` gives
   `ldr; adds r4,#size`, where `&arr[1]` folds the offset into the literal.
+- A width mask that changes no value can still change registers. `(cfg.mask & 0xFF) & (1 << n)`
+  on an 8-bit field emits nothing for the `& 0xFF`, but it was the only change that fixed the last
+  11-byte register swap of one parser. An audit of file boundaries, callees, ownership, packing,
+  signedness and linkage, five MDK releases, and batches of accessor, mask-type, declaration,
+  copy and promotion forms had not.
 
 What only leaves a `nop`:
 
@@ -671,6 +782,44 @@ Const data:
   (`const char *const p[] = {"a"}`) goes to `.conststring`, each string 4-aligned; a
   `const char s[]` goes to `.constdata`.
 
+## One function in assembler among C neighbours
+
+When every function of a file but one is C and the last is still assembler, the file can still be
+built from source, with its native placement and literal pools, by composing the compiler's own
+assembler output with the hand-written function. It keeps a whole image built from source while
+that function waits for C. It is not a C match, and the gate should count the function as
+assembler.
+
+The easy ways fail when the functions share pools or one starts on a halfword:
+
+- an embedded `__asm` function goes into the file's one `.emb_text` section, out of place;
+- the C before and after it in separate objects, placed by the scatter file, lost the native
+  sizes, alignment and pools;
+- the function alone as an armasm file could be placed, but the C after it needed a start on a
+  halfword that a separate object cannot give.
+
+What worked, in one firmware, for a unit of nine C functions around one 11,746-byte assembler
+function:
+
+1. Compile the C with the file's options, and again with `-S`. Reassemble the `-S` output with
+   armasm (`--cpu Cortex-M3 --apcs=/interwork`, as its assertions require), and require that every
+   allocated section has the same bytes, attributes, size and alignment as the direct object,
+   every public symbol the same offset, and every relocation the same symbolic expression. That
+   proves the assembler text is the compiler's code.
+2. Keep the compiler's instructions and literals. A small layout file gives what the C cannot:
+   each function's native address, where its pools go and the padding. It holds no opcodes and
+   no literal values.
+3. Put everything in one Thumb AREA: the C functions, the hand-written function at its native
+   place, the pools merged where the image shares them (a pool word both use must get the same
+   value from both sources), and the image's branch over a pool in place of the compiler's.
+   Assemble once, with assertions on every entry, every pool start and the total size.
+4. Never read the target image while composing. Make the build cache's key include the
+   assembler input, the layout file and the composer, and prove each reaches the object: a
+   changed immediate in the assembler and a changed constant in the C must each fail the gate.
+
+The composed object matched all 16,930 bytes and 660 relocations at native placement. A real C
+replacement is then staged as an ordinary C file, without the composition, and proved on its own.
+
 ## Searching for the source
 
 Most functions match by hand in a few builds. The last few in a firmware are register swaps and
@@ -705,8 +854,53 @@ load orders that no single edit moves; these took searches over combinations, no
   of 8320 variants of one template, and helpers not given a struct local 555 of 593 of another.
 - Under Wine, start a persistent server in each prefix (`wineserver -p`) and give each parallel
   job its own prefix; otherwise every call boots Wine (390 variants: 3 s with the servers up,
-  30 s without) and one shared server becomes the bottleneck.
+  30 s without) and one shared server becomes the bottleneck. Warm each new prefix before its
+  first tool, with `wine cmd /c exit` and no pipes (linker.md): a search's first compile in a
+  fresh prefix otherwise never returns.
 - armcc's front end keeps EDG's debug options: `--db=-dump_il` prints a function's intermediate
   language with source lines and columns, `--db=-dump_stmts` the statement tree,
-  `--db=-dump_lifetimes` object lifetimes. The back end's debug output (register allocation,
-  scheduling, literal pools) is compiled out of the release build; no option reaches it.
+  `--db=-dump_lifetimes` object lifetimes. The back end's register-allocation trace is in the
+  release build but off, and no option turns it on; an observer can turn it on in the running
+  process ("Tracing the register allocator"). Whether the scheduler's and the literal pool's
+  debug output can be reached the same way is untested.
+- Run `tools/armrepeats.py --func NAME` before any search. A matched function that repeats the
+  same instructions shows how the vendor wrote that code, and its source is the first form to
+  try. In one firmware two sibling senders showed that the vendor passed some values through a
+  temporary `t`: in one release that compiled the same as the plain spelling, in the next it did
+  not, and only the sources with `t` rebuilt both.
+- When registers stall, trace the allocator before brute force ("Tracing the register
+  allocator"). On one function about 100,000 searched sources never reached 0; the trace showed
+  the tie, and a replay over declaration orders found the source.
+- Screen candidates before compiling them. A random permuter writes C that is not the same
+  program: two `n++` in one expression, a temporary read before it is set. Check each text with
+  clang for the target (`clang --target=arm-none-eabi -mcpu=cortex-m3 -std=c99 -fsyntax-only
+  -Wunsequenced -Wuninitialized -Wsometimes-uninitialized`, with armcc's keywords defined away
+  for clang only, `-D__packed=` and the like). In one run 35 of 242 compiled texts had unsequenced
+  changes, and the lowest score of the run was one of them; in another, 342 of 637 had an
+  uninitialised temporary. A low score from such C is not progress. Check too that a candidate
+  does the reads, writes and calls the original does, in its order: a search can move a read
+  into another branch, or add one through a new alias.
+- Count everything: attempts, sources that compiled, sources that failed, distinct texts. Keep
+  the failures with their errors. Distinct texts are not distinct outputs: one pilot compiled 826
+  sources into 785 distinct listings.
+- A model score ranks what to build; only a build proves anything. A candidate a model cannot
+  score is still worth compiling, and a model's zero is a hint until match.py says WHOLE FILE
+  MATCHES.
+- Decide before a search what a result must satisfy besides its score, and audit each round's best
+  few and every result with the right sizes against it: every function of the unit the same size
+  and entry, the neighbours' bytes and pools unchanged, the same spills by identity (not only by
+  count), the same divisions and calls. Report the measures apart: right sizes, the byte score and
+  progress against a fixed control are different things. A result that only moves the old
+  failure later in the function has not passed it.
+- Simon Lindholm's decomp-permuter can drive armcc. Use its mutation engine (its Candidate and
+  Randomizer classes) with your own compile and score hooks; its objdump scorer is not for this
+  target. Its C parser does not know armcc's keywords, so take `__packed` and the like out of the
+  parser's view only and compile the original text, and splice the mutated function back into
+  its whole file so that the neighbours and headers stay. Turn on the passes for temporaries,
+  declaration order, split and chained assignments, operand order, compound assignments,
+  conditions and blocks; leave type changes and new helpers off unless you mean them. Its printer
+  adds blank lines after the function, so compare the rest of the file without that whitespace.
+  One pass, `perm_temp_for_expr`, took 1.5 of 1.6 seconds of a slow mutation, and it can put its
+  temporary outside the region you marked (into another switch arm, or where it no longer comes
+  before its use). Screen its output as above. On one large function a run of 256 builds and a
+  pilot of 846 found no match; armpermute.py is the simpler built-in alternative.

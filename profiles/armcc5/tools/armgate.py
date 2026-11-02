@@ -728,7 +728,11 @@ def _init(queue, cfg_path, overrides):
         if not os.path.exists(os.path.join(prefix, 'system.reg')):
             os.makedirs(prefix, exist_ok=True)
             boot = shutil.which('wineboot') or (os.path.join(os.path.dirname(wine), 'wineboot') if wine else None)
-            if boot: subprocess.run([boot, '-i'], env=os.environ, capture_output=True, timeout=600)
+            # no pipes: the services the first program under a new server starts inherit its
+            # output and live as long as the server, so a captured run would never see its end
+            # (linker.md)
+            if boot: subprocess.run([boot, '-i'], env=os.environ, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
         if server:        # a persistent server: a no-op if one already runs in this prefix
             subprocess.Popen([server, '-p'], env=os.environ, start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
