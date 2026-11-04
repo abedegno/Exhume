@@ -107,9 +107,17 @@ A score is not a match (it masks call targets and pool words); match.py is the p
    - a block-local temporary for a copied field, or a local declared another integer type;
    - the declaration order of the locals, even within one declaration;
    - the clamp's or the condition's spelling, far from the swap;
-   - a dead use that survives to register allocation (an unread pointer comparison).
-   These usually take two or more changes together. Past your budget, report the function with
+   - a dead use that survives to register allocation (an unread pointer comparison);
+   - a multiplication by a power of two written where you wrote a shift (`i * 2`, `x * 256`),
+     or the other way round;
+   - a parameter's type (`unsigned char` against `int`), or `if (a) { if (b) }` against
+     `if (a && b)`.
+   These usually take two or more changes together. At `-O0` a register change can also change
+   a reused constant, a reloaded literal or an `ldrd` pair, so don't reject a change for those
+   alone (compiler.md, "Large functions at -O0"). Past your budget, report the function with
    its `--regs` score: it goes to a search (`armoutline.py`, `armbrute.py`, `armpermute.py`).
+4. Before a long search, ask whether an older version of the firmware has the same function,
+   perhaps at another optimisation level. Report it if one exists.
 
 ## Report (your final message)
 

@@ -657,6 +657,80 @@ Locals each get a register of their own for the whole function, by use count, ti
 declaration order; temporaries are allocated over the whole function, so one statement's registers
 can hang on a statement far away (a random permuter over a hand source found such pairs).
 
+Large functions at -O0:
+
+- A large function keeps every local in a stack slot and pushes only `lr`, or `{r0, lr}` with a
+  parameter. Functions of 1,103 and 856 instructions did this, while half of the first, 616
+  instructions, pushed r4-r11 and kept its locals in registers. I don't know the exact size where
+  the mode changes.
+- In this mode r0-r3 hold only temporaries, and their choice is global. In an 18.5 KB switch,
+  removing only the last two or three case bodies changed the registers of the function's first
+  statements to chance. So you can't match one part of such a function in a small test
+  function, because the registers there depend on the whole body.
+- An empty `case X: break;` gets its own `b` at its source position, and the switch table points
+  at that `b`. Its place between the neighbouring case bodies shows where the source had it.
+  Putting four empty cases together at the end added four `b` instructions and turned one `beq`
+  into `beq.w`, a 2-byte difference that was the first clue in that function.
+- A block-scope local gets its own stack slot. It is not overlaid on a function-scope slot.
+
+Changes that keep every instruction but move registers at -O0. I found each one in an exact
+match:
+
+- **A multiplication by a power of two instead of a shift**, e.g., `i * 2` for `i << 1`. The
+  code is the same shift, but the allocator sees the multiply. In the 18.5 KB switch, the whole
+  register difference came from three things together:
+  - five such spellings in one case (four `i * 2` and one `* 256`);
+  - the parameter declared `unsigned char` rather than `int`;
+  - the empty cases in their right places.
+
+  Every partial set failed. The vendor mixed the two spellings, and 48 other `x = x << 8`
+  statements in the same function had to stay shifts. A neighbouring function had
+  `((p[5] << 8) + p[6]) * 2`.
+- **Nesting.** `if (a) { if (b || c) S }` and `if (a && (b || c)) S` give the same code. But
+  in stack mode the spilled float temporaries get different slots, and in register mode they
+  get different callee-saved registers.
+- **An assignment inside an expression.** `soc = (sum = avg) / n;` and a separate `sum = avg;`
+  give the same code, but `sum` has one reference fewer. Register locals are ranked by use count,
+  with uses in a loop counted more, so two locals swapped registers.
+- **Locals.** Removing a local that only held a loop bound flipped a value and index pair in a
+  store elsewhere in the function. Passing an expression straight to a parameter, rather than
+  through a temporary local, swapped two registers.
+
+A register change at -O0 also changes a few instructions around it, so these levers can look
+like code changes:
+
+- a constant that armcc reuses from a register or loads again (`movs r1,#0x30`);
+- a literal base that is loaded again;
+- two adjacent stack loads that pair into one `ldrd` or stay two `ldr`;
+- the literal pools and branch islands that move with these.
+
+Count a difference as allocation only when every differing run is one of these. Three search
+runs on the 18.5 KB switch required the register-masked instructions to be equal before they
+scored a change, so they threw away the multiplications above every time.
+
+Not inputs at -O0. Each of these was compiled and left the function byte-identical:
+
+- line breaks (the whole function on one line, or every line tripled);
+- file contents before the function, the path, the environment and the option order;
+- constants (constant-only edits between eleven versions never moved a register);
+- an enum against its underlying integer type;
+- empty statements, braces, `else if` against `else { if }`, `!x` against `x == 0`, De Morgan
+  forms, and compound against plain assignments;
+- the host heap under Wine (the allocator's trace stayed byte-identical when the compiler's own
+  pointers changed order).
+
+Smaller -O0 facts from the same matches:
+
+- A `static __inline` getter with no parameter is inlined but leaves a `nop` before its body. An
+  inlined helper with a parameter leaves none.
+- A macro body in `do { } while (0)` adds a `nop`, and `else (void)0;` adds a `b` and a `nop`.
+  Plain braces add nothing.
+- A local with an initialiser is kept even when it is never read.
+- `if (a - b == 0) x = 0;` stores the zero it compared.
+- A `short` member shifted right by 8 and stored to a byte is `ldrh` then `ubfx #8,#8`.
+- An `unsigned` value converted to `float` calls `__aeabi_ui2f`, and a signed one calls
+  `__aeabi_i2f`. Nothing else in the code differs, so only the call target shows the type.
+
 Const data:
 
 - Global `const` arrays go to the object's one `.constdata` in definition order, each at its own
@@ -710,3 +784,41 @@ load orders that no single edit moves; these took searches over combinations, no
   language with source lines and columns, `--db=-dump_stmts` the statement tree,
   `--db=-dump_lifetimes` object lifetimes. The back end's debug output (register allocation,
   scheduling, literal pools) is compiled out of the release build; no option reaches it.
+
+What an 11.7 KB function taught about searching. The function was a protocol dispatcher at
+`-O1`, and its registers resisted about 100 search runs over two and a half weeks. It matched in
+the end with no edit at all, because the vendor had built the same source earlier at `-O0`:
+
+- **Look for other builds of the same source first.** Older firmware versions may have the
+  function built at another optimisation level. An `-O0` build maps statements to instructions
+  almost one for one, so its source is much easier to recover. Here the `-O0` source, compiled
+  unchanged at `-O1`, was byte-exact against the current image.
+- **Don't compare builds by their instructions.** The `-O0` and `-O1` copies of the same function
+  had a masked similarity of about 0.2, so a scan of the versions reported "no near sibling".
+  Compare builds by compiling one candidate source under each build's options.
+- **Use every version as a check.** Eleven old images held the function in six versions. The
+  vendor's edits between versions were few and easy to read, so one source could be scored on
+  all six at once. A real source feature has to hold in every version, and a change that helps
+  one version and hurts another was fitted to noise.
+- **Match the neighbours first.** Before searching the hard function, match the other functions
+  of its file, and a few large functions elsewhere that use the same allocation mode. When they
+  are all exact with natural C, the compiler and options are right, and the difference is in the
+  hard function's own text. The neighbours also show the vendor's spellings.
+- **Fix the structure first.** A length difference of a few bytes is evidence about the source,
+  not a side effect. In that function, two bytes led to four misplaced empty cases. With them
+  in place, the register levers could be scored.
+- **Calibrate partial scores before trusting them.** When allocation is global, measure how far a
+  small code-neutral change moves the score, and how often your source agrees with the image at
+  each site by chance. In the 18.5 KB function the image's choice at each of 332 stores behaved
+  like a random bit, and our sources agreed at chance. Exact-case counts moved by about four
+  either way as noise, so only an exact hit was evidence. A search that keeps the
+  best-scoring variant just follows that noise.
+- **Know what an exact model of the allocator can and can't do.** I wrote replicas of the
+  allocator at `-O1` and at `-O0` that gave the compiler's own choice at every step. They let one
+  run score 14.5 million combinations of source changes in hours. But they could only test the
+  changes in their catalogue, and the answer, a multiplication in place of a shift, was never in
+  it. Before you build a model, list the spellings of each kind of expression (shift or multiply,
+  nesting, parameter types) and test each family with real compiles.
+- **Make byte checks strict.** A checker that learns which symbol each address is must allow one
+  address per symbol and no address shared by two symbols. One checker let `__aeabi_ui2f` take
+  both its own address and `__aeabi_i2f`'s, and so passed a function with the wrong signedness.

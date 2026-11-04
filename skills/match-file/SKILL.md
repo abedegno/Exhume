@@ -45,6 +45,23 @@ Stop varying the function and audit, in this order:
 5. **The compiler and options for this file.** Another build of the same compiler, or another
    option set, before assuming the source is wrong; one file in an image can have been built
    differently (profiles' compiler.md say how to scan for it).
+6. **Other builds of the same source.** Ask the owner for every version of the program. An older
+   version may hold the same function built with other options, often unoptimised, where the
+   source is far easier to recover. Compare versions by compiling one candidate under each
+   version's options, not by comparing their instructions, because two builds of the same source
+   at different levels can look unrelated. One 11.7 KB armcc function resisted two and a half
+   weeks of search. Its source then came from an `-O0` build in an older version in two days, and
+   that source compiled unchanged at `-O1` was exact (profiles/armcc5/compiler.md, "Searching for
+   the source").
+7. **The neighbours.** Match the other functions of the file, and a few functions elsewhere that
+   the compiler treats the same way, before going on with the hard one. If they all match with
+   natural C, the toolchain is right and the difference is in the hard function's own text.
+
+Partial scores can mislead when the compiler allocates over the whole function. Measure how much
+a small change that keeps the instructions moves the score before you trust it. If the score
+moves about as much by chance, count only exact matches. A checker that decides whether a
+change keeps the code must not count register side effects as code changes (reused constants,
+reloaded literals, paired loads), or it throws the answer away unscored.
 
 Before searching again, go back to the plain source: take out the dead uses, temporaries and
 helpers that earlier rounds added to make up for a difference. They were fitted to the old
