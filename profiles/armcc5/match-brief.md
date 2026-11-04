@@ -114,8 +114,13 @@ A score is not a match (it masks call targets and pool words); match.py is the p
      `if (a && b)`.
    These usually take two or more changes together. At `-O0` a register change can also change
    a reused constant, a reloaded literal or an `ldrd` pair, so don't reject a change for those
-   alone (compiler.md, "Large functions at -O0"). Past your budget, report the function with
-   its `--regs` score: it goes to a search (`armoutline.py`, `armbrute.py`, `armpermute.py`).
+   alone (compiler.md, "Large functions at -O0"). Before any search, run
+   `armrepeats.py --func NAME`: a matched function with the same instructions shows how the
+   vendor wrote them, so start from its source. Past your budget, report the function with its
+   `--regs` score. When the instructions agree and every edit moves the swap somewhere else, it
+   goes to an allocator trace before brute force (compiler.md, "Tracing the register
+   allocator": a replay over declaration orders found one such function after about 100,000
+   searched sources had not), then to a search (`armoutline.py`, `armbrute.py`, `armpermute.py`).
 4. Before a long search, ask whether an older version of the firmware has the same function,
    perhaps at another optimisation level. Report it if one exists.
 

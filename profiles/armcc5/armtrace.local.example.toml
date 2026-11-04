@@ -1,0 +1,20 @@
+# armtrace.local.toml: how to turn on armcc's register-allocator trace in a running compiler.
+#
+# Copy this file to armtrace.local.toml (in the project root or in profiles/armcc5/; it is
+# git-ignored) and fill it in for your own armcc build. Never commit the filled-in file: the
+# commands name addresses inside one armcc.exe build, and Exhume ships none.
+#
+# armtrace.py run starts armcc under winedbg, sends these commands before the compile starts,
+# then `cont` and `quit`. They must make the running process see a back-end debug level of
+# {level} (5 for the allocator trace) and change nothing on disk. compiler.md, "Tracing the
+# register allocator", describes the method. Whether you may do this with your compiler is a
+# question for its licence.
+
+[trace]
+# The toolchain home these commands were worked out for. armtrace.py refuses another home.
+home = "/path/to/your/MDK/home"
+
+# winedbg commands. {level} is the level as a number; {level:02x} is it in hex.
+commands = [
+    "set *(int*)0xADDRESS = 0xVALUE_WITH_{level:02x}",
+]

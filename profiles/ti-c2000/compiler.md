@@ -156,6 +156,10 @@ that worked.
   buffer that DMA fills must be `volatile`: then an LSR moved behind two MOVXI, the last 2 words
   of a function. A word read once per bit (`MOV AL,@x; LSR AL,1; OR AL,@x`) is volatile. A
   non-volatile word is read once.
+- **Volatile is per file.** One word can be volatile in one file and ordinary in another. In one
+  firmware's next release, the task that polled a new request word read it through a volatile
+  view, while the initialiser and the page writer that set it used ordinary views. Give each
+  file the view its code shows, rather than one declaration for every file.
 - **Where one object ends.** The scheduler treats stores to members of one object as possibly
   ordered and stores to different objects as free. Where a page struct crosses into the next
   page, the split matters: functions matched only with the next page's words as members of the

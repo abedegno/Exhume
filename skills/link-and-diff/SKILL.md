@@ -89,7 +89,10 @@ Reading what fails:
   one, or a file's data options differ (a larger `--bss_threshold` keeps zero globals in `.data`).
 - The whole gate takes minutes under Wine: give it workers (`[gate] jobs`, default one per core).
   Each has its own Wine prefix and a persistent wineserver; a firmware of about 500 functions
-  went from half an hour to under a minute.
+  went from half an hour to under a minute. The gate boots each new worker prefix itself, with no
+  pipes attached. A prefix made any other way (by hand, by a project's own gate script, by a
+  clone that was never run) must be warmed before its first captured tool call, with `wine cmd /c
+  exit` and no pipes, or that call never returns (profiles/armcc5/linker.md).
 
 ## A C2000 image (ti-c2000): one link
 
