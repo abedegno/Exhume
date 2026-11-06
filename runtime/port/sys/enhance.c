@@ -15,7 +15,7 @@ uint32_t enhance_on;
 static const struct enhance_flag *tab;
 static int ntab;
 static const char *game_name = "";
-static const char *const kind_name[] = { "presentation", "timing", "gameplay" };
+static const char *const kind_name[] = { "presentation", "timing", "gameplay", "fix" };
 
 void enhance_init(const struct enhance_flag *table, int n, const char *game)
 {
@@ -104,14 +104,23 @@ int enhance_parse(const char *list, uint32_t *mask, int on, int strict)
     return 0;
 }
 
-void enhance_list(FILE *f)
+static void list_kind(FILE *f, int fixes)
 {
     int i;
-    fprintf(f, "Enhancements for %s, each off unless turned on (--enhance NAME[,NAME]):\n", game_name);
     for (i = 0; i < ntab; i++) {
-        if (tab[i].only) continue;
+        if (tab[i].only || (tab[i].kind == ENH_FIX) != fixes) continue;
         fprintf(f, "  %-16s %-12s %s%s%s%s\n", tab[i].name, kind_name[tab[i].kind], tab[i].about,
                 tab[i].source ? " (from " : "", tab[i].source ? tab[i].source : "", tab[i].source ? ")" : "");
+    }
+}
+
+void enhance_list(FILE *f)
+{
+    fprintf(f, "Enhancements for %s, each off unless turned on (--enhance NAME[,NAME]):\n", game_name);
+    list_kind(f, 0);
+    if (enhance_kind_mask(ENH_FIX)) {
+        fprintf(f, "Fixes for faults of the original, each off unless turned on the same way:\n");
+        list_kind(f, 1);
     }
 }
 
@@ -164,7 +173,10 @@ int enhance_from_recording(const char *path, uint32_t *mask, int *carries)
 void enhance_log(void)
 {
     char b[512];
-    if (!enhance_on) return;
-    fprintf(stderr, PORT_NAME ": enhance: %s (not as DOS%s)\n", enhance_names(enhance_on, b, sizeof b),
-            enhance_on & enhance_kind_mask(ENH_GAMEPLAY) ? ", gameplay changed" : "");
+    uint32_t fixes = enhance_on & enhance_kind_mask(ENH_FIX), rest = enhance_on & ~fixes;
+    if (rest)
+        fprintf(stderr, PORT_NAME ": enhance: %s (not as DOS%s)\n", enhance_names(rest, b, sizeof b),
+                rest & enhance_kind_mask(ENH_GAMEPLAY) ? ", gameplay changed" : "");
+    if (fixes)
+        fprintf(stderr, PORT_NAME ": fix: %s (not as DOS, gameplay changed)\n", enhance_names(fixes, b, sizeof b));
 }

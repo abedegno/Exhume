@@ -1,13 +1,13 @@
 /* The settings screen (settings.c): a model of tabs and rows, its drawing into a 640x400 RGBA
    layer, and its keyboard and pointer input. Each game gives it a table of rows; the Enhancements
-   tab is built from enhance.h's flags. The SDL backend shows the layer and feeds it input.
+   and Fixes tabs are built from enhance.h's flags (a flag of kind ENH_FIX on Fixes). The SDL backend shows the layer and feeds it input.
    Pixels are 0xAABBGGRR words, that is the bytes R, G, B, A in memory on a little-endian host
    (SDL_PIXELFORMAT_RGBA32). */
 #ifndef SETTINGS_H
 #define SETTINGS_H
 #include <stdint.h>
 
-enum { SET_TAB_SOUND, SET_TAB_CONTROLS, SET_TAB_DISPLAY, SET_TAB_ENHANCE, SET_TAB_GAME, SET_TABS };
+enum { SET_TAB_SOUND, SET_TAB_CONTROLS, SET_TAB_DISPLAY, SET_TAB_ENHANCE, SET_TAB_FIXES, SET_TAB_GAME, SET_TABS };
 enum { SET_CYCLE, SET_BOOL, SET_SLIDER, SET_FOLDER };
 
 struct setting {

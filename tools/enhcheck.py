@@ -16,7 +16,7 @@ docs/ENHANCEMENTS.md): each is off by default and carried by the sessions played
                                                             key does its job
     python3 tools/enhcheck.py [--config PATH] baseline check|make|record [NAME ...]
                                                             the port-made goldens of tests/replay/
-                                                            enhanced/NAME (timing and gameplay)
+                                                            enhanced/NAME (timing, gameplay and fixes)
     python3 tools/enhcheck.py [--config PATH] setup check|record [NAME ...]
                                                             the port-made setup sessions of tests/
                                                             replay/setup/NAME, whose scripts use a
@@ -251,6 +251,20 @@ def registry():
         check('none by default: no enhance line', rc == 0 and 'enhance:' not in out, out[-400:])
         rc, out = port(h, '--enhance', 'skip-intro')
         check('--enhance skip-intro: logged, not as DOS', 'enhance: skip-intro (not as DOS)' in out, out[-400:])
+        # a fix (enhance.h's ENH_FIX) is listed after the enhancements under a heading of its own,
+        # and logged on a line of its own, with no enhance: line when only fixes are on
+        fixes = port_flags('fix')
+        if fixes:
+            rc, out = port(h, '--enhance', 'list')
+            check('--enhance list: the fixes after the enhancements, under their own heading',
+                  'Fixes for faults of the original' in out and out.index('Fixes for faults') < out.index('  ' + fixes[0] + ' '),
+                  out[-600:])
+            rc, out = port(h, '--enhance', fixes[0])
+            check(f'--enhance {fixes[0]}: logged as a fix, gameplay changed, and no enhance: line',
+                  f'fix: {fixes[0]} (not as DOS, gameplay changed)' in out and 'enhance:' not in out, out[-400:])
+            rc, out = port(h, '--enhance', 'skip-intro,' + fixes[0])
+            check('an enhancement and a fix: a line each',
+                  'enhance: skip-intro (not as DOS)' in out and f'fix: {fixes[0]} (not as DOS, gameplay changed)' in out, out[-400:])
         rc, out = port(h, '--enhance', 'skip-intro', hidden=False)
         check("a player's run saves it", 'enhance=skip-intro' in settings(h), settings(h))
         rc, out = port(h, hidden=False)

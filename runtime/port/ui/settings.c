@@ -53,7 +53,7 @@ static int same_folder(const char *a, const char *b)
 #define TITLE_X 16
 #define TITLE_Y 10
 #define TAB_Y 36
-#define TAB_W 120
+#define TAB_W 100      /* six tabs across the 640 layer; "Enhancements" is 96 pixels */
 #define TAB_H 24
 #define ROW_Y 72
 #define ROW_H 20
@@ -78,7 +78,7 @@ static int same_folder(const char *a, const char *b)
 #define FOOTER "F11 opens this at any time \xC2\xB7 Esc closes"
 #endif
 
-static const char *const tab_name[SET_TABS] = { "Sound", "Controls", "Display", "Enhancements", "Game" };
+static const char *const tab_name[SET_TABS] = { "Sound", "Controls", "Display", "Enhancements", "Fixes", "Game" };
 
 static const char *home_dir = "";
 static const char *title_text = "";
@@ -293,13 +293,13 @@ void settings_init(const char *home, const struct setting *table, int n, const c
         const struct enhance_flag *f = enhance_flag(i);
         if (f->only) continue;
         memset(&rows[nrows], 0, sizeof rows[nrows]);
-        rows[nrows].tab = SET_TAB_ENHANCE;
+        rows[nrows].tab = f->kind == ENH_FIX ? SET_TAB_FIXES : SET_TAB_ENHANCE;
         rows[nrows].label = f->name;
         rows[nrows].kind = SET_BOOL;
         rows[nrows].restart = 1;
         if (f->source) snprintf(help[nrows], sizeof help[nrows], "%s (from %s)", f->about, f->source);
         else snprintf(help[nrows], sizeof help[nrows], "%s", f->about);
-        mark[nrows] = f->kind == ENH_GAMEPLAY ? "changes play" : NULL;
+        mark[nrows] = f->kind == ENH_GAMEPLAY || f->kind == ENH_FIX ? "changes play" : NULL;
         enh_bit[nrows++] = i;
     }
     for (i = 0; i < nrows; i++) {
