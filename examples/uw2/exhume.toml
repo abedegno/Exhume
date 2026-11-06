@@ -207,7 +207,9 @@ driver_check = "{python} {exhume}/tools/ailcheck.py --config {config} {ail} {hw}
 driver_marker = "register_driver"      # a session whose AIL log registers no driver has no music card
 order = ["newgame", "walk", "sound", "soundfm", "soundmt", "items", "talk", "load"]
 c0_signature_at = 8                    # DGROUP starts 4 bytes before C0's _DATA (docs/case-study-uw2.md)
-stage_from = { load = "items" }
+# weightwrap starts from the saved game the setup session setup/weightless writes (a test's
+# cheats, format 6, which only the port replays; UW2Decomp's tools/golden.py makes it the same way)
+stage_from = { load = "items", weightwrap = "setup/weightless" }
 
 [replay.segments]
 # far pointers kept in game state: SEGS' first block is seg_370D (EXE paragraph 370Dh), and
