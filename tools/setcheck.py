@@ -294,7 +294,8 @@ def scale():
         shutil.rmtree(work, ignore_errors=True)
 
 
-TABS = 5    # settings.h's SET_TABS; the rows' tab numbers are its enum (sound, controls, display, enhancements, game)
+TABS = 6    # settings.h's SET_TABS; the rows' tab numbers are its enum (sound, controls, display, enhancements, fixes, game)
+GAME = 5    # SET_TAB_GAME
 CYCLE, BOOL, SLIDER, FOLDER = range(4)
 
 
@@ -336,7 +337,7 @@ def roundtrip(part=0, parts=1):
     """PART of PARTS: the rows are dealt out in turn, so that `all` can run the slices side by side."""
     rows = table_rows()
     if part == 0:       # once, not in every slice
-        check('the table lists rows in all of the tabs but the generated one', {r['tab'] for r in rows} >= {0, 1, 2, 4}, [r['label'] for r in rows])
+        check('the table lists rows in all of the tabs but the generated two', {r['tab'] for r in rows} >= {0, 1, 2, GAME}, [r['label'] for r in rows])
         # a row that resizes the window must not be a slider: dragging it would move the row under the pointer
         sc = [r for r in rows if r['key'] == 'scale']
         check('the Window scale row is a cycle, 1x to 8x (no drag resizes the window)',
@@ -425,7 +426,7 @@ def firstrun_gold(work):
               n >= 20 if want else n == 0, n)
     # a player turns it off in the screen, and the next start does not show it
     h = fresh(work, 'toggle', start=True)
-    lines, t = nav(4, 2, t0=1000)       # Game tab, "Show this at start": the screen is open already, so F11 would close it
+    lines, t = nav(GAME, 2, t0=1000)       # Game tab, "Show this at start": the screen is open already, so F11 would close it
     lines = lines[1:]                    # no F11 first
     lines.append(f'{t} key enter'); lines.append(f'{t + 200} key f11')
     port(h, '--input-script', script_file(work, 'toggle', lines), hidden=False, exit_after=t + 900)
@@ -483,7 +484,8 @@ def enh_names():
         rc, out = port(os.path.join(d, 'h'), '--enhance', 'list')
     finally:
         shutil.rmtree(d, ignore_errors=True)
-    return [l.split()[0] for l in out.splitlines() if l.startswith('  ')]
+    # the Enhancements tab's rows, in its order: the fixes are on a tab of their own
+    return [l.split()[0] for l in out.splitlines() if l.startswith('  ') and l.split()[1] != 'fix']
 
 
 def restart():
@@ -508,7 +510,7 @@ def folder():
     try:
         empty = os.path.join(work, 'empty'); os.makedirs(empty)
         want = 'data=' + os.path.abspath(R.DATA)
-        lines, t = nav(4, 0)
+        lines, t = nav(GAME, 0)
         lines.append(f'{t} key enter')
         res = {}
         for name, ans in (('refused', empty), ('control', ''), ('accepted', os.path.abspath(R.DATA))):
@@ -539,7 +541,7 @@ def lostup():
     the lost press is on the empty area below the rows."""
     work = tempfile.mkdtemp(prefix='setcheck-')
     try:
-        lines, t = nav(4, 0)
+        lines, t = nav(GAME, 0)
         res = {}
         for name, lost in (('lost', True), ('control', False)):
             ls = lines + ([f'{t} wdown 320 300'] if lost else []) + [f'{t + 300} wclick 100 82', f'{t + 800} key f11']

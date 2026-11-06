@@ -8,12 +8,15 @@
 #include <stddef.h>
 #include <stdio.h>
 
-enum { ENH_PRESENTATION, ENH_TIMING, ENH_GAMEPLAY };
+/* The kinds. A fix is a gameplay change that corrects a fault of the original (a lost object, a
+   spell that is never used up) rather than changing its design: it plays as gameplay does, and
+   is listed, logged and shown on a settings tab of its own. */
+enum { ENH_PRESENTATION, ENH_TIMING, ENH_GAMEPLAY, ENH_FIX };
 
 struct enhance_flag {
     const char *name;     /* "skip-intro": what --enhance and the settings file say */
     const char *about;    /* one line, for --enhance list (and a settings screen) */
-    int kind;             /* ENH_PRESENTATION, ENH_TIMING or ENH_GAMEPLAY */
+    int kind;             /* ENH_PRESENTATION, ENH_TIMING, ENH_GAMEPLAY or ENH_FIX */
     const char *source;   /* where the idea or code came from, or NULL for this project's own */
     const char *only;     /* NULL; or the other game's name, for a flag listed here but not in it */
 };
@@ -32,7 +35,7 @@ uint32_t enhance_kind_mask(int kind);
 /* LIST's names turned on (on) or off in *mask; strict: an unknown or another game's name is
    an error (-1, *mask unchanged), else a warning and skipped. */
 int enhance_parse(const char *list, uint32_t *mask, int on, int strict);
-/* --enhance list. */
+/* --enhance list: the enhancements, then the fixes. */
 void enhance_list(FILE *f);
 /* The settings file's enhance= (lenient), and writing it. */
 int enhance_load(const char *home, uint32_t *mask);
@@ -42,6 +45,6 @@ int enhance_count(void);
 const struct enhance_flag *enhance_flag(int i);
 /* A recording's flags: *carries 1 for format 5 (and 6); -1 when it names one this build lacks. */
 int enhance_from_recording(const char *path, uint32_t *mask, int *carries);
-/* The log line, when any flag is on. */
+/* The log lines, when any flag is on: one for the enhancements, one for the fixes. */
 void enhance_log(void);
 #endif

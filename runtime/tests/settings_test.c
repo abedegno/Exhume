@@ -23,6 +23,7 @@ static const struct setting T[] = {
 static const struct enhance_flag F[] = {
     { "skip-intro", "Starts at the main menu", ENH_TIMING, NULL, NULL },
     { "free-heading", "Sliding along a wall no longer turns your view", ENH_GAMEPLAY, "UltimaHacks", NULL },
+    { "tidy-objects", "A stack too heavy to take part of no longer loses an object slot", ENH_FIX, NULL, NULL },
 };
 /* the games' Window scale row (settab.c): a cycle, 1x to 8x, the file's text the number */
 static const char *const scale_names[] = { "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", NULL };
@@ -79,7 +80,7 @@ int main(void)
     static uint32_t px[SET_W * SET_H];
     char v[64];
     int i, lit = 0;
-    enhance_init(F, 2, "UW1");
+    enhance_init(F, 3, "UW1");
     port_config_set("h", "volume", "abc");                       /* a bad value: the default */
     settings_init("h", T, 2, "Test");
     CHECK(settings_value(1) == 100, "a bad volume reads as the default");
@@ -110,7 +111,14 @@ int main(void)
     CHECK(settings_note(2) && !strcmp(settings_note(2), "Restart to apply"), "and changed again, it has it once more");
     CHECK(settings_help(3) && strstr(settings_help(3), "(from UltimaHacks)"), "an enhancement's help line gives its credit");
     CHECK(settings_help(2) && !strstr(settings_help(2), "(from"), "and one of the project's own has none");
-    settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* back to Sound: Volume is row 1 */
+    settings_key(SET_KEY_TAB);                                   /* to Fixes: its one row, the fix */
+    settings_key(SET_KEY_ENTER);
+    CHECK(port_config_get("h", "enhance", v, sizeof v) == 0 && strstr(v, "tidy-objects") && strstr(v, "skip-intro"),
+          "a fix, on the Fixes tab, is saved with the enhancements");
+    CHECK(settings_note(4) && !strcmp(settings_note(4), "Restart to apply"), "the fix's row is row 4, after the enhancements");
+    settings_key(SET_KEY_ENTER);
+    CHECK(settings_note(4) && !strcmp(settings_note(4), "changes play"), "and changed back, it is marked \"changes play\"");
+    settings_key(SET_KEY_TAB); settings_key(SET_KEY_TAB);       /* Game, then back to Sound: Volume is row 1 */
     applies = 0;
     settings_pointer(VALUE_X + 80, ROW_Y + ROW_H + 5, 1);       /* press on the track: 50 */
     settings_pointer(VALUE_X + 81, ROW_Y + ROW_H + 5, 1);       /* dragged, still 50 */
