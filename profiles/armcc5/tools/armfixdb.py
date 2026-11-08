@@ -6,6 +6,8 @@
     python3 armfixdb.py label DB.jsonl OUT.jsonl --homes DIR,... [--includes DIR,...] [--jobs N] [--max-size 4]
     python3 armfixdb.py matrix OUT.jsonl
     python3 armfixdb.py suggest OUT.jsonl DIFF.txt [FUNC]
+    python3 armfixdb.py logs SPEC OUT.jsonl
+    python3 armfixdb.py transcripts OUT.jsonl SESSION.jsonl [...]
 
 mine   walks every commit on every branch of each repository (each commit once), and for each C
        function whose tokens changed writes one record: repository, commit, message, file,
@@ -31,6 +33,21 @@ suggest reads a scorer's instruction diff of one function (fnscore.py's FUNC out
        sorts what is left into register-only lines, constant loads and moves, order and other
        instructions, and ranks the edit kinds by how often each changed that kind of thing in
        the labelled records, with the armidioms.py mode that writes variants of that kind.
+logs   reads batch scorer logs: SPEC has one line per log, `SCORES BASE FUNC`, where SCORES is a
+       parvar.py output (`k FUNC SCORE [size 0xB/0xM] ... NAME`, with a `base` row) for variants
+       of FUNC that armidioms.py wrote from BASE. Each variant is written again from its name
+       (the modes are deterministic), compared with BASE, sorted into edit kinds, and recorded
+       with the score before and after against the original image (score_from, score_to,
+       size_ok): scored examples, failures included, that git history does not keep.
+transcripts reads agent session files (Claude Code's JSONL) for parvar.py runs over a varfile
+       (blocks of `old----new` pairs split by `====`): the varfile's text is taken from the
+       last Write or `cat > FILE <<'EOF'` of that path before the run, and each block is
+       paired with the score the run printed for it (row k is block k, -1 the base). Each
+       record holds the pairs, their edit kinds and the score before and after: the attempts,
+       failed ones included, that never reached a commit. It also pairs each Edit of a C source
+       with the next per-function score listing (fnscore.py's `NAME N` / `NAME =` lines): the
+       functions whose score changed since the listing before the edit get a record with the
+       edit's old and new text (source 'edit'; 'group' when several edits came between).
 matrix prints, for each effect, the edit kinds that produced it and how often, from labelled
        records (rename-only and readability edits fall out as 'none').
 
@@ -553,8 +570,159 @@ def suggest(path, diff, func):
         print(f"{k:16s} {n:4d} {score:5.2f} {p['regs']:5.2f} {p['const']:5.2f} {p['order']:5.2f} {p['other']:5.2f} {small:5.2f}  {MODE.get(k, '-')}")
 
 
+PREFIX = [('lit', 'literals'), ('reuse', 'reuse'), ('type', 'types'), ('decl', 'declorder'), ('swap', 'swap'),
+          ('opnd', 'operands'), ('comp', 'compound'), ('dead', 'dead'), ('zero', 'zero'), ('l0', 'literals')]
+
+
+def _regen(base, func, mode, cache={}):
+    key = (base, func, mode)
+    if key not in cache:
+        d = tempfile.mkdtemp(prefix='fixlog')
+        gen = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'armidioms.py')
+        args = [sys.executable, gen, mode, base, func, d] + (['--types', 'uchar,int,ushort'] if mode == 'literals' else [])
+        subprocess.run(args, capture_output=True)
+        cache[key] = d
+    return cache[key]
+
+
+def logs(spec, out):
+    n = 0
+    dirs = []
+    with open(out, 'a') as fh:
+        for line in open(spec):
+            if not line.strip() or line.startswith('#'): continue
+            scores, base, func = line.split()[:3]
+            rows = []
+            for l in open(scores):
+                q = l.split()
+                if len(q) < 4 or q[1] != func: continue
+                sc = int(q[2]) if q[2].isdigit() else None
+                rows.append((q[-1], sc, 'size' not in l))
+            b = next((r for r in rows if r[0] == 'base'), None)
+            if not b: continue
+            bsrc = open(base, encoding='latin1').read()
+            fb = functions(bsrc).get(func)
+            for name, sc, ok in rows:
+                if name == 'base' or sc is None: continue
+                stem = re.sub(r'^gt_[a-z]+_', '', name)
+                mode = next((m for p, m in PREFIX if stem.startswith(p)), None)
+                if not mode: continue
+                d = _regen(base, func, mode)
+                if d not in dirs: dirs.append(d)
+                f = os.path.join(d, stem)
+                if not os.path.exists(f): continue
+                fa = functions(open(f, encoding='latin1').read()).get(func)
+                if not fa or not fb: continue
+                kk = kinds(fb, fa)
+                rec = dict(source='log', log=os.path.basename(scores), file=base, func=func, variant=stem, mode=mode,
+                           kinds=sorted(kk), size=edit_size(fb, fa), score_from=b[1], score_to=sc, size_ok=ok,
+                           before=' '.join(fb), after=' '.join(fa))
+                fh.write(json.dumps(rec) + '\n'); n += 1
+    for d in dirs: shutil.rmtree(d, ignore_errors=True)
+    print(f'{n} scored variants -> {out}')
+
+
+HEREDOC = re.compile(r"cat\s+>\s*(\S+)\s*<<\s*'?(\w+)'?\n(.*?)\n\2(?:\n|$)", re.S)
+PARVAR = re.compile(r'parvar\.py\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)')
+FNLINE = re.compile(r'^([A-Za-z_]\w*)\s+(=|\d+)((?:\s+size 0x[0-9a-fA-F]+/0x[0-9a-fA-F]+)?)(?:\s+entry \S+)?\s*$', re.M)
+MATCHLINE = re.compile(r'^\s+([A-Za-z_]\w*)\s+0x[0-9A-Fa-f]{8}\s+(MATCH|(\d+) bytes differ)', re.M)
+ROW = re.compile(r'^\s*(-?\d+)\s+(\S+)\s+(\d+)(.*)$', re.M)
+
+
+def _session(path):
+    """(kind, payload) events in order: ('write', (path, text)), ('parvar', (cmd, result))."""
+    calls, res, order = {}, {}, []
+    with open(path, errors='replace') as f:
+        for line in f:
+            if '"tool_use"' not in line and '"tool_result"' not in line: continue
+            try: o = json.loads(line)
+            except ValueError: continue
+            c = (o.get('message') or {}).get('content')
+            if not isinstance(c, list): continue
+            for b in c:
+                if b.get('type') == 'tool_use':
+                    calls[b['id']] = (b.get('name'), b.get('input') or {}); order.append(b['id'])
+                elif b.get('type') == 'tool_result':
+                    x = b.get('content')
+                    if isinstance(x, list): x = '\n'.join(y.get('text', '') for y in x if isinstance(y, dict))
+                    res[b.get('tool_use_id')] = x or ''
+    for i in order:
+        name, inp = calls[i]
+        if name == 'Edit' and str(inp.get('file_path', '')).endswith(('.c', '.inc', '.C')):
+            yield 'edit', (inp['file_path'], inp.get('old_string', ''), inp.get('new_string', ''))
+        if name == 'Write' and inp.get('file_path'):
+            yield 'write', (inp['file_path'], inp.get('content', ''))
+        elif name == 'Bash':
+            cmd = inp.get('command', '')
+            for m in HEREDOC.finditer(cmd):
+                yield 'write', (m.group(1), m.group(3) + '\n')
+            if 'parvar.py' in cmd and i in res:
+                yield 'parvar', (cmd, res[i])
+            elif i in res and ('TOTAL' in res[i] or 'bytes differ' in res[i]):
+                yield 'scores', res[i]
+
+
+def _expand(p, env):
+    for k, v in env.items(): p = p.replace('$' + k, v).replace('${' + k + '}', v)
+    return os.path.normpath(os.path.expanduser(p))
+
+
+def transcripts(out, sessions):
+    n = 0
+    with open(out, 'a') as fh:
+        for sp in sessions:
+            files, env, last, pending = {}, {}, {}, []
+            for kind, x in _session(sp):
+                if kind == 'write':
+                    files[os.path.basename(x[0])] = x[1]; continue
+                if kind == 'edit':
+                    pending.append(x); continue
+                if kind == 'scores':
+                    now = {}
+                    for m in FNLINE.finditer(x):
+                        now[m.group(1)] = (0 if m.group(2) == '=' else int(m.group(2)), not m.group(3))
+                    for m in MATCHLINE.finditer(x):   # match.py: bytes, kept apart from instruction counts
+                        now['bytes:' + m.group(1)] = (0 if m.group(2) == 'MATCH' else int(m.group(3)), True)
+                    if pending:
+                        for fn, v in now.items():
+                            if fn in last and last[fn] != v:
+                                kk = set()
+                                for _, o, nw in pending: kk |= kinds(tokens(o), tokens(nw))
+                                rec = dict(source='edit' if len(pending) == 1 else 'group', session=os.path.basename(sp),
+                                           func=fn, kinds=sorted(kk), score_from=last[fn][0], score_to=v[0],
+                                           size_from_ok=last[fn][1], size_ok=v[1],
+                                           pairs=[(o, nw) for _, o, nw in pending][:6], file=pending[0][0])
+                                fh.write(json.dumps(rec) + '\n'); n += 1
+                    last.update(now); pending = []
+                    continue
+                cmd, result = x
+                for m in re.finditer(r'\b([A-Z]\w*)=(\S+)', cmd): env[m.group(1)] = m.group(2).strip('"\'')
+                m = PARVAR.search(cmd)
+                if not m: continue
+                func, vf = m.group(3), m.group(4)
+                text = files.get(os.path.basename(_expand(vf, env)))
+                if text is None or '----' not in text: continue
+                blocks = [b for b in text.split('====\n') if b.strip()]
+                rows = {int(k): (int(s), 'size' not in rest) for k, fn, s, rest in ROW.findall(result) if fn.split(',')[0] == func.split(',')[0]}
+                if -1 not in rows: continue
+                for k, blk in enumerate(blocks):
+                    if k not in rows: continue
+                    pairs = []
+                    for pr in blk.split('++++\n'):
+                        if '----\n' not in pr: continue
+                        o, nw = pr.split('----\n', 1)
+                        pairs.append((o.rstrip('\n'), nw.rstrip('\n')))
+                    if not pairs: continue
+                    kk = set()
+                    for o, nw in pairs: kk |= kinds(tokens(o), tokens(nw))
+                    rec = dict(source='transcript', session=os.path.basename(sp), func=func, kinds=sorted(kk),
+                               score_from=rows[-1][0], score_to=rows[k][0], size_ok=rows[k][1], pairs=pairs)
+                    fh.write(json.dumps(rec) + '\n'); n += 1
+    print(f'{n} scored attempts -> {out}')
+
+
 def main(argv):
-    if not argv or argv[0] not in ('mine', 'stats', 'show', 'label', 'matrix', 'suggest'):
+    if not argv or argv[0] not in ('mine', 'stats', 'show', 'label', 'matrix', 'suggest', 'logs', 'transcripts'):
         print(__doc__); return 2
     if argv[0] == 'mine':
         out = argv[argv.index('--out') + 1]
@@ -567,6 +735,10 @@ def main(argv):
         ms = int(argv[argv.index('--max-size') + 1]) if '--max-size' in argv else 4
         extra = argv[argv.index('--includes') + 1].split(',') if '--includes' in argv else []
         label(argv[1], argv[2], [os.path.expanduser(h) for h in homes], jobs, ms, [os.path.expanduser(e) for e in extra])
+    elif argv[0] == 'transcripts':
+        transcripts(argv[1], argv[2:])
+    elif argv[0] == 'logs':
+        logs(argv[1], argv[2])
     elif argv[0] == 'suggest':
         suggest(argv[1], argv[2], argv[3] if len(argv) > 3 else None)
     elif argv[0] == 'matrix':

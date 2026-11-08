@@ -300,9 +300,34 @@ spelling of the statements around it, the source probably called a helper there.
   made a reference value a later value of the caller and gave the image's spill: exact. In
   another function the first step of a running maximum, as a `static __forceinline` helper that
   returned it, put the result, zero and the first input in the image's registers (117 to 74).
+- An address returned by an inline helper is a value of its own where a pointer local is not.
+  A register write handler stored one case through `p = &flags[i].word.value; *p = val;`: right
+  size, but the pointer coalesced into a long-lived r1 web (another case's row pointer, 13
+  moves), so the array base took r2 where the image had r1. `*flag_word(i) = val;` with
+  `static __inline ushort *flag_word(uint i) { return &flags[i].word.value; }` gave the image's
+  separate `add.w r2, r1, r3, lsl #1; strh r0, [r2]` and its registers: exact (with an existing
+  probe moved one statement up, which removed a `uxth`).
 - Inside such a helper, the shape of the return still counts: one returned conditional
   expression made one `mov` at the join, where the image had one in each arm; four `return`
   statements, one per arm, gave each arm its own move.
+- A getter adds a reference where the replay asks for one. A settings restore stored two
+  thresholds as plain globals and two through the same region's base address; in natural order
+  the base and the constant -130 swapped r0 and r1, and the replay said the base needed one
+  more weighted reference (65 to 66 or 97). `protection_view()->discharge_overcurrent = -130;`
+  with `static __inline Thresholds *protection_view(void) { return (Thresholds *)base; }`
+  gave it: exact. When the replay names a node that needs a reference and the source has no
+  natural extra use, a getter for that address is the vendor-shaped way to add one.
+- A copy-paste formula armcc folds late still leaves its pieces behind. Every case of a reply
+  builder set `frames = (length - 1) / 8 + 1;`, but the error case had `frames = 1;` in our
+  draft. With the formula (`length` just set to 5), armcc hoisted the 4 and the 0 it makes to
+  the entry block and only then folded the result to 1: the image's `movs r3, #4` and a zero
+  copy at entry, two bytes and a pool island in place. A constant the image creates at entry
+  with no use outside one case can be the remains of such a folded expression.
+- armcc drops a redundant final test (`else if (c >= 300) r = 0xff;` with `r` already 0xff on
+  that path) unless something between the assignment and the test hides the value from it; a
+  loop anywhere before the chain does. A classifier whose image keeps the test and has 0xff in
+  r0 from entry still resists every spelling tried (initialisers, types, no-op statements,
+  barriers, helpers), while its sibling with loops matches with the initialiser.
 
 ## Dead code that steers allocation
 
