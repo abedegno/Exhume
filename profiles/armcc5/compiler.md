@@ -316,7 +316,12 @@ spelling of the statements around it, the source probably called a helper there.
   more weighted reference (65 to 66 or 97). `protection_view()->discharge_overcurrent = -130;`
   with `static __inline Thresholds *protection_view(void) { return (Thresholds *)base; }`
   gave it: exact. When the replay names a node that needs a reference and the source has no
-  natural extra use, a getter for that address is the vendor-shaped way to add one.
+  natural extra use, a getter for that address is the vendor-shaped way to add one. The same
+  works for a value: a capacity integrator spilled the wrong one of two hoisted products,
+  `rated * 10` and `rated * 8` (both refs 99, tied on node number); the replay wanted the x8
+  product at exactly 100. Routing one of its two uses through
+  `static __forceinline uint rated_x8(void) { return rated * 8; }` gave the image's spill:
+  exact. Both uses through the helper, or only the other one, did not.
 - A copy-paste formula armcc folds late still leaves its pieces behind. Every case of a reply
   builder set `frames = (length - 1) / 8 + 1;`, but the error case had `frames = 1;` in our
   draft. With the formula (`length` just set to 5), armcc hoisted the 4 and the 0 it makes to
