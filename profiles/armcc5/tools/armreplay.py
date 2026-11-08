@@ -46,8 +46,12 @@ trace's colours is used.
   premoves  the graph dump leaves out moves to precoloured registers, and the coalescing test at
          a removal needs them (graphs with spills disagree without them). premoves starts from
          every such move the removals print and drops those a move-clash event contradicts, and
-         writes them as JSON for --premoves. They count in the coalescing test only, not in the
-         heap keys.
+         writes them as JSON for --premoves. Each takes part in the coalescing test. One the node
+         holds from the start counts as a move in the heap keys too, and one it only gained by
+         coalescing (a partner's move to the register) does not: premoves marks the first kind
+         with a third field 'k'. ascii_dispatch_command of one 4009 firmware (14,966 nodes)
+         agrees only so; 85 smaller functions agree either way (ARMREPLAY_PMKEYS=none restores
+         the earlier rule).
   refs   set nodes' weighted reference counts to other values and list the nodes whose register
          changes. When the image has two values the other way round, this shows which count has
          to move and how far (compiler.md, "Reference counts as targets").
@@ -160,6 +164,9 @@ class State:
         refs, sec, C, X, M = self.refs, self.second, self.C, self.X, self.M
         deg = lambda n: len(C[n])
         deg2 = lambda n: len(C[n]) + len(X[n])
+        PM = self.PM
+        PMK = {n: set(G.get('PMK', {}).get(n, ())) for n in nodes}
+        mv = lambda h: (lambda n: len(M[n] | PMK[n])) if h in PMKEYS else (lambda n: len(M[n]))
 
         def keys(a, b, *fs):
             for f in fs:
@@ -167,19 +174,20 @@ class State:
                 if r: return r
             return b - a                      # on a tie of every key, the higher number first
 
-        def cmp_low(a, b):
-            fs = [refs.get, lambda n: len(M[n])] + ([deg2] if sec else []) + [deg]
+        def cmp_low(a, b, nmov=mv('lo')):
+            fs = [refs.get, nmov] + ([deg2] if sec else []) + [deg]
             return keys(a, b, *fs)
 
-        def cmp_high(a, b):
-            fs = [refs.get, lambda n: len(M[n])] + ([lambda n: -deg2(n)] if sec else []) + [lambda n: -deg(n)]
+        def cmp_high(a, b, nmov=mv('hi')):
+            fs = [refs.get, nmov] + ([lambda n: -deg2(n)] if sec else []) + [lambda n: -deg(n)]
             return keys(a, b, *fs)
 
-        def cmp_hns(a, b):
-            fs = [deg, refs.get, lambda n: len(M[n])] + ([deg2] if sec else [])
+        def cmp_hns(a, b, nmov=mv('hns')):
+            fs = [deg, refs.get, nmov] + ([deg2] if sec else [])
             return keys(a, b, *fs)
 
-        self.H = {XL: Heap(cmp_low, self.pos), LO: Heap(cmp_low, self.pos), HI: Heap(cmp_high, self.pos),
+        cmp_xl = lambda a, b, nmov=mv('xl'): keys(a, b, *([refs.get, nmov] + ([deg2] if sec else []) + [deg]))
+        self.H = {XL: Heap(cmp_xl, self.pos), LO: Heap(cmp_low, self.pos), HI: Heap(cmp_high, self.pos),
                   HNS: Heap(cmp_hns, self.pos)}
         for n in sorted(nodes):
             s = G['init'][n]
@@ -278,6 +286,9 @@ class State:
 
 PREMOVES = ()      # set by --premoves
 PLAIN = bool(os.environ.get('ARMREPLAY_PLAIN'))     # set by --plain
+# the heaps whose keys count the initial premoves as moves: ARMREPLAY_PMKEYS=hi,lo,xl,hns (the
+# default, all four), or ARMREPLAY_PMKEYS=none for the earlier rule (premoves in no key)
+PMKEYS = set(os.environ.get('ARMREPLAY_PMKEYS', 'hi,lo,xl,hns').split(',')) - {'none', ''}
 
 
 def graph(T, hidden=(), premoves=None):
@@ -295,9 +306,12 @@ def graph(T, hidden=(), premoves=None):
         if a in ns and b in ns: M[a].add(b); M[b].add(a)
     for a, b in hidden:
         M[a].add(b); M[b].add(a)
-    PM = collections.defaultdict(set)
-    for a, b in (PREMOVES if premoves is None else premoves):
-        if a in ns and b in ns: PM[a].add(b); PM[b].add(a)
+    PM, PMK = collections.defaultdict(set), collections.defaultdict(set)
+    for x in (PREMOVES if premoves is None else premoves):
+        a, b = x[0], x[1]
+        if a in ns and b in ns:
+            PM[a].add(b); PM[b].add(a)
+            if len(x) > 2: PMK[a].add(b)
     direct = {frozenset(k) for k, w in g0['move'].items() if w == 5} | {frozenset(k) for k in hidden}
     refs = {}
     for P in T['passes']:
@@ -310,7 +324,7 @@ def graph(T, hidden=(), premoves=None):
             for t in s['coal'] or []:
                 if 'uncoalesceable' in t: uncoal.add(frozenset((s['n'], int(t.split()[3]))))
     nonspill = {n for n, s in init.items() if s == HNS}
-    return dict(PM=PM, nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
+    return dict(PM=PM, PMK=PMK, nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
 
 
 def nullset(T, passno=1):
@@ -717,13 +731,32 @@ def premoves(T, rounds=30):
             st.simplify(v, True)
         return drops, needs
 
+    # a move the node only gained by coalescing (its partner's move to the register) is not
+    # there at the start: replay with none and drop the ones the node already holds at removal
+    if True:
+        G = graph(T, premoves=())
+        st = State(G, move_clashes(T))
+        had = set()
+        for s in S:
+            v = s['n']
+            if st.status.get(v) not in st.H: break
+            had |= {(v, p) for p in st.M[v] if p in pre}
+            st.H[st.status[v]].remove(v)
+            tr = {m for m, _ in s.get('before', {}).get('Moves', ()) if m in st.M}
+            st.M[v] = set(tr)
+            for q in tr: st.M[q].add(v)
+            st.X[v] = {m for m, _ in s.get('before', {}).get('Extra', ()) if m in st.M}
+            st.log = []
+            st.simplify(v, True)
     init = set(cand)
     for _ in range(rounds):
         drops, needs = run(init)
         gone = {(w, q) for _, q, inter in drops for w in inter} & init
         if not gone: break
         init -= gone
-    return sorted(init), needs
+    # a third field 'k' marks the moves there from the start (not gained by coalescing): only
+    # those count as moves in the heap keys (ARMREPLAY_PMKEYS)
+    return sorted((w, q, 'k') if (w, q) not in had else (w, q) for w, q in init), needs
 
 
 # ---------------------------------------------------------------- what a node's count would do

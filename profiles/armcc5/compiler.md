@@ -597,9 +597,17 @@ What the trace does not give, and what it must not be taken for:
 - The graph dump leaves out moves to precoloured registers, and graphs with spills replay wrongly
   without them. `armreplay.py premoves` recovers the ones there at the start (every move the
   removals print, less those a move-clash event contradicts), and `--premoves FILE` uses them in
-  the coalescing test only: counted in the heap keys as well, they made the replay disagree. With
-  them, functions with 6 and 15 spills replayed exactly. Take a node's reference count from the
-  first pass that lists it; later passes print it changed.
+  the coalescing test. With them, functions with 6 and 15 spills replayed exactly. Take a node's
+  reference count from the first pass that lists it; later passes print it changed.
+- Some of those moves the node only gained by coalescing: a partner coalesced into it had the
+  move to the register, so the removal prints it. Those take part in the coalescing test but do
+  not count as moves in the heap keys; the ones the node holds from the start count in every
+  heap's keys. A 14,966-node dispatch function (35 spills) disagreed from its very first heap
+  until the two kinds were told apart: two tied nodes with refs 67 sat in each other's heap
+  slots because one had moves to r0 and r1 from the start. Counted in the keys without telling
+  the kinds apart, the same moves broke three smaller functions that agree either way once they
+  are told apart (86 functions checked). `premoves` marks the first kind; ARMREPLAY_PMKEYS=none
+  restores the earlier rule.
 - `armreplay.py refs TRACE NODE=REFS` replays with a count changed and lists the nodes whose
   register changes. When the image swaps two values, look for the smallest change that gives
   exactly the image's registers and nothing else: it says which value needs more or fewer uses

@@ -2,7 +2,7 @@
 
     python3 armidioms.py literals SRC FUNC OUTDIR [--types uchar,int,ushort]
     python3 armidioms.py zero SRC FUNC OUTDIR
-    python3 armidioms.py MODE SRC FUNC OUTDIR      MODE: types, declorder, swap, operands, compound, dead
+    python3 armidioms.py MODE SRC FUNC OUTDIR      MODE: reuse, types, declorder, swap, operands, compound, dead
 
 literals  for each small integer literal in a statement (right of '=' or a call argument, not an
           index or a shift count), one variant per local type and place: the literal is held in
@@ -20,6 +20,9 @@ swap      each pair of neighbouring simple statements (assignments and calls, sa
 operands  each commutative binary operator (==, !=, +, *, &, |, ^) with its two operands swapped,
           and each relational comparison written the other way round (a < b as b > a).
 compound  each `x = x OP e;` written `x OP= e;` and back, and `x++` as `x += 1`.
+reuse     each small literal in a statement (as literals picks them) held in an existing scalar
+          local of the function, assigned just before the statement (`value = 0x80;` then
+          `eeprom_write_word(value, 0);`): a programmer reusing a local rather than declaring one.
 dead      before each assignment to a scalar local, a dead `x = 0;` (zero above for unions).
 
 armfixdb.py names the edit kinds that changed code like a function's remaining difference; each
@@ -211,7 +214,28 @@ def dead(src, fn, out):
     return c
 
 
-MODES = dict(types=types, declorder=declorder, swap=swap, operands=operands, compound=compound, dead=dead)
+def reuse(src, fn, out):
+    k, e = body_span(src, fn); lines = src[k:e].split('\n'); top = decl_end(lines); c = 0
+    locs = scalar_locals(lines, top)
+    for n in range(top, len(lines)):
+        l = lines[n]
+        if SKIP.search(l) or ';' not in l: continue
+        for mm in LIT.finditer(l):
+            s, f = mm.span(); pre = l[:s].rstrip()
+            if ('=' not in pre and '(' not in pre) or pre.endswith(('[', '<<', '>>')): continue
+            val = int(mm.group(1), 0)
+            if val > 0xFFFF: continue
+            for v, (_, ty) in locs.items():
+                if val > 0xFF and ty in ('uchar', 'unsigned char', 'char', 'u8', 's8', 'signed char'): continue
+                if re.search(r'\b' + v + r'\b', l): continue
+                nl = lines[:]
+                nl[n] = l[:s] + v + l[f:]
+                nl.insert(n, re.match(r'^\s*', l).group(0) + f'{v} = {mm.group(1)};')
+                write(out, f'reuse{c:04d}_{v}.c', src, k, e, nl); c += 1
+    return c
+
+
+MODES = dict(reuse=reuse, types=types, declorder=declorder, swap=swap, operands=operands, compound=compound, dead=dead)
 
 
 def main(argv):
