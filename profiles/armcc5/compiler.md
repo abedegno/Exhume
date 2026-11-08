@@ -375,6 +375,34 @@ Some code armcc deletes still takes part in register allocation; some is deleted
   (`u8 i; u8 n; u8 j; char s[8]; u32 v; u32 w; u16 t;`), fixed a swap in another case. Another
   function's swap 0x50 bytes before the change was fixed by `u32 max` for `u16 max` and an `int`
   temporary for a copied field. Neither change alone worked in either.
+- A zero argument the image passes from a register copied at an earlier store (`mov r3, r4`
+  before a float store, then `str r3, [sp]` for a call's fifth argument) can be a variable the
+  source had just cleared, not a literal. `log(2, 0xe, 0, 0, 0)` built fresh zeros for the call;
+  `log(2, 0xe, 0, g_count, g_count)` after `g_count = 0;` gave the image's copy and registers
+  through the float store, the two clears and the call.
+- The order of a call's argument loads follows how the first argument is read. `f(idx, 100, 10)`
+  with `extern uchar idx` built `movs r2,#10; movs r1,#100; ldrb r0,[idx]`; the image loaded
+  `idx` first. `*(volatile uchar *)&idx` and `(uchar)*(ushort *)&idx` (a wider view, as another
+  file of the same image declared it) both gave the image's order; declaring `idx` volatile for
+  the whole file broke another function that had the plain order.
+- A value read at the top and used in three branches is read by the image in the branches: with
+  `prev = s.mask;` as the second statement, armcc loaded it before the hoisted loads of the
+  branches, with `ldrh.w` through the struct's base register. Assigning `prev = s.mask;` just
+  before each of its uses (where nothing had changed `s.mask` yet) let armcc hoist one load after
+  the others, through the copied low base (`ldrh r6,[r0,#4]`, 2 bytes shorter): the function's
+  size and entry block then matched.
+- armcc shares one register for a constant that several stores use, and makes it where the
+  constant first appears, so a dead store moves it. In a CAN handler the image set
+  `movs r3, #0` at entry and used r3 for six zero stores in one branch; the build made the zero at
+  the top of that branch. `id.word = 0;` just before `id.word = msg->ExtId;` (dead: overwritten
+  at once) gave the image's code.
+- A constant held in a narrow local is a value of its own: armcc folds an `int` local that only
+  holds a constant, but not a `uchar` one used in several places. The image of a sender set
+  `movs r2, #7` before an inlined `memcpy(data, src, 7)` and kept it for the call after it;
+  `uchar length; length = 7;` before the copy, with `send(id, data, length)`, matched. In a task
+  loop, `enable = 1; flag = enable;` for one of six stores of 1 took the score from 94 to 70.
+  `tools/armidioms.py literals` writes these variants for every literal of a function, and
+  `tools/armidioms.py zero` the dead stores.
 - A field read once and used twice wants a local: `u16 lim = g.f14;` for two reads gave the
   image's registers (the field in r1, temporaries in r2).
 - A copy merges with its source when the source dies at the copy. In a running maximum
@@ -436,6 +464,10 @@ with one difference in the colour order.
   builds without `-Otime` missed 41 to 46 of 211 memory accesses of one `-Otime` function. With
   this rule, 869 traced compiles of that function (5.06u3) replayed with every removal, every
   heap and every colour the same.
+- The preferred set above came from replaying code, not a trace. On a later firmware (5.06u3,
+  `-O1` without `-Otime`), the traces fit only the plain first-free order r0-r7, ip, r8-r11, lr:
+  every one of 4,868 colour steps in one file, and every function I traced in five others
+  (`armreplay.py --plain`). Try both on a new firmware and keep the one its traces agree with.
 - Move clashes: when a node is removed, each copy partner still in the graph takes on the node's
   clashes as move clashes (only while the node's clashes times its moves are under 1,000). When a
   node is coloured, the registers of its move-clash neighbours are struck out first, unless that
@@ -560,6 +592,24 @@ What the trace does not give, and what it must not be taken for:
   too and are not in Exhume. Without them, identify nodes from the trace: their references and
   degree, and the registers the trace gives them against the listing's.
 
+### Reference counts as targets
+
+- The graph dump leaves out moves to precoloured registers, and graphs with spills replay wrongly
+  without them. `armreplay.py premoves` recovers the ones there at the start (every move the
+  removals print, less those a move-clash event contradicts), and `--premoves FILE` uses them in
+  the coalescing test only: counted in the heap keys as well, they made the replay disagree. With
+  them, functions with 6 and 15 spills replayed exactly. Take a node's reference count from the
+  first pass that lists it; later passes print it changed.
+- `armreplay.py refs TRACE NODE=REFS` replays with a count changed and lists the nodes whose
+  register changes. When the image swaps two values, look for the smallest change that gives
+  exactly the image's registers and nothing else: it says which value needs more or fewer uses
+  in the source, and how many. In one task loop the constant 1 (229) needed 195 to 224; in a
+  receive handler five hoisted constants needed (62, 62, 62, 61, 61) for (61, 61, 61, 61, 61).
+- A hoisted constant's count grows by about 28 for each copy of it the function uses (61 with
+  one, 89 with two, 229 with seven); a plain local's by 32 for each reference, 3 for the
+  definition. Nesting, `&&` against nested `if`s, and the spelling of a range check left counts
+  unchanged at `-O1`; unread comparisons of a parameter with a constant added nothing.
+
 ## Literal pools and scheduling
 
 - The pool is in the order the source created the constants, not the instruction order. For
@@ -592,6 +642,13 @@ What the trace does not give, and what it must not be taken for:
   `volatile u32 *reg = &PERIPH->CLR; *reg = 0x200;` stored `asrs r1,r0,#21`, 0x200 rebuilt from
   the register's address (any 0x400xxxxx shifted right 21 bits).
 - `tools/armvariant.py pool SRC FUNC` prints a function's loads in code order and its pool.
+- A pool dumped in the middle of a function moves the blocks around it. The image of one reset
+  check had a 40-word pool behind `b` at +0xC8, and a `cbz` whose target was the second of two
+  branches before that pool. The build, with the arms of `if (master != 0) {...} else {...}` the
+  other way round, put the same code in another order and differed in 106 instructions. Writing
+  `if (master == 0) {...} else {...}` gave the image's order: score 10, then exact. When a
+  function's blocks are in another order around a mid-function pool, swap the arms of the big
+  if/else first.
 
 ## Control flow
 
@@ -601,6 +658,20 @@ What the trace does not give, and what it must not be taken for:
 - A flat chain and nested ifs with the same layout swap value registers:
   `if (p->n == 1) { if (v == 0x2200) {...} else p->err = 3; } else p->err = 2;` against
   `if (p->n != 1) p->err = 2; else if (v == 0x2200) {...} else p->err = 3;`.
+- A sparse switch over 32-bit constants compiles to a binary search; at each leaf pair the
+  second compare is `bne default` and may fall through into a case body. Out-of-line bodies are
+  emitted in source order, and a leaf falls through only to a case that comes earlier in the
+  source than its partner. On one firmware's CAN receive handler (ten cases), reordering the
+  cases to give the image's out-of-line order and its three inline bodies took the masked score
+  from 577 to 88, and moved the literal pool that a following function shares, which fixed that
+  function's layout too.
+- A pointer to a record in an array of structs takes its form from the spelling.
+  `p = tbl; p += i;` compiled to one `mla rD, i, size, base`. `p = &tbl[i];` compiled to a `mul`
+  by the record size first and an `add` of the base several instructions later, as one image had
+  it (a 0x97-byte record).
+- A store that three paths end with was emitted once when the source wrote it once, after an
+  `if (a) ... else if (b) {...}` chain. Written in each arm (`if (a) {...; s = 0;} else {...; s = 0;}`),
+  armcc kept two copies, where the image had one.
 - A sparse switch over pointer values (`switch ((u32)p)` with eight addresses, also five)
   compiles to a binary search with a literal pool, never a compare chain.
 - A function that starts with `nop.w` (`f3af 8000`) before its prologue is two functions: a
@@ -612,6 +683,17 @@ What the trace does not give, and what it must not be taken for:
 
 ## Types and packing
 
+- A byte the image reads twice in a row, testing the same thing, is volatile in that unit, and the
+  source tested it twice. One status function tested `flags[0]` and then `flags[0] || flags[4]` on
+  the same path. With the array declared plainly, armcc folded the second read whatever the
+  spelling; declared `volatile` in that unit, `flags[0] != 0 || flags[0] != 0 || flags[4] != 0`
+  matched. A unit's extern declaration can differ from the defining file's (here the defining
+  file had `volatile`, the user had not).
+- An if-else chain whose last arm stores the value the variable already holds keeps its test in
+  the image only when the variable has no known value on that path. Initialised at its declaration
+  or at the top of the function, armcc removed the last test however the constant was spelled
+  (`0xff`, `-1`, a cast, a `static const`). Declared without a value and set in the other branch
+  instead, the test stayed and the size matched.
 - Type-based aliasing decides reloads both ways: one function's code through casts of a file's
   `u16` arrays differed by 514 bytes from the same code through the struct types another file
   used for the same globals. When joining files, keep each function's view of the data.
@@ -899,6 +981,14 @@ replacement is then staged as an ordinary C file, without the composition, and p
 Most functions match by hand in a few builds. The last few in a firmware are register swaps and
 load orders that no single edit moves; these took searches over combinations, not more hand edits.
 
+- Decode a call that differs before searching for a code shape: in one image the shutdown routine
+  called `f_close` where the older release, and the draft carried over from it, called `f_sync`.
+  Two bytes of a `bl` differed, the instructions were the same, and only the decoded target
+  showed it. The map's symbol table wins over a source's `at:` line, so an address fixed on the
+  `at:` line alone changes nothing.
+- Start a probe search from the plain source. A search started from a source that already held
+  an earlier search's probes stopped at 2 differing instructions; from the plain source the
+  same probes found the exact source in one round.
 - The tools: `armvariant.py` scores one source against the image without linking (a second or
   two under Wine; a batch of 40 to 150 variants in one armcc call costs little more);
   `fnscore.py` scores every function of a file at once, with or without `--split_sections`, and
@@ -937,6 +1027,17 @@ load orders that no single edit moves; these took searches over combinations, no
   release build but off, and no option turns it on; an observer can turn it on in the running
   process ("Tracing the register allocator"). Whether the scheduler's and the literal pool's
   debug output can be reached the same way is untested.
+- A greedy climb over dead probes is cheap and finds register fixes that hand edits miss. Take
+  five or six probe statements of the kinds that survive to allocation (above: an unread
+  comparison of two locals, or of a local with a constant, stored in a block local; an unread
+  comparison of two globals' addresses), insert each after every statement of the function, score
+  all of them unmasked in parallel, keep the best, and repeat from it until nothing improves. In
+  one firmware this matched a handler in one round (`{ uint z; z = (uint)(highest == lowest); }`
+  at the top of its sampling loop) and a 0x280-byte function in two rounds (two comparisons of a
+  local, `amps == limit` and `amps == 0`), from 43 differing instructions. Start the climb from the
+  plain source: started from an earlier probe that had brought the second function to 18, it
+  never got below 18. Count a score of 0 as a result: a scorer that prints `=` for an exact
+  function must not be parsed as a failure.
 - Run `tools/armrepeats.py --func NAME` before any search. A matched function that repeats the
   same instructions shows how the vendor wrote that code, and its source is the first form to
   try. In one firmware two sibling senders showed that the vendor passed some values through a

@@ -5,6 +5,9 @@
     python3 armreplay.py [--config PATH] sweep TRACE --webs WEBS.json (--swap A:B | --want WANT.json)
                          [--vars a,b,c] [--top N] [--jobs N] [--otime | --no-otime]
     python3 armreplay.py [--config PATH] sweep TRACE --webs WEBS.json --order a,b,c [--against TRACE2]
+    python3 armreplay.py [--config PATH] premoves TRACE [--index N] [--out FILE]
+    python3 armreplay.py [--config PATH] refs TRACE [--index N] NODE=REFS[,NODE=REFS...] ...
+    (check, tie, sweep and refs take --premoves FILE and --plain)
 
 TRACE is a level-5 allocator trace (armtrace.py run). The replay starts from the trace's first
 graph, the nodes' initial work lists and their weighted reference counts, and runs armcc 5.06's
@@ -14,6 +17,8 @@ changes, move clashes added at each removal, the strict coalescing test, a secon
 removes the first pass's spills first, and the vote among copy partners. With no vote a node
 takes the first free register in the build's order: r0-r7, ip, r8-r11, lr from a preferred set
 (r0-r3, ip and registers already handed out) without -Otime; r0-r3, ip, r4-r11, lr with it.
+--plain (or ARMREPLAY_PLAIN=1) drops the preferred set: the traces of one 5.06u3 -O1 firmware
+without -Otime fit only that (compiler.md, "How the register allocator chooses").
 --otime or --no-otime chooses; otherwise -Otime is read from the project's options (SRC's
 `/* opts: */` line with --src, else c_opts), and with no project, the rule that reproduces the
 trace's colours is used.
@@ -37,6 +42,15 @@ trace's colours is used.
          in the traced numbering. --order scores one order and prints its colours; with --against
          TRACE2 (a real trace of the source in that order) it compares node for node, the check to
          make before trusting a sweep. A score of 0 is a candidate to build, never a match.
+
+  premoves  the graph dump leaves out moves to precoloured registers, and the coalescing test at
+         a removal needs them (graphs with spills disagree without them). premoves starts from
+         every such move the removals print and drops those a move-clash event contradicts, and
+         writes them as JSON for --premoves. They count in the coalescing test only, not in the
+         heap keys.
+  refs   set nodes' weighted reference counts to other values and list the nodes whose register
+         changes. When the image has two values the other way round, this shows which count has
+         to move and how far (compiler.md, "Reference counts as targets").
 
 Registers are numbered 0-12 and 14 (12 is ip, 14 lr); -5 is a spill.
 """
@@ -137,6 +151,9 @@ class State:
         self.C = {n: set(G['C'].get(n, ())) for n in nodes}
         self.X = {n: set() for n in nodes}
         self.M = {n: set(G['M'].get(n, ())) for n in nodes}
+        # moves to precoloured registers the graph dump leaves out (graph(premoves=)): they take
+        # part in the coalescing test at a removal, not in the heap keys
+        self.PM = {n: set(G.get('PM', {}).get(n, ())) for n in nodes}
         self.direct, self.uncoal, self.refs = G['direct'], G['uncoal'], G['refs']
         self.nonspill, self.second = G['nonspill'], move_clashes
         self.status, self.pos, self.alias, self.stack, self.snap, self.log = {}, {}, {}, [], {}, []
@@ -206,8 +223,9 @@ class State:
             if len(C[v]) * len(M[v]) < 1000:
                 for m in sorted(M[v], reverse=True):
                     if self.status.get(m) in (SIMP, COAL): continue
-                    if X[v] & M[m]: self.log.append(('int', 'move', m))
-                    elif C[v] & M[m]: self.log.append(('int', 'clashes', m))
+                    Mm = M[m] | self.PM.get(m, set()) if self.status.get(m) == PRE else M[m]
+                    if X[v] & Mm: self.log.append(('int', 'move', m))
+                    elif C[v] & Mm: self.log.append(('int', 'clashes', m))
                     else:
                         self.log.append(('amc', m))
                         for e in sorted(C[v], reverse=True): self.add_x(m, e); self.add_x(e, m)
@@ -258,9 +276,14 @@ class State:
 # ---------------------------------------------------------------- the graph from a trace
 
 
-def graph(T, hidden=()):
+PREMOVES = ()      # set by --premoves
+PLAIN = bool(os.environ.get('ARMREPLAY_PLAIN'))     # set by --plain
+
+
+def graph(T, hidden=(), premoves=None):
     """The allocator's input from a parsed colouring: nodes, clashes, moves, direct copies,
-    weighted references, non-spill nodes, pairs the trace says cannot coalesce, initial lists."""
+    weighted references, non-spill nodes, pairs the trace says cannot coalesce, initial lists.
+    premoves: (node, precoloured register) pairs that are moves at the start (premoves())."""
     g0, P1 = T['g0'], T['passes'][0]
     init = {n: SN[v[2]] for n, v in P1['init'].items()}
     nodes = [n for n, s in init.items() if s in (XL, LO, HI, HNS, PRE)]
@@ -272,10 +295,13 @@ def graph(T, hidden=()):
         if a in ns and b in ns: M[a].add(b); M[b].add(a)
     for a, b in hidden:
         M[a].add(b); M[b].add(a)
+    PM = collections.defaultdict(set)
+    for a, b in (PREMOVES if premoves is None else premoves):
+        if a in ns and b in ns: PM[a].add(b); PM[b].add(a)
     direct = {frozenset(k) for k, w in g0['move'].items() if w == 5} | {frozenset(k) for k in hidden}
     refs = {}
     for P in T['passes']:
-        for s in P['steps']: refs[s['n']] = s['refs']
+        for s in P['steps']: refs.setdefault(s['n'], s['refs'])     # the first pass's count
         for c in P['col']: refs.setdefault(c['n'], c['refs'])
     for n in nodes: refs.setdefault(n, 0)
     uncoal = set()
@@ -284,7 +310,7 @@ def graph(T, hidden=()):
             for t in s['coal'] or []:
                 if 'uncoalesceable' in t: uncoal.add(frozenset((s['n'], int(t.split()[3]))))
     nonspill = {n for n, s in init.items() if s == HNS}
-    return dict(nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
+    return dict(PM=PM, nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
 
 
 def nullset(T, passno=1):
@@ -331,7 +357,7 @@ def colour(st, otime, nulls=frozenset()):
 
         def choose(S):
             if v in nulls or not S: return None
-            if not otime:
+            if not otime and not PLAIN:
                 pref = [r for r in S if r in PREFERRED or r in handed]
                 if pref and unc < len(pref):
                     c = next(r for r in order if r in pref); handed.add(c); return c
@@ -408,8 +434,10 @@ def check_pass(T, passno, G, spills_first=(), maxerr=5):
             if tr != mine:
                 err['sets'].append((i, v, k, 'replay only', sorted(mine - tr)[:8], 'trace only', sorted(tr - mine)[:8]))
                 if k == 'Moves':
-                    hid.update((v, p) for p in tr - mine if p in C0[v])
+                    hid.update((v, p) for p in tr - mine if p in C0[v] or G['init'].get(p) == PRE)
                     st.M[v] = set(tr)
+                    for p in tr:
+                        if p in st.M: st.M[p].add(v)
                 if k == 'Extra': st.X[v] = set(tr)
 
     i = 0
@@ -646,6 +674,78 @@ def sweep(T, webs, want, otime, vars_=None, jobs=1, hidden=()):
 # ---------------------------------------------------------------- command line
 
 
+# ---------------------------------------------------------------- moves to precoloured registers
+
+
+def premoves(T, rounds=30):
+    """The moves to precoloured registers that are there at the start: every one the trace's
+    pass-1 removals print, less those a move-clash event contradicts (an 'amc' to a register
+    whose moves meet the node's clashes). Returns (sorted pairs, unresolved 'int' events)."""
+    G0 = graph(T, premoves=())
+    pre = {n for n, s in G0['init'].items() if s == PRE}
+    ns = set(G0['nodes'])
+    S = T['passes'][0]['steps']
+    seen, cand = set(), set()
+    for k, P in enumerate(T['passes']):
+        for s in P['steps']:
+            if k and s['n'] in seen: continue
+            seen.add(s['n'])
+            for p, _ in s.get('before', {}).get('Moves', ()):
+                if p in pre and s['n'] in ns: cand.add((s['n'], p))
+
+    def run(init):
+        G = graph(T, premoves=())
+        for w, p in init:
+            G['M'][w].add(p); G['M'][p].add(w)
+        st = State(G, move_clashes(T))
+        drops, needs = [], []
+        for i, s in enumerate(S):
+            v = s['n']
+            if st.status.get(v) not in st.H: break
+            st.H[st.status[v]].remove(v)
+            tr = {m for m, _ in s.get('before', {}).get('Moves', ()) if m in st.M}
+            st.M[v] = set(tr)
+            for q in tr: st.M[q].add(v)
+            st.X[v] = {m for m, _ in s.get('before', {}).get('Extra', ()) if m in st.M}
+            for e in s['ev']:
+                if e[0] not in ('amc', 'int') or e[-1] not in pre: continue
+                q = e[-1]
+                inter = st.C[v] & st.M[q]
+                if e[0] == 'amc' and inter: drops.append((v, q, inter))
+                if e[0] == 'int' and not inter and not (st.X[v] & st.M[q]): needs.append((i, v, q))
+            st.log = []
+            st.simplify(v, True)
+        return drops, needs
+
+    init = set(cand)
+    for _ in range(rounds):
+        drops, needs = run(init)
+        gone = {(w, q) for _, q, inter in drops for w in inter} & init
+        if not gone: break
+        init -= gone
+    return sorted(init), needs
+
+
+# ---------------------------------------------------------------- what a node's count would do
+
+
+def refs_effect(T, otime, changes, hidden=()):
+    """Replay with some nodes' weighted reference counts set to other values ({node: refs}) and
+    list the nodes whose register changes: [(node, before, after, refs)]."""
+    def run(ch):
+        G = graph(T, hidden)
+        for n, v in ch.items(): G['refs'][n] = v
+        st, col, _ = replay(T, otime, G)[-1]
+
+        def get(w):
+            while w in st.alias: w = st.alias[w]
+            return col.get(w)
+        return {n: get(n) for n in G['nodes']}, G
+    base, G = run({})
+    new, _ = run(changes)
+    return [(n, rname(base[n]), rname(new[n]), G['refs'].get(n)) for n in sorted(base) if base[n] != new[n]]
+
+
 def _rule(a, cfg_path):
     if '--otime' in a: return True
     if '--no-otime' in a: return False
@@ -663,10 +763,19 @@ def main(argv):
     sys.path.insert(0, os.path.join(EXHUME, 'tools'))
     import config
     path, a = config.pop_config(argv)
-    if not a or a[0] not in ('check', 'tie', 'sweep'):
+    if not a or a[0] not in ('check', 'tie', 'sweep', 'premoves', 'refs'):
         print(__doc__); return 2
     opt = lambda k, d=None: a[a.index(k) + 1] if k in a else d
     T = armtrace.pick(armtrace.parse(a[1]), int(opt('--index')) if '--index' in a else None)
+    global PREMOVES, PLAIN
+    PLAIN = PLAIN or '--plain' in a
+    if a[0] == 'premoves':
+        pairs, needs = premoves(T)
+        with open(opt('--out', 'premoves.json'), 'w') as f: json.dump(pairs, f)
+        print(f'{len(pairs)} initial moves to precoloured registers; {len(needs)} unexplained events {needs[:3]}')
+        return 0
+    if '--premoves' in a:
+        with open(opt('--premoves')) as f: PREMOVES = [tuple(x) for x in json.load(f)]
     otime = _rule(a, path)
     if otime is None:
         otime = infer_otime(T)
@@ -678,6 +787,13 @@ def main(argv):
         print('\n'.join(lines))
         return 0 if ok else 1
     hidden = check(T, otime)[2]
+    if a[0] == 'refs':
+        for arg in [x for x in a[2:] if '=' in x and not x.startswith('-')]:
+            ch = {int(k): int(v) for k, v in (y.split('=') for y in arg.split(','))}
+            d = refs_effect(T, otime, ch, hidden)
+            print(f'{arg}: {len(d)} nodes change register')
+            for x in d[:40]: print('  ', x)
+        return 0
     if a[0] == 'tie':
         print('\n'.join(tie(T, int(a[2]), int(a[3]), otime, hidden)))
         return 0
