@@ -813,6 +813,12 @@ def main(argv):
         print(__doc__); return 2
     opt = lambda k, d=None: a[a.index(k) + 1] if k in a else d
     T = armtrace.pick(armtrace.parse(a[1]), int(opt('--index')) if '--index' in a else None)
+    if a[0] in ('refs', 'sweep'):
+        # each step's heap lists, clash sets and events serve check only; a 15,000-node trace
+        # replays in 11 GB with them and in 0.3 GB without, and sweep runs a replay per worker
+        for P in T['passes']:
+            for s in P['steps']:
+                s['lists'] = None; s.pop('before', None); s['ev'] = []
     global PREMOVES, PLAIN
     PLAIN = PLAIN or '--plain' in a
     if a[0] == 'premoves':
