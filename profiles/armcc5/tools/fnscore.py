@@ -143,7 +143,7 @@ def normalise(rows, relocated=()):
         elif addr in relocated and re.match(r'b', text):
             text = text.split()[0] + ' ?'
         else:
-            m = re.match(r'(b|cbz|cbnz|b\.w|b[a-z][a-z](\.w)?) (.*)#0x([0-9a-f]+)$', text)
+            m = re.match(r'(b|cbz|cbnz|b\.w|b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)(\.w)?) (.*)#0x([0-9a-f]+)$', text)  # not bic, bfi
             if m:
                 tgt = int(m.group(4), 16)
                 text = f'{m.group(1)} {m.group(3)}L{index[tgt]}' if tgt in index else f'{m.group(1)} ?'
