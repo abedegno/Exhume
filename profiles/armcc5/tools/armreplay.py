@@ -159,11 +159,14 @@ class State:
         # part in the coalescing test at a removal, not in the heap keys
         self.PM = {n: set(G.get('PM', {}).get(n, ())) for n in nodes}
         self.direct, self.uncoal, self.refs = G['direct'], G['uncoal'], G['refs']
+        self.size = G.get('size', {})
+        self.extra = G.get('extra', {})
         self.nonspill, self.second = G['nonspill'], move_clashes
         self.status, self.pos, self.alias, self.stack, self.snap, self.log = {}, {}, {}, [], {}, []
         refs, sec, C, X, M = self.refs, self.second, self.C, self.X, self.M
-        deg = lambda n: len(C[n])
-        deg2 = lambda n: len(C[n]) + len(X[n])
+        EX = G.get('extra', {})
+        deg = lambda n: len(C[n]) + EX.get(n, 0)   # the keys count clashes; the status weighs a pair twice
+        deg2 = lambda n: len(C[n]) + len(X[n]) + EX.get(n, 0)
         PM = self.PM
         PMK = {n: set(G.get('PMK', {}).get(n, ())) for n in nodes}
         mv = lambda h: (lambda n: len(M[n] | PMK[n])) if h in PMKEYS else (lambda n: len(M[n]))
@@ -196,9 +199,11 @@ class State:
             if s in self.H: self.H[s].push(n)
 
     def calc_status(self, n):
-        d = len(self.C[n])
+        # a node of two registers (a 64-bit value) needs a free pair: its degree counts twice
+        w = self.size.get(n, 1)
+        d = len(self.C[n]) * w + self.extra.get(n, 0)
         if self.second:
-            if d + len(self.X[n]) < K: return XL
+            if d + len(self.X[n]) * w < K: return XL
         elif d < K:
             return XL
         if d < K: return LO
@@ -324,7 +329,15 @@ def graph(T, hidden=(), premoves=None):
             for t in s['coal'] or []:
                 if 'uncoalesceable' in t: uncoal.add(frozenset((s['n'], int(t.split()[3]))))
     nonspill = {n for n, s in init.items() if s == HNS}
-    return dict(PM=PM, PMK=PMK, nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
+    size = {n: max(1, v[0]) for n, v in P1['init'].items()}
+    # the dump leaves out some clashes (as it leaves out moves to precoloured registers): a node
+    # the trace starts as high with fewer clashes than K gets the missing count as extra degree
+    extra = {}
+    for n in nodes:
+        if init[n] in (HI, HNS):
+            d = len(C[n]) * size.get(n, 1)
+            if d < K: extra[n] = K - d
+    return dict(extra=extra, size=size, PM=PM, PMK=PMK, nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
 
 
 def nullset(T, passno=1):
