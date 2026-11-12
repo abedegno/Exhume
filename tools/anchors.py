@@ -34,6 +34,7 @@ for p in glob.glob(os.path.join(cfg.map, 'pairs_*.tsv')):
 # far functions in symbols.tsv with original names: a resident address is a paragraph and an
 # offset, which the located segments and verified proc offsets turn straight into a DOS proc
 import struct
+from symbol_address import parse as parse_address
 exe = cfg.exe
 hdr = struct.unpack_from('<H', exe, 8)[0] * 16
 para = {}
@@ -51,8 +52,11 @@ if os.path.exists(sym):
     for l in open(sym):
         if l.startswith('#'): continue
         n, v, src = l.rstrip('\n').split('\t')
-        if src != cfg.original_label or v.startswith('DS:'): continue
-        pg, off = (int(x, 16) for x in v.split(':'))
+        if src != cfg.original_label: continue
+        address = parse_address(v)
+        # This pass anchors resident proc maps; bodies have no resident paragraph.
+        if address[0] != 'FAR': continue
+        _, pg, off = address
         if pg in para and (para[pg], off) in at:
             add(at[(para[pg], off)], n.lstrip('_'), 'symbol')
 sa = cfg.sibling.get('extra_anchors')

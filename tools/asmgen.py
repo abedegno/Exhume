@@ -48,6 +48,7 @@ from iced_x86 import (Decoder, Formatter, FormatterSyntax, OpKind, Register, Flo
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, here)
 import config
+from symbol_address import symbol_maps
 CFG = config.load(config.pop_config(sys.argv[1:])[0])
 load_targets = CFG.load_targets
 
@@ -66,14 +67,7 @@ def relocs():
 
 
 def load_symbols():
-    ds, far = {}, {}
-    for l in open(CFG.symbols):
-        if l.startswith('#') or not l.strip(): continue
-        n, a = l.rstrip('\n').split('\t')[:2]
-        s, o = a.split(':')
-        if s == 'DS': ds.setdefault(int(o, 16), n)
-        else: far.setdefault((int(s, 16), int(o, 16)), n)
-    return ds, far
+    return symbol_maps({name:address for name,(address,_) in CFG.load_symbols().items()})
 
 
 def ida_segments():
@@ -195,7 +189,8 @@ class Gen:
         s.segbase = s.base - s.org            # file offset of the segment's paragraph
         s.lo, s.hi = s.org, s.org + s.size    # segment offsets this file covers
         s.rel = {o - s.segbase for o in relocs() if s.base <= o < s.base + s.size}
-        s.dsyms, s.fsyms = load_symbols()
+        s.dsyms, s.fsyms, s.bsyms = load_symbols()
+        s.overlay_index = CFG.overlay_index(seg)
         s.segnames, ranges = ida_segments()
         s.procs_by = ida_procs()
         if seg not in ranges: sys.exit(f'{seg}: not in the IDA listing')
@@ -292,7 +287,9 @@ class Gen:
             # no return of its own (it runs on into the next): far only if called far
             s.dist[st] = d or ('far' if any(s.b(x)[0] == 0x0E and x + 1 in s.ins and s.branch_target(s.ins[x + 1]) == st for x in s.ins) else 'near')
         # symbols.tsv knows the names callers link against; the table may still hold IDA's
-        s.pname = {o: s.fsyms.get((s.para, o), '_' + r[0]) for o, r in procs.items()}
+        s.pname = {o: (s.fsyms.get((s.para, o), '_' + r[0]) if s.overlay_index is None
+                      else s.bsyms.get((s.overlay_index, o), '_' + r[0]) if s.dist[o]=='near'
+                      else '_' + r[0]) for o, r in procs.items()}
         for o, r in procs.items():
             if s.pname[o] != '_' + r[0]:
                 print(f'note: +{o:X} is {s.pname[o]} in symbols.tsv, {r[0]} in the table', file=sys.stderr)
@@ -391,7 +388,10 @@ class Gen:
         return sp
 
     def lab(s, t):
-        return s.pname.get(t) if t in getattr(s, 'pname', {}) else f'L{t:04X}'
+        if t in getattr(s, 'pname', {}):return s.pname[t]
+        if getattr(s, 'overlay_index', None) is not None:
+            return s.bsyms.get((s.overlay_index,t),f'L{t:04X}')
+        return f'L{t:04X}'
 
     def cpu(s):
         lvl = 0
