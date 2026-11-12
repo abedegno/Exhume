@@ -43,6 +43,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, here)
 sys.modules.setdefault('vectors', sys.modules[__name__])
 import fuzzasm, portcfg
+from symbol_address import resident_reference
 from fuzzasm import CFG, ARGV
 
 STACK_TOP = 0xF000                     # SP in the data group when a routine is called
@@ -68,9 +69,10 @@ def sym(name):
     global _syms
     if _syms is None: _syms = CFG.load_symbols()
     if name not in _syms: sys.exit(f'vectors.py: {name} is not in {CFG.symbols}')
-    a = _syms[name][0]
-    s, o = a.split(':')
-    return ('DS' if s == 'DS' else int(s, 16)), int(o, 16)
+    try:
+        return resident_reference(_syms[name][0])
+    except ValueError as error:
+        sys.exit(f'vectors.py: {name}: {error}')
 
 
 _image = None

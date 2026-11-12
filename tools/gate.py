@@ -100,8 +100,16 @@ class Gate:
         rebuilds everything."""
         h = hashlib.sha1()
         files = [os.path.join(here, 'dosrun.mjs'), os.path.join(here, 'dosbackend.mjs'), os.path.join(here, 'build.py'),
+                 os.path.join(here, 'compile_context.py'), os.path.join(here, 'context_omf.py'),
+                 os.path.join(here, 'srcdeps.py'), os.path.join(here, 'near_entries.py'),
+                 os.path.join(here, 'symbol_address.py'), os.path.join(here, 'config.py'),
+                 os.path.join(here, 'verify.py'),
+                 os.path.join(here, 'contract.py'), os.path.join(here, 'namespace.py'),
+                 os.path.join(here, 'resident_cs_raw.py'), os.path.join(here, 'bounded_prefix.py'),
+                 os.path.join(here, 'bounded_cpu.py'),
+                 os.path.join(here, 'code_frame_raw.py'), os.path.join(here, 'code_frame_proof.py'), self.cfg.file,
                  os.path.join(self.cfg.profile_dir, 'profile.toml')]
-        for s in self.cfg.stage:
+        for s in self.cfg.stage + [x for c in getattr(self.cfg, 'compilers', {}).values() for x in c['stage']]:
             if os.path.isdir(s): files += sorted(glob.glob(os.path.join(s, '*.EXE')) + glob.glob(os.path.join(s, '*.exe')))
             else: files.append(s)
         for p in files:

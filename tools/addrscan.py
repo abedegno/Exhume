@@ -44,12 +44,21 @@ import sys, os, re, struct, glob
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, here)
 import config
+from symbol_address import parse as parse_address
 from fixups import fixups
 from iced_x86 import (Decoder, Formatter, FormatterSyntax, OpKind, Register, FlowControl, Code,
                       InstructionInfoFactory, OpAccess, RegisterExt, Mnemonic)
 
 CFG = None
 exe = b''; HDR = MZEND = 0
+
+
+def symbol_segment_name(name, address, paragraphs):
+    if not address:return name
+    value=parse_address(address)
+    if value[0]=='DS':return 'DGROUP'
+    if value[0]=='OVL':return f'OVL_{value[1]:04X}'
+    return paragraphs.get(value[1],f'{name}@{value[1]:04X}')
 w16 = lambda b, i: struct.unpack_from('<H', b, i)[0]
 SIZE = {0: 1, 1: 2, 2: 2, 3: 4, 4: 1, 5: 2}
 SREG = {Register.DS: 'ds', Register.ES: 'es', Register.SS: 'ss', Register.CS: 'cs', Register.FS: 'fs', Register.GS: 'gs'}
@@ -461,12 +470,7 @@ def main(argv=None):
         DISPATCH[REGS[rule['register'].lower()]] = State(s_)
     skip = {x.upper() for x in lay.get('library_objects', [])}
     def segname(n):
-        v = addr.get(n, '')
-        if v.startswith('DS:'): return 'DGROUP'
-        if ':' in v:
-            p = int(v.split(':')[0], 16)
-            return paras.get(p, f'{n}@{p:04X}')
-        return n
+        return symbol_segment_name(n, addr.get(n, ''), paras)
     ida = ida_text()
     # the names compiled C calls: entered with DS = SS = DGROUP
     for stem, src, seg, obj in objects():

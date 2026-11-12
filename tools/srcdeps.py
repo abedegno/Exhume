@@ -18,6 +18,7 @@ source_hash, so editing a header recompiles every source that includes it, and n
 import os, re, sys, hashlib
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
 import config
+from pathlib import Path
 
 _INC = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"]+)"', re.M)
 
@@ -37,7 +38,7 @@ def headers(path, cfg=None):
     idx = _index(cfg); seen, order = set(), []
 
     def walk(p):
-        for m in _INC.finditer(open(p, 'rb').read()):
+        for m in _INC.finditer(Path(p).read_bytes()):
             name = os.path.basename(m.group(1).decode('latin1').replace('\\', '/')).lower()
             if name in seen: continue
             seen.add(name)
@@ -49,9 +50,32 @@ def headers(path, cfg=None):
 
 
 def source_hash(path, cfg=None):
-    h = hashlib.sha1(open(path, 'rb').read())
+    h = hashlib.sha1(Path(path).read_bytes())
+    cfg = cfg or config.load()
     for p in headers(path, cfg):
-        h.update(b'\0' + os.path.basename(p).encode() + b'\0' + open(p, 'rb').read())
+        h.update(b'\0' + os.path.basename(p).encode() + b'\0' + Path(p).read_bytes())
+    from compile_context import context_source, uses_multi_context, resolve_context_graph
+    if uses_multi_context(path,cfg):
+        graph=resolve_context_graph(path,cfg)
+        h.update(b'\0context-dag-v1\0')
+        for node in (*graph.helpers,graph.primary):
+            h.update(b'\0'+os.path.basename(node.source).encode()+b'\0'+Path(node.source).read_bytes())
+            for header in headers(node.source,cfg):
+                h.update(b'\0'+os.path.basename(header).encode()+b'\0'+Path(header).read_bytes())
+            h.update(b'\0'+node.target.encode()+b'\0'+Path(cfg.targets,node.target+'.tsv').read_bytes())
+        return h.hexdigest()
+    helper = context_source(path, cfg)
+    if helper:
+        h.update(b'\0context-v1\0' + os.path.basename(helper).encode() + b'\0' + Path(helper).read_bytes())
+        for p in headers(helper, cfg):
+            h.update(b'\0' + os.path.basename(p).encode() + b'\0' + Path(p).read_bytes())
+        # Both ranges define the validated split and the original address context.
+        for source in (path, helper):
+            target = re.search(rb'/\*\s*target:\s*(\w+)\s*\*/', Path(source).read_bytes())
+            if target:
+                name = target[1].decode('ascii') + '.tsv'
+                h.update(b'\0context-target\0' + name.encode() + b'\0' +
+                         Path(cfg.targets, name).read_bytes())
     return h.hexdigest()
 
 

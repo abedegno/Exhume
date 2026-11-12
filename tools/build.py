@@ -24,8 +24,9 @@ behind for match or verify to read. Each source's log is <build>/<STEM>/BUILD.LO
 Exit status 1 if any source failed."""
 import os, sys, re, subprocess, tempfile, shutil, glob
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 here = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, here)
-import config, sources
+import config, sources, compile_context
 
 
 def log_problems(cfg, text):
@@ -36,11 +37,11 @@ def log_problems(cfg, text):
     return msgs, any(re.search(lg.get('fatal', 'Error|Fatal'), l) for l in msgs)
 
 
-def shared_headers(cfg):
+def shared_headers(cfg, stage=None):
     """[(path, DOS name)] of the include directories' headers (the project's, then the
     runtime's, a name staged once), checked against the names the toolchain stages."""
     staged = set()
-    for s in cfg.stage:
+    for s in (cfg.stage if stage is None else stage):
         if os.path.isdir(s): staged.update(n.upper() for n in os.listdir(s))
         else: staged.add(os.path.basename(s).upper())
     out, have = [], set()
@@ -54,31 +55,68 @@ def shared_headers(cfg):
     return out
 
 
+
+def publish_object(path, raw):
+    """Expose only a completely written object; clean up an interrupted write."""
+    descriptor, temporary = tempfile.mkstemp(prefix='.object-', suffix='.tmp',
+                                             dir=os.path.dirname(path))
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _session(cfg, srcs, timeout):
     """One DOS session building srcs. Returns {stem: log text}; objects land in place."""
     tmp = tempfile.mkdtemp(prefix='exhume-build-')
     cmd = ['node', os.path.join(here, 'dosrun.mjs'), tmp, '-t', str(timeout)]
-    for s in cfg.stage: cmd += ['--stage', s]
-    for h, name in shared_headers(cfg): cmd += ['-f', f'{h}={name}']
+    which = getattr(cfg, 'compiler', lambda src: None)
+    compiler = which(srcs[0]) if srcs else None
+    if any(which(src) != compiler for src in srcs):
+        raise ValueError('one DOS session builds sources of one compiler only')
+    stage = cfg.compilers[compiler]['stage'] if compiler else cfg.stage
+    for s in stage: cmd += ['--stage', s]
+    for h, name in shared_headers(cfg, stage): cmd += ['-f', f'{h}={name}']
     stems = []
+    source_paths = {}
     for src in srcs:
         stem = cfg.stem(src); ext = os.path.splitext(src)[1].upper(); stems.append(stem)
-        _, opts = cfg.directives(src)
-        kind = 'asm' if ext == '.ASM' else 'c'
-        line = cfg.profile[kind]['command'].format(opts=opts, file=stem + ext)
-        cmd += ['-f', f'{src}={stem}{ext}', '-c', f'{line} > {stem}.LOG', '-O', stem + '.OBJ', '-O', stem + '.LOG']
+        source_paths[stem] = src
         obj = cfg.obj(stem)
         if os.path.exists(obj): os.remove(obj)
+        composed = compile_context.compose_source(src, cfg) if ext == '.C' else None
+        staged_source = src
+        if composed is not None:
+            staged_source = os.path.join(tmp, 'context-' + stem + '.C')
+            with open(staged_source, 'w', encoding='latin1') as stream:
+                stream.write(composed)
+        _, opts = cfg.directives(src)
+        kind = 'asm' if ext == '.ASM' else 'c'
+        command = cfg.compilers[compiler]['c_command'] if compiler and kind == 'c' else cfg.profile[kind]['command']
+        line = command.format(opts=opts, file=stem + ext)
+        cmd += ['-f', f'{staged_source}={stem}{ext}', '-c', f'{line} > {stem}.LOG', '-O', stem + '.OBJ', '-O', stem + '.LOG']
     r = subprocess.run(cmd, capture_output=True, text=True)
     logs = {}
     for stem in stems:
         out = os.path.join(cfg.build, stem); os.makedirs(out, exist_ok=True)
         lp = os.path.join(tmp, stem + '.LOG')
-        logs[stem] = open(lp, encoding='latin1').read() if os.path.exists(lp) else ''
+        logs[stem] = Path(lp).read_text(encoding='latin1') if os.path.exists(lp) else ''
         if r.returncode: logs[stem] += '\nexhume: the DOS run failed: ' + r.stdout.strip().replace('\n', '; ')
-        open(os.path.join(out, 'BUILD.LOG'), 'w', encoding='latin1').write(logs[stem])
-        if os.path.exists(os.path.join(tmp, stem + '.OBJ')):
-            shutil.copyfile(os.path.join(tmp, stem + '.OBJ'), os.path.join(out, stem + '.OBJ'))
+        compiled = os.path.join(tmp, stem + '.OBJ')
+        if os.path.exists(compiled):
+            try:
+                with open(compiled, 'rb') as stream:
+                    raw = stream.read()
+                raw = compile_context.finish_object(source_paths[stem], cfg, raw,
+                                                    os.path.join(out, 'CONTEXT'))
+                publish_object(os.path.join(out, stem + '.OBJ'), raw)
+            except (ValueError, OSError, RuntimeError) as error:
+                logs[stem] += '\nFatal: compilation context: ' + str(error) + '\n'
+        with open(os.path.join(out, 'BUILD.LOG'), 'w', encoding='latin1') as stream:
+            stream.write(logs[stem])
     shutil.rmtree(tmp, ignore_errors=True)
     return logs
 
@@ -89,7 +127,10 @@ def build(cfg, srcs, jobs=None, batch=1, timeout=300):
     if jobs is None:
         import dosbatch
         jobs = dosbatch.sessions() if len(srcs) > batch else 1
-    groups = [srcs[i:i + batch] for i in range(0, len(srcs), batch)]
+    by_compiler = {}
+    which = getattr(cfg, 'compiler', lambda src: None)
+    for src in srcs: by_compiler.setdefault(which(src), []).append(src)
+    groups = [g[i:i + batch] for g in by_compiler.values() for i in range(0, len(g), batch)]
     res = {}
     with ThreadPoolExecutor(max(1, jobs)) as pool:
         for logs in pool.map(lambda g: _session(cfg, g, timeout * max(1, len(g) // 4 + 1)), groups):

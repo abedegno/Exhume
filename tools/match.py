@@ -1,6 +1,6 @@
 """Compile a source file and compare every function with the original executable.
 
-    python3 tools/match.py SRC [--dis NAME] [--no-build] [--config PATH]
+    python3 tools/match.py SRC [--dis NAME] [--no-build] [--object PATH] [--config PATH]
 
 The target table is <targets>/<segment>.tsv, named by a `/* target: SEG */` line in the
 source; switches come from its `/* opts: ... */` line. Each public function found in both
@@ -8,6 +8,9 @@ the object and the table is reported as MATCH, or how many bytes differ and wher
 size against the table's. --dis NAME adds an instruction diff for one function (jump and
 call targets hidden, so a length difference shows as the instruction that caused it).
 --no-build re-compares the last build.
+
+--object PATH reads an existing proof object instead of the canonical build object and
+never compiles, including when --no-build is omitted.
 
 Bytes written by fixups (addresses of globals, call targets, segment values) are masked:
 names and addresses need not be right yet, only near/far-ness. That is why verify.py must
@@ -44,13 +47,23 @@ def dis(buf):
 
 
 def code_segment(cfg, segs):
-    return [i for i, (sn, cn, ln) in enumerate(segs, 1) if cfg.is_code_class(cn)]
+    return [i for i, (sn, cn, ln) in enumerate(segs, 1) if ln and cfg.is_code_class(cn)]
 
 
 def main(argv):
     path, a = config.pop_config(argv)
     cfg = config.load(path)
+    object_path = None
+    if '--object' in a:
+        i = a.index('--object')
+        if i + 1 >= len(a) or a[i + 1].startswith('--'):
+            sys.exit('--object requires a path')
+        object_path = a[i + 1]
+        a = a[:i] + a[i + 2:]
+    no_build = object_path is not None or '--no-build' in a
     if cfg.object_model == 'linked-image':
+        if object_path is not None:
+            sys.exit('--object requires an OMF object profile')
         sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
         import importlib
         return importlib.import_module(cfg.profile.get('link', {}).get('match_tool', 'armmatch')).main(cfg, a)
@@ -60,14 +73,15 @@ def main(argv):
     if not seg: sys.exit(f'{src}: no /* target: SEG */ line')
     rewrite = cfg.profile.get('link', {}).get('overlay_call_rewrite', False)
     for attempt in range(2):
-        if '--no-build' not in a:
+        if not no_build:
             ok, msgs = build(cfg, [os.path.abspath(src)])[stem]
             for l in msgs: print(l)
             if not ok: return 1
-        d = open(cfg.obj(stem), 'rb').read()
+        with open(object_path if object_path is not None else cfg.obj(stem), 'rb') as stream:
+            d = stream.read()
         _, segs, data, mask, _ = module_masked(d)
         ci = code_segment(cfg, segs)
-        if ci or '--no-build' in a: break
+        if ci or no_build: break
         # the emulator occasionally returns an object with no code segment; build once more
         print('object has no code segment; rebuilding')
     if not ci: print('object has no code segment'); return 1
