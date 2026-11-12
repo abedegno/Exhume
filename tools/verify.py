@@ -111,14 +111,18 @@ def resident_target_near(cfg, seg, base, size, rows, org, obj, at, f, code):
     delta=base-org-header
     need(delta>=0 and delta%16==0 and delta//16<=0xffff,'caller physical placement disagrees with CS')
     paragraph=delta//16
-    need(end+16<=len(e) and e[end:end+4]==b'FBOV','invalid original FBOV header')
-    table,count=struct.unpack_from('<II',e,end+8)
-    need(count>0 and table>=header and table+8*count<=end,'invalid original segment table bounds')
-    spans=[(low,high) for para,high,flags,low in
-           (struct.unpack_from('<4H',e,table+8*k) for k in range(count))
-           if para==paragraph and flags==1 and low<high and low<=org and org+size<=high]
-    need(len(spans)==1,'caller is not in one original resident segment span')
-    low,high=spans[0]
+    if e[end:end+4]!=b'FBOV':
+        # cpp20: no overlays, no segment table; the span is the frame's 64K within the image
+        low,high=0,min(0x10000,end-header-paragraph*16)
+    else:
+        need(end+16<=len(e) and e[end:end+4]==b'FBOV','invalid original FBOV header')
+        table,count=struct.unpack_from('<II',e,end+8)
+        need(count>0 and table>=header and table+8*count<=end,'invalid original segment table bounds')
+        spans=[(low,high) for para,high,flags,low in
+               (struct.unpack_from('<4H',e,table+8*k) for k in range(count))
+               if para==paragraph and flags==1 and low<high and low<=org and org+size<=high]
+        need(len(spans)==1,'caller is not in one original resident segment span')
+        low,high=spans[0]
     need(header+paragraph*16+high<=end,
          'original resident segment span exceeds loaded image')
     ins=resident_instruction_field(obj,at,rows,size)
@@ -225,14 +229,18 @@ def resident_cs_program_ds(cfg, seg, base, size, rows, org, obj, at, f, code, ra
     delta=base-org-header
     need(delta>=0 and delta%16==0 and delta//16<=0xffff,'caller physical placement disagrees with CS')
     para=delta//16
-    need(end+16<=len(e) and e[end:end+4]==b'FBOV','invalid original FBOV header')
-    table,count=struct.unpack_from('<II',e,end+8)
-    need(count>0 and table>=header and table+8*count<=end,'invalid original segment table')
-    spans=[(low,high) for p,high,flags,low in
-           (struct.unpack_from('<4H',e,table+8*k) for k in range(count))
-           if p==para and flags==1]
-    need(len(spans)==1,'CS is not one unique original resident span')
-    low,high=spans[0]
+    if e[end:end+4]!=b'FBOV':
+        # cpp20: no overlays, no segment table; the span is the frame's 64K within the image
+        low,high=0,min(0x10000,end-header-para*16)
+    else:
+        need(end+16<=len(e) and e[end:end+4]==b'FBOV','invalid original FBOV header')
+        table,count=struct.unpack_from('<II',e,end+8)
+        need(count>0 and table>=header and table+8*count<=end,'invalid original segment table')
+        spans=[(low,high) for p,high,flags,low in
+               (struct.unpack_from('<4H',e,table+8*k) for k in range(count))
+               if p==para and flags==1]
+        need(len(spans)==1,'CS is not one unique original resident span')
+        low,high=spans[0]
     need(low<high and low<=org and org+size<=high and header+para*16+high<=end,
          'original resident span bounds disagree')
     candidates=[r for r in rows if type(r[2]) is int and type(r[3]) is int
@@ -397,7 +405,8 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
     # segment table (8-byte entries, the first word being the paragraph); the FBOV header
     # after the load image gives the table's file offset
     cblp, cp = struct.unpack_from('<HH', exe, 2); mzend = (cp - 1) * 512 + cblp if cblp else cp * 512
-    segtab = struct.unpack_from('<I', exe, mzend + 8)[0]
+    # CPP.EXE (cpp20): no FBOV block, no overlays; segtab is then never read
+    segtab = struct.unpack_from('<I', exe, mzend + 8)[0] if exe[mzend:mzend + 4] == b'FBOV' else None
     para_of = lambda v: word(exe, segtab + v) if base >= mzend else v
     if code_frame_resident_ds:
         base,size,rows,org = (code_frame_transaction.base,code_frame_transaction.size,
@@ -656,6 +665,16 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
                     problems.append(f'_DATA+{at:X}: points into _BSS, whose base is not known')
                 elif word(exe, here) != (min(bss_bases) + add) & 0xFFFF:
                     problems.append(f'_DATA+{at:X}: points to DS:{word(exe, here):X}, expected DS:{(min(bss_bases) + add) & 0xFFFF:X}')
+            elif tm == 0 and ti == datas and loc == 3:
+                # cpp20: a far pointer from this file's _DATA into its own _DATA (DGROUP is resident)
+                internal += 1
+                if word(exe, here) != (db + add) & 0xFFFF or word(exe, here + 2) != CFG.dgroup_para:
+                    problems.append(f'_DATA+{at:X}: far pointer {word(exe, here + 2):04X}:{word(exe, here):04X}, expected {CFG.dgroup_para:04X}:{(db + add) & 0xFFFF:04X}')
+            elif tm == 0 and ti == code and loc in (1, 5) and base < mzend:
+                # cpp20: a near code offset in _DATA (a table of near handlers in this file's segment)
+                internal += 1
+                if word(exe, here) != (add + org) & 0xFFFF:
+                    problems.append(f'_DATA+{at:X}: code offset {word(exe, here):04X}, expected {(add + org) & 0xFFFF:04X}')
             elif tm == 0 and ti == datas and loc in (1, 5):
                 internal += 1
                 if word(exe, here) != (db + add) & 0xFFFF:
@@ -845,8 +864,11 @@ def place_far(o, fars, farref, farfx, exe, hdr, word, note, problems):
         # TLINK lists every segment in the overlay manager's segment table ({paragraph, end,
         # flags, start}): the EXE's segment there must be exactly this long
         cblp, cp = struct.unpack_from('<HH', exe, 2); mzend = (cp - 1) * 512 + cblp
-        segtab, nseg = struct.unpack_from('<II', exe, mzend + 8)
-        ent = [struct.unpack_from('<4H', exe, segtab + 8 * i) for i in range(nseg)]
+        if exe[mzend:mzend + 4] == b'FBOV':
+            segtab, nseg = struct.unpack_from('<II', exe, mzend + 8)
+            ent = [struct.unpack_from('<4H', exe, segtab + 8 * i) for i in range(nseg)]
+        else:   # cpp20: not overlaid, no segment table; size checks fall to the far-data comparison
+            ent = [(para, off + len(data), 0, off)]
         # (empty segments share a paragraph with the next one: they are left out)
         ext = [e[1] - e[3] for e in ent if e[0] == para and e[3] == off and e[1] != 0xFFFF and e[1] > e[3]]
         if piece:
@@ -872,6 +894,10 @@ def update(syms, pubs, problems, write=True):
     path = CFG.symbols
     cur = CFG.load_symbols()
     known = {n: v for n, (v, _) in cur.items()}; label = {n: l for n, (_, l) in cur.items()}
+    # cpp20: a public that is a configured alias (an assembly module defining both spellings
+    # of a run-time helper for the link) counts under its canonical name
+    _al = CFG.raw.get('names', {}).get('extern_aliases', {})
+    pubs = {_al.get(n, n): v for n, v in pubs.items()}
     for n, (v, _) in syms.items():
         if n in known and known[n] != fmt(v):
             problems.append(f'{n}: symbols.tsv has {known[n]}, this file gives {fmt(v)}')
