@@ -1,0 +1,29 @@
+name = "Borland C++ 2.0 / TASM 2.51 / TLINK 4.0"
+
+[c]
+command = "BCC -c {opts} -IC:\\ {file}"
+default_opts = "-mm -G -O -Z -p -Y"
+code_class = "CODE"
+# The original uses Pascal calling conventions: public names are upper-case,
+# without the C calling convention's leading underscore.
+public_prefix = ""
+name_limit = 32
+
+[asm]
+command = "TASM {opts} {file}"
+default_opts = "/ml"
+
+[log]
+problem = "(Error|Warning|Fatal)"
+benign = "messages:\\s+None"
+fatal = "(Error|Fatal)"
+
+[link]
+overlay_call_rewrite = true
+library_name_patterns = ["^F_", "^N_", "@$"]
+far_return = 0xCB
+
+[fingerprint]
+strings = ["Borland C++  Version 2.0 Copyright (c) 1991 Borland International",
+           "TC86 Borland Turbo C++ 2.0", "Runtime overlay error"]
+c_prologue = "55 8B EC"

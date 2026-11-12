@@ -96,6 +96,12 @@ class Config:
         self.profile = _walk(tomllib.load(open(os.path.join(self.profile_dir, 'profile.toml'), 'rb')))
         self.home = os.path.join(self.root, t['home']) if t.get('home') else None
         self.stage = [os.path.join(self.root, x) for x in t.get('stage', [])]
+        # alternative compilers a source selects with /* compiler: NAME */ (e.g. an older
+        # Borland compiler for run-time modules); each has its own stage list and C command
+        self.compilers = {}
+        for name, c in t.get('compilers', {}).items():
+            self.compilers[name] = {'stage': [os.path.join(self.root, x) for x in c.get('stage', [])],
+                                    'c_command': c['c_command']}
         prof_c = self.profile.get('c', {}); prof_a = self.profile.get('asm', {})
         self.c_opts = t.get('c_opts', prof_c.get('default_opts', ''))
         self.asm_opts = t.get('asm_opts', prof_a.get('default_opts', ''))
@@ -203,6 +209,15 @@ class Config:
         asm = src.upper().endswith('.ASM')
         return (t.group(1) if t else None, o.group(1) if o else (self.asm_opts if asm else self.c_opts))
 
+    def compiler(self, src):
+        """The alternative compiler a C source names with /* compiler: NAME */, or None."""
+        if not src.upper().endswith('.C'): return None
+        m = re.search(r'/\*\s*compiler:\s*(\w+)\s*\*/', open(src, encoding='latin1').read(4000))
+        if not m: return None
+        if m.group(1) not in self.compilers:
+            raise ValueError(f'{src}: unknown compiler {m.group(1)}')
+        return m.group(1)
+
     def load_targets(self, seg):
         """A target table: (file base, size, rows of (name, listing name, offset, size), org)
         and any '# far NAME PPPP:OOOO' placement hints."""
@@ -219,11 +234,16 @@ class Config:
 
     def load_symbols(self):
         """symbols.tsv as {name: (address text, source label)}."""
+        from symbol_address import parse, format_address, overlay_location
         out = {}
         if os.path.exists(self.symbols):
-            for l in open(self.symbols):
-                if l.startswith('#') or not l.strip(): continue
-                f = l.rstrip('\n').split('\t'); out[f[0]] = (f[1], f[2] if len(f) > 2 else '')
+            with open(self.symbols) as stream:
+                for l in stream:
+                    if l.startswith('#') or not l.strip(): continue
+                    f = l.rstrip('\n').split('\t')
+                    address = parse(f[1])
+                    if address[0] == 'OVL': overlay_location(self, address[1], address[2])
+                    out[f[0]] = (format_address(address), f[2] if len(f) > 2 else '')
         return out
 
     def matched_set(self):
