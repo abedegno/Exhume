@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..64895c3
+index 0000000..f417d0b
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,569 @@
+@@ -0,0 +1,561 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -613,10 +613,10 @@ index 0000000..64895c3
 + *                             (by the code it calls and by DOS too) counts for any call, and
 + *                             no call starts a record.  What it writes is kept, though: as part
 + *                             of a child running at the time, or else as external writes
-+ *                             (X lines) that a replay applies at the next child.  When it
-+ *                             calls back into the program's own code and that code writes
-+ *                             (the overlay manager asking for memory, pools moved), the calls
-+ *                             open at the time are not written: no replay can tell when.
++ *                             (X lines) that a replay applies at the next child.  A call
++ *                             that reads such a byte before its next child (the overlay
++ *                             manager asked for memory and the program moved its pools) is
++ *                             not written: a replay would read it too early.
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
@@ -684,7 +684,6 @@ index 0000000..64895c3
 +static unsigned n_ign;
 +static int ignoring;            /* inside EMU2_RECORD_IGNORE code (or what it called) */
 +static unsigned ign_ss, ign_sp;
-+static int cur_in_ign;          /* the instruction running is the ignored code's own (or DOS it called) */
 +
 +struct frame {
 +    int child;                  /* a call of an EMU2_RECORD_INNER function */
@@ -782,6 +781,9 @@ index 0000000..64895c3
 +                f->in_val[a] = memory[a];
 +                touch(f, a, 1);
 +            }
++            /* a byte the ignored code wrote, which a replay applies only at the next child */
++            if(f->ext_seen && f->ext_seen[a])
++                f->lost = 1;
 +        }
 +    }
 +}
@@ -810,14 +812,6 @@ index 0000000..64895c3
 +
 +void rec_write(uint32_t addr, unsigned n)
 +{
-+    if(ignoring && !cur_in_ign)
-+    {
-+        /* the program's own code, called back by the ignored code (the overlay manager
-+           asking for memory: pools moved), changing state the calls open now go on to use
-+           at a moment no replay can know: none of them is written */
-+        for(int l = 0; l < depth; l++)
-+            fr[l].lost = 1;
-+    }
 +    if(ignoring)
 +    {
 +        /* the ignored code's writes: part of the effect of a child that is running, or
@@ -1118,8 +1112,6 @@ index 0000000..64895c3
 +        for(unsigned i = 0; prov && i < n_ign; i++)
 +            if(prov - 1 >= ign_lo[i] && prov - 1 <= ign_hi[i])
 +                in_ign = 1;
-+        if(prov)
-+            cur_in_ign = in_ign;
 +        if(ignoring && !in_ign && cpuGetSS() == ign_ss && sp >= ign_sp)
 +            ignoring = 0;
 +        else if(!ignoring && in_ign)
