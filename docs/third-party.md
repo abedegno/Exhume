@@ -12,7 +12,7 @@ Exhume is MIT-licensed and contains no game data, no Borland binaries and no thi
 | Unicorn 2.1.4 | tools/fuzzasm.py and tools/ailcheck.py only, development tools that run the original's code | GPL-2.0 | `pip install -r tools/requirements.txt` into the venv; never linked into a port |
 | iced-x86 | instruction decoding in the matching tools and tools/asm2c.py | MIT | `pip install -r tools/requirements.txt` |
 | dos-mcp and js-dos (DOSBox, GPL-2.0) | running the toolchain and the program in headless DOS | dos-mcp MIT; js-dos and DOSBox GPL-2.0 | `npm install` |
-| emu2 | the fast DOS for the toolchain | GPL-2.0 | `tools/setup-emu2.sh` builds it from a pinned commit into tools/emu2 (ignored by git) |
+| emu2 | the fast DOS for the toolchain | GPL-2.0 | `tools/setup-emu2.sh` builds it from a pinned commit into tools/emu2, and `tools/setup-emu2-trace.sh` a tracing copy into tools/emu2-trace (both ignored by git); the patches (`tools/emu2-date.patch`, `tools/emu2-trace.patch`) are GPL-2.0 like emu2 |
 | DOSBox-X | the native DOS for replays and the toolchain | GPL-2.0 | `brew install dosbox-x`, `apt install dosbox-x` |
 | Borland Turbo C++ 1.01, Turbo Assembler 2.0 | the original toolchain | Borland's (Turbo C++ 1.01 was released free of charge; neither may be redistributed here) | the user's own disk images, unpacked by profiles/borland-tc101/setup-tc.sh and setup-tasm.sh; in CI, from an encrypted bundle (docs/ci-bundle.md) |
 

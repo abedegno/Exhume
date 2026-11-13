@@ -6,4 +6,5 @@ toolchain/
 *.OBJ
 *.EXE
 tools/emu2/
+tools/emu2-trace/
 armtrace.local.toml
