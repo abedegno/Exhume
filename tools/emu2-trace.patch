@@ -1,0 +1,747 @@
+diff --git a/GNUmakefile b/GNUmakefile
+index 290e5b0..28c8fff 100644
+--- a/GNUmakefile
++++ b/GNUmakefile
+@@ -17,6 +17,7 @@ OBJS=\
+  loader.o\
+  main.o\
+  timer.o\
++ trace.o\
+  utils.o\
+  video.o\
+ 
+diff --git a/src/cpu.c b/src/cpu.c
+index c32757f..470ba92 100644
+--- a/src/cpu.c
++++ b/src/cpu.c
+@@ -1,3 +1,4 @@
++#include <string.h>
+ #include <limits.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -12,7 +13,9 @@
+ #include "utils.h"
+ 
+ // Forward declarations
++#include "trace.h"
+ static void do_instruction(uint8_t code);
++static void trace_settle(unsigned cs, uint16_t at, const uint16_t *old_v, const uint32_t *old_t);
+ 
+ static uint16_t wregs[8];
+ static uint16_t sregs[4];
+@@ -44,21 +47,32 @@ static uint16_t irq_mask; // IRQs pending
+ 
+ static uint8_t GetMemAbsB(uint32_t addr)
+ {
++    trace_last_rdb = trace_prov[addr & 0xFFFFF];
++    if(trace_last_rdb >= trace_rd_lo && trace_last_rdb <= trace_rd_hi)
++        trace_read(trace_last_rdb);
+     return memory[addr & 0xFFFFF];
+ }
+ 
+ static uint16_t GetMemAbsW(uint32_t addr)
+ {
++    trace_last_rd = trace_prov[addr & 0xFFFFF];
++    if(trace_last_rd >= trace_rd_lo && trace_last_rd <= trace_rd_hi)
++        trace_read(trace_last_rd);
++    else if(trace_prov[(addr + 1) & 0xFFFFF] >= trace_rd_lo && trace_prov[(addr + 1) & 0xFFFFF] <= trace_rd_hi)
++        trace_read(trace_prov[(addr + 1) & 0xFFFFF]);
+     return memory[addr & 0xFFFFF] + 256 * memory[(addr + 1) & 0xFFFFF];
+ }
+ 
+ static void SetMemAbsB(uint32_t addr, uint8_t val)
+ {
++    trace_prov[0xFFFFF & addr] = trace_bt;
+     memory[0xFFFFF & addr] = val;
+ }
+ 
+ static void SetMemAbsW(uint32_t addr, uint16_t x)
+ {
++    trace_prov[addr & 0xFFFFF] = trace_wt;
++    trace_prov[(addr + 1) & 0xFFFFF] = trace_wt ? trace_wt + 1 : 0;
+     memory[addr & 0xFFFFF] = x;
+     memory[(addr + 1) & 0xFFFFF] = x >> 8;
+ }
+@@ -70,7 +84,9 @@ static void SetMemB(uint16_t seg, uint16_t off, uint8_t val)
+ 
+ static uint8_t GetMemB(int seg, uint16_t off)
+ {
+-    return memory[0xFFFFF & (sregs[seg] * 16 + off)];
++    if(seg == CS)   /* instruction fetches are not data reads */
++        return memory[0xFFFFF & (sregs[seg] * 16 + off)];
++    return GetMemAbsB(sregs[seg] * 16 + off);
+ }
+ 
+ static void SetMemW(uint16_t seg, uint16_t off, uint16_t val)
+@@ -148,14 +164,17 @@ static uint16_t PopWord(void)
+ }
+ 
+ #define PUSH_WR(reg)                                                           \
++    trace_wt = trace_rt[reg];                                                  \
+     PushWord(wregs[reg]);                                                      \
+     break;
+ #define POP_WR(reg)                                                            \
+     wregs[reg] = PopWord();                                                    \
++    trace_rt[reg] = trace_last_rd;                                             \
+     break;
+ 
+ #define XCHG_AX_WR(reg)                                                        \
+     {                                                                          \
++        uint32_t tt = trace_rt[reg]; trace_rt[reg] = trace_rt[AX]; trace_rt[AX] = tt; \
+         uint16_t tmp = wregs[reg];                                             \
+         wregs[reg] = wregs[AX];                                                \
+         wregs[AX] = tmp;                                                       \
+@@ -303,34 +322,36 @@ static void SetModRMRegB(unsigned ModRM, uint8_t val)
+ #define SetModRMRegW(ModRM, val) wregs[(ModRM & 0x38) >> 3] = val;
+ 
+ // Used on LEA instruction
++#define TR(r) (trace_ea_v[trace_ea_t[0] ? 1 : 0] = wregs[r], trace_ea_t[trace_ea_t[0] ? 1 : 0] = trace_rt[r], wregs[r])
+ static uint16_t GetModRMOffset(unsigned ModRM)
+ {
++    trace_ea_t[0] = trace_ea_t[1] = 0;
+     switch(ModRM & 0xC7)
+     {
+-    case 0x00: return wregs[BX] + wregs[SI];
+-    case 0x01: return wregs[BX] + wregs[DI];
+-    case 0x02: return wregs[BP] + wregs[SI];
+-    case 0x03: return wregs[BP] + wregs[DI];
+-    case 0x04: return wregs[SI];
+-    case 0x05: return wregs[DI];
++    case 0x00: return TR(BX) + TR(SI);
++    case 0x01: return TR(BX) + TR(DI);
++    case 0x02: return TR(BP) + TR(SI);
++    case 0x03: return TR(BP) + TR(DI);
++    case 0x04: return TR(SI);
++    case 0x05: return TR(DI);
+     case 0x06: return FETCH_W();
+-    case 0x07: return wregs[BX];
+-    case 0x40: return wregs[BX] + wregs[SI] + (int8_t)FETCH_B();
+-    case 0x41: return wregs[BX] + wregs[DI] + (int8_t)FETCH_B();
+-    case 0x42: return wregs[BP] + wregs[SI] + (int8_t)FETCH_B();
+-    case 0x43: return wregs[BP] + wregs[DI] + (int8_t)FETCH_B();
+-    case 0x44: return wregs[SI] + (int8_t)FETCH_B();
+-    case 0x45: return wregs[DI] + (int8_t)FETCH_B();
+-    case 0x46: return wregs[BP] + (int8_t)FETCH_B();
+-    case 0x47: return wregs[BX] + (int8_t)FETCH_B();
+-    case 0x80: return FETCH_W() + wregs[BX] + wregs[SI];
+-    case 0x81: return FETCH_W() + wregs[BX] + wregs[DI];
+-    case 0x82: return FETCH_W() + wregs[BP] + wregs[SI];
+-    case 0x83: return FETCH_W() + wregs[BP] + wregs[DI];
+-    case 0x84: return FETCH_W() + wregs[SI];
+-    case 0x85: return FETCH_W() + wregs[DI];
+-    case 0x86: return FETCH_W() + wregs[BP];
+-    case 0x87: return FETCH_W() + wregs[BX];
++    case 0x07: return TR(BX);
++    case 0x40: return TR(BX) + TR(SI) + (int8_t)FETCH_B();
++    case 0x41: return TR(BX) + TR(DI) + (int8_t)FETCH_B();
++    case 0x42: return TR(BP) + TR(SI) + (int8_t)FETCH_B();
++    case 0x43: return TR(BP) + TR(DI) + (int8_t)FETCH_B();
++    case 0x44: return TR(SI) + (int8_t)FETCH_B();
++    case 0x45: return TR(DI) + (int8_t)FETCH_B();
++    case 0x46: return TR(BP) + (int8_t)FETCH_B();
++    case 0x47: return TR(BX) + (int8_t)FETCH_B();
++    case 0x80: return FETCH_W() + TR(BX) + TR(SI);
++    case 0x81: return FETCH_W() + TR(BX) + TR(DI);
++    case 0x82: return FETCH_W() + TR(BP) + TR(SI);
++    case 0x83: return FETCH_W() + TR(BP) + TR(DI);
++    case 0x84: return FETCH_W() + TR(SI);
++    case 0x85: return FETCH_W() + TR(DI);
++    case 0x86: return FETCH_W() + TR(BP);
++    case 0x87: return FETCH_W() + TR(BX);
+     default:   return 0; // TODO: illegal instruction
+     }
+ }
+@@ -338,6 +359,15 @@ static uint16_t GetModRMOffset(unsigned ModRM)
+ static uint32_t GetModRMAddress(unsigned ModRM)
+ {
+     uint16_t disp = GetModRMOffset(ModRM);
++    if(trace_on && (trace_ea_t[0] || trace_ea_t[1]))
++    {
++        int bp = (ModRM & 0xC7) == 0x02 || (ModRM & 0xC7) == 0x03 || (ModRM & 0xC7) == 0x42 ||
++                 (ModRM & 0xC7) == 0x43 || (ModRM & 0xC7) == 0x46 || (ModRM & 0xC7) == 0x82 ||
++                 (ModRM & 0xC7) == 0x83 || (ModRM & 0xC7) == 0x86;
++        int seg = segment_override != NoSeg ? segment_override : (bp ? SS : DS);
++        trace_use_at(trace_ea_t[0], sregs[seg], (uint16_t)(disp - trace_ea_v[0]), trace_ea_v[0]);
++        trace_use_at(trace_ea_t[1], sregs[seg], (uint16_t)(disp - trace_ea_v[1]), trace_ea_v[1]);
++    }
+     switch(ModRM & 0xC7)
+     {
+     case 0x00:
+@@ -425,10 +455,63 @@ static void next_instruction(void)
+         bios_routine(ip - 1);
+         do_instruction(0xCF);
+     }
++    else if(trace_on)
++    {
++        uint16_t old_v[8];
++        uint32_t old_t[8];
++        unsigned cs = sregs[CS], at = ip;
++        memcpy(old_v, wregs, sizeof old_v);
++        memcpy(old_t, trace_rt, sizeof old_t);
++        do_instruction(FETCH_B());
++        trace_settle(cs, at, old_v, old_t);
++    }
+     else
+         do_instruction(FETCH_B());
+ }
+ 
++
++/* After an instruction: a register whose value it changed keeps its provenance only when
++   the instruction moves a word into it (which sets the provenance itself) or moves a
++   pointer on by adding or subtracting (add, sub, inc, dec, the string instructions);
++   anything else (a byte written into it, a shift, a logic operation, a multiply) leaves a
++   number that is no longer the word it was loaded from. */
++static void trace_settle(unsigned cs, uint16_t at, const uint16_t *old_v, const uint32_t *old_t)
++{
++    uint8_t op, m;
++    for(int i = 0; i < 4; i++)
++    {
++        op = memory[(cs * 16 + at) & 0xFFFFF];
++        if(op != 0x26 && op != 0x2E && op != 0x36 && op != 0x3E && op != 0xF2 && op != 0xF3)
++            break;
++        at++;
++    }
++    m = memory[(cs * 16 + at + 1) & 0xFFFFF];
++    int keep = 0;
++    switch(op)
++    {
++    case 0x01: case 0x03: case 0x05: case 0x29: case 0x2B: case 0x2D:   /* add, sub */
++    case 0x87: case 0x89: case 0x8B: case 0x8D: case 0x91: case 0x92: case 0x93:
++    case 0x94: case 0x95: case 0x96: case 0x97: case 0xA1: case 0xC4: case 0xC5:
++    case 0xA4: case 0xA5: case 0xA6: case 0xA7: case 0xAA: case 0xAB: case 0xAD:
++    case 0xAE: case 0xAF: case 0x9C: case 0x9D: case 0xCD: case 0x61:
++        keep = 1;
++        break;
++    case 0x81: case 0x83:
++        keep = ((m >> 3) & 7) == 0 || ((m >> 3) & 7) == 5;              /* add, sub */
++        break;
++    case 0xFF:
++        keep = ((m >> 3) & 7) <= 1 || ((m >> 3) & 7) == 6;              /* inc, dec, push */
++        break;
++    default:
++        keep = (op >= 0x40 && op <= 0x5F) || (op >= 0xB8 && op <= 0xBF);
++    }
++    if(keep)
++        return;
++    for(int r = 0; r < 8; r++)
++        if(wregs[r] != old_v[r] && trace_rt[r] == old_t[r])
++            trace_rt[r] = 0;
++}
++
+ static void interrupt(unsigned int_num)
+ {
+     uint16_t dest_seg, dest_off;
+@@ -723,6 +806,7 @@ static void handle_irq(void)
+     break;
+ #define MOV_WRi(reg)                                                           \
+     wregs[reg] = FETCH_W();                                                    \
++    trace_rt[reg] = 0;                                                         \
+     break;
+ 
+ #define SEG_OVERRIDE(seg)                                                      \
+@@ -1136,6 +1220,7 @@ static void i_lea(void)
+         return; // TODO: ILLEGAL INSTRUCTION!!!
+ 
+     SetModRMRegW(ModRM, offs);
++    trace_rt[(ModRM >> 3) & 7] = trace_ea_t[0];
+ }
+ 
+ static void i_popw(void)
+@@ -1145,7 +1230,11 @@ static void i_popw(void)
+     //        return; // TODO: illegal instruction - ignored in 8086
+     if(ModRM < 0xc0)
+         ModRMAddress = GetModRMAddress(ModRM);
+-    SetModRMRMW(ModRM, PopWord());
++    uint16_t v = PopWord();
++    trace_wt = trace_last_rd;
++    if(ModRM >= 0xc0)
++        trace_rt[ModRM & 7] = trace_last_rd;
++    SetModRMRMW(ModRM, v);
+ }
+ 
+ static void i_call_far(void)
+@@ -1181,6 +1270,7 @@ static void i_mov_axdisp(void)
+ {
+     uint16_t addr = FETCH_W();
+     wregs[AX] = GetMemDSW(addr);
++    trace_rt[AX] = trace_last_rd;
+ }
+ 
+ static void i_mov_dispal(void)
+@@ -1192,12 +1282,17 @@ static void i_mov_dispal(void)
+ static void i_mov_dispax(void)
+ {
+     uint16_t addr = FETCH_W();
++    trace_wt = trace_rt[AX];
+     PutMemDSW(addr, wregs[AX]);
+ }
+ 
+ static void i_movsb(void)
+ {
+-    SetMemB(ES, wregs[DI], GetMemDSB(wregs[SI]));
++    trace_use_at(trace_rt[SI], sregs[segment_override != NoSeg ? segment_override : DS], 0, wregs[SI]);
++    trace_use_at(trace_rt[DI], sregs[ES], 0, wregs[DI]);
++    uint8_t b = GetMemDSB(wregs[SI]);
++    trace_bt = trace_last_rdb;
++    SetMemB(ES, wregs[DI], b);
+ 
+     wregs[SI] += 1 - 2 * DF;
+     wregs[DI] += 1 - 2 * DF;
+@@ -1205,7 +1300,12 @@ static void i_movsb(void)
+ 
+ static void i_movsw(void)
+ {
+-    SetMemW(ES, wregs[DI], GetMemDSW(wregs[SI]));
++    trace_use_at(trace_rt[SI], sregs[segment_override != NoSeg ? segment_override : DS], 0, wregs[SI]);
++    trace_use_at(trace_rt[DI], sregs[ES], 0, wregs[DI]);
++    uint16_t w = GetMemDSW(wregs[SI]);
++    uint32_t p0 = trace_last_rd;
++    trace_wt = p0;
++    SetMemW(ES, wregs[DI], w);
+ 
+     wregs[SI] += 2 - 4 * DF;
+     wregs[DI] += 2 - 4 * DF;
+@@ -1231,25 +1331,31 @@ static void i_cmpsw(void)
+ 
+ static void i_stosb(void)
+ {
++    trace_use_at(trace_rt[DI], sregs[ES], 0, wregs[DI]);
+     SetMemB(ES, wregs[DI], wregs[AX]);
+     wregs[DI] += 1 - 2 * DF;
+ }
+ 
+ static void i_stosw(void)
+ {
++    trace_use_at(trace_rt[DI], sregs[ES], 0, wregs[DI]);
++    trace_wt = trace_rt[AX];
+     SetMemW(ES, wregs[DI], wregs[AX]);
+     wregs[DI] += 2 - 4 * DF;
+ }
+ 
+ static void i_lodsb(void)
+ {
++    trace_use_at(trace_rt[SI], sregs[segment_override != NoSeg ? segment_override : DS], 0, wregs[SI]);
+     wregs[AX] = (wregs[AX] & 0xFF00) | GetMemDSB(wregs[SI]);
+     wregs[SI] += 1 - 2 * DF;
+ }
+ 
+ static void i_lodsw(void)
+ {
++    trace_use_at(trace_rt[SI], sregs[segment_override != NoSeg ? segment_override : DS], 0, wregs[SI]);
+     wregs[AX] = GetMemDSW(wregs[SI]);
++    trace_rt[AX] = trace_last_rd;
+     wregs[SI] += 2 - 4 * DF;
+ }
+ 
+@@ -1313,17 +1419,21 @@ static void i_ret(void)
+ static void i_les_dw(void)
+ {
+     GET_r16w();
++    uint32_t t = trace_last_rd;
+     dest = src;
+     sregs[ES] = GetMemAbsW(ModRMAddress + 2);
+     SET_r16w();
++    trace_rt[(ModRM >> 3) & 7] = t;
+ }
+ 
+ static void i_lds_dw(void)
+ {
+     GET_r16w();
++    uint32_t t = trace_last_rd;
+     dest = src;
+     sregs[DS] = GetMemAbsW(ModRMAddress + 2);
+     SET_r16w();
++    trace_rt[(ModRM >> 3) & 7] = t;
+ }
+ 
+ static void i_mov_bd8(void)
+@@ -1779,6 +1889,7 @@ static void i_salc(void)
+ 
+ static void i_xlat(void)
+ {
++    trace_use_at(trace_rt[BX], sregs[segment_override != NoSeg ? segment_override : DS], 0, wregs[BX]);
+     wregs[AX] = (wregs[AX] & 0xFF00) | GetMemDSB(wregs[BX] + (wregs[AX] & 0xFF));
+ }
+ 
+@@ -2240,6 +2351,7 @@ static void i_ffpre(void)
+ {
+     int ModRM = FETCH_B();
+     uint16_t dest = GetModRMRMW(ModRM);
++    uint32_t t = ModRM >= 0xc0 ? trace_rt[ModRM & 7] : trace_last_rd;
+ 
+     switch(ModRM & 0x38)
+     {
+@@ -2262,6 +2374,7 @@ static void i_ffpre(void)
+         SetModRMRMW(ModRM, dest);
+         break;
+     case 0x10: /* CALL ew */
++        trace_code(t);
+         PushWord(ip);
+         ip = dest;
+         break;
+@@ -2272,6 +2385,7 @@ static void i_ffpre(void)
+         sregs[CS] = GetMemAbsW(ModRMAddress + 2);
+         break;
+     case 0x20: /* JMP ea */
++        trace_code(t);
+         ip = dest;
+         break;
+     case 0x28: /* JMP FAR ea */
+@@ -2279,6 +2393,7 @@ static void i_ffpre(void)
+         sregs[CS] = GetMemAbsW(ModRMAddress + 2);
+         break;
+     case 0x30: /* PUSH ea */
++        trace_wt = t;
+         PushWord(dest);
+         break;
+     case 0x38:
+@@ -2332,6 +2447,9 @@ static void debug_instruction(void)
+ 
+ static void do_instruction(uint8_t code)
+ {
++    trace_wt = trace_bt = 0;
++    if(trace_on && segment_override == NoSeg)
++        trace_exec(sregs[CS] * 16 + ((cpuGetIP() + 0xFFFF) & 0xFFFF));
+     if(debug_active(debug_cpu) && segment_override == NoSeg)
+         debug_instruction();
+     switch(code)
+@@ -2377,7 +2495,10 @@ static void do_instruction(uint8_t code)
+     case 0x26: SEG_OVERRIDE(ES);
+     case 0x27: i_daa();                                        break;
+     case 0x28: OP_br8(SUB);
+-    case 0x29: OP_wr16(SUB);
++    case 0x29:
++        if(memory[(sregs[CS] * 16 + ip) & 0xFFFFF] >= 0xc0 && ((memory[(sregs[CS] * 16 + ip) & 0xFFFFF] >> 3) & 7) == (memory[(sregs[CS] * 16 + ip) & 0xFFFFF] & 7))
++            trace_rt[memory[(sregs[CS] * 16 + ip) & 0xFFFFF] & 7] = 0;
++        OP_wr16(SUB);
+     case 0x2A: OP_r8b(SUB);
+     case 0x2B: OP_r16w(SUB);
+     case 0x2C: OP_ald8(SUB);
+@@ -2385,9 +2506,15 @@ static void do_instruction(uint8_t code)
+     case 0x2E: SEG_OVERRIDE(CS);
+     case 0x2f: i_das();                                        break;
+     case 0x30: OP_br8(XOR);
+-    case 0x31: OP_wr16(XOR);
++    case 0x31:
++        if(memory[(sregs[CS] * 16 + ip) & 0xFFFFF] >= 0xc0 && ((memory[(sregs[CS] * 16 + ip) & 0xFFFFF] >> 3) & 7) == (memory[(sregs[CS] * 16 + ip) & 0xFFFFF] & 7))
++            trace_rt[memory[(sregs[CS] * 16 + ip) & 0xFFFFF] & 7] = 0;
++        OP_wr16(XOR);
+     case 0x32: OP_r8b(XOR);
+-    case 0x33: OP_r16w(XOR);
++    case 0x33:
++        if(memory[(sregs[CS] * 16 + ip) & 0xFFFFF] >= 0xc0 && ((memory[(sregs[CS] * 16 + ip) & 0xFFFFF] >> 3) & 7) == (memory[(sregs[CS] * 16 + ip) & 0xFFFFF] & 7))
++            trace_rt[memory[(sregs[CS] * 16 + ip) & 0xFFFFF] & 7] = 0;
++        OP_r16w(XOR);
+     case 0x34: OP_ald8(XOR);
+     case 0x35: OP_axd16(XOR);
+     case 0x36: SEG_OVERRIDE(SS);
+@@ -2473,9 +2600,33 @@ static void do_instruction(uint8_t code)
+     case 0x86: i_xchg_br8();                                   break;
+     case 0x87: i_xchg_wr16();                                  break;
+     case 0x88: OP_br8(MOV);
+-    case 0x89: OP_wr16(MOV);
++    case 0x89:
++    {
++        int ModRM = FETCH_B();
++        uint16_t src = GetModRMRegW(ModRM);
++        if(ModRM >= 0xc0)
++        {
++            wregs[ModRM & 7] = src;
++            trace_rt[ModRM & 7] = trace_rt[(ModRM >> 3) & 7];
++        }
++        else
++        {
++            ModRMAddress = GetModRMAddress(ModRM);
++            trace_wt = trace_rt[(ModRM >> 3) & 7];
++            SetMemAbsW(ModRMAddress, src);
++        }
++        break;
++    }
+     case 0x8a: OP_r8b(MOV);
+-    case 0x8b: OP_r16w(MOV);
++    case 0x8b:
++    {
++        int ModRM = FETCH_B();
++        uint16_t v = GetModRMRMW(ModRM);
++        uint32_t t = ModRM >= 0xc0 ? trace_rt[ModRM & 7] : trace_last_rd;
++        SetModRMRegW(ModRM, v);
++        trace_rt[(ModRM >> 3) & 7] = t;
++        break;
++    }
+     case 0x8c: i_mov_wsreg();                                  break;
+     case 0x8d: i_lea();                                        break;
+     case 0x8e: i_mov_sregw();                                  break;
+@@ -2541,7 +2692,7 @@ static void do_instruction(uint8_t code)
+     case 0xca: i_retf_d16();                                   break;
+     case 0xcb: do_retf();                                      break;
+     case 0xcc: i_int3();                                       break;
+-    case 0xcd: i_int();                                        break;
++    case 0xcd: i_int(); trace_rt[AX] = trace_rt[BX] = trace_rt[CX] = trace_rt[DX] = 0; break;
+     case 0xce: i_into();                                       break;
+     case 0xcf: do_iret();                                      break;
+     case 0xd0: i_d0pre();                                      break;
+diff --git a/src/dos.c b/src/dos.c
+index 0b7dcdc..a4dc15b 100644
+--- a/src/dos.c
++++ b/src/dos.c
+@@ -1,4 +1,5 @@
+ #include "dos.h"
++#include "trace.h"
+ #include "codepage.h"
+ #include "dbg.h"
+ #include "dosnames.h"
+@@ -1767,7 +1768,9 @@ void intr21(void)
+         }
+         else
+         {
++            long pos = ftell(f);
+             unsigned n = fread(buf, 1, cpuGetCX(), f);
++            trace_loaded(f, pos, cpuGetAddrDS(cpuGetDX()), n);
+             cpuSetAX(n);
+         }
+         dos_error = 0;
+diff --git a/src/loader.c b/src/loader.c
+index b43428a..41a64cc 100644
+--- a/src/loader.c
++++ b/src/loader.c
+@@ -1,4 +1,5 @@
+ #include "loader.h"
++#include "trace.h"
+ #include "dbg.h"
+ #include "emu.h"
+ #include <ctype.h>
+@@ -846,6 +847,9 @@ int dos_load_exe(FILE *f, uint16_t psp_mcb)
+     // Seek to start of data and read
+     fseek(f, head_size, SEEK_SET);
+     n = fread(memory + load_seg * 16, 1, data_size, f);
++    trace_program(f);
++    trace_set_load(load_seg);
++    trace_loaded(f, head_size, load_seg * 16, n);
+     // Adjust data_size depending on extra_bytes
+     if(extra_bytes)
+         data_size = data_size - 512 + extra_bytes;
+diff --git a/src/main.c b/src/main.c
+index c40d330..468065b 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -1,3 +1,4 @@
++#include "trace.h"
+ 
+ #define _GNU_SOURCE
+ 
+@@ -217,6 +218,7 @@ static void init_bios_mem(void)
+ 
+ int main(int argc, char **argv)
+ {
++    trace_init();
+     int i;
+     prog_name = argv[0];
+ 
+diff --git a/src/trace.c b/src/trace.c
+new file mode 100644
+index 0000000..ca9b444
+--- /dev/null
++++ b/src/trace.c
+@@ -0,0 +1,174 @@
++/* Provenance tracing for emu2 (Exhume): which words of the program file are used as
++ * addresses, and which bytes of it are executed.
++ *
++ * Enabled by EMU2_TRACE=OUTFILE.  Every byte of memory carries the program-file offset it
++ * was loaded from (+1; 0 = not from the file).  A word register loaded from memory carries
++ * that word's provenance, and stores pass it on, so a value read from a data table keeps
++ * the table entry's file offset however it is copied.  Then:
++ *   P off n  - the word at file offset off was used n times as an address (a base or index
++ *              register of a memory operand, or SI/DI/BX of a string or xlat instruction);
++ *   C off n  - the word at off was used n times as a near code address (call/jmp through a
++ *              register or memory);
++ *   E off    - the instruction starting at file offset off was executed.
++ * The output is written to OUTFILE.PID at exit.
++ *
++ * EMU2_TRACE_DGROUP=XXXX (hex paragraphs from the load segment) limits P to uses through that
++ * segment with a displacement under 100h, by a register that still holds (about) the word
++ * loaded.  A register keeps the provenance of the word it was loaded from while it is moved
++ * or moved on by add, sub, inc and dec; any other change (a byte written into it, a shift, a
++ * logic operation, a multiply) clears it (trace_settle in cpu.c).
++ * EMU2_TRACE_WATCH=OFF (hex file offset) prints to stderr the file offset of the instruction
++ * behind each of the first uses of the word at OFF: how a P line came about.
++ * EMU2_TRACE_READ=LO-HI (hex file offsets) prints to stderr, once each, the instructions that
++ * read bytes loaded from LO..HI: who reads a table, whatever address they use. */
++#include "trace.h"
++#include "emu.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#define FILE_MAX (1u << 20)
++
++int trace_on;
++uint32_t trace_prov[1u << 20];
++uint32_t trace_rt[8];
++uint32_t trace_last_rd, trace_last_rdb, trace_wt, trace_bt;
++uint32_t trace_ea_t[2];
++uint16_t trace_ea_v[2];
++unsigned trace_dgroup = 0x10000;
++static uint32_t *ptr_use, *code_use;
++static uint8_t *exec_mark;
++static uint8_t *orig_img;   /* the program file bytes as loaded, by file offset */
++static dev_t prog_dev;
++static ino_t prog_ino;
++static char *out_name;
++static long watch = -1;
++uint32_t trace_rd_lo = 1, trace_rd_hi = 0;
++static uint8_t *rd_seen;
++static uint32_t cur_lin;
++
++static void trace_dump(void)
++{
++    char name[4096];
++    snprintf(name, sizeof name, "%s.%d", out_name, (int)getpid());
++    FILE *f = fopen(name, "w");
++    if(!f)
++        return;
++    for(uint32_t i = 0; i < FILE_MAX; i++)
++    {
++        if(ptr_use[i])
++            fprintf(f, "P %X %u\n", i, ptr_use[i]);
++        if(code_use[i])
++            fprintf(f, "C %X %u\n", i, code_use[i]);
++        if(exec_mark[i])
++            fprintf(f, "E %X\n", i);
++    }
++    fclose(f);
++}
++
++void trace_init(void)
++{
++    const char *e = getenv("EMU2_TRACE");
++    if(!e || !*e)
++        return;
++    out_name = strdup(e);
++    ptr_use = calloc(FILE_MAX, sizeof(uint32_t));
++    code_use = calloc(FILE_MAX, sizeof(uint32_t));
++    exec_mark = calloc(FILE_MAX, 1);
++    orig_img = calloc(FILE_MAX + 2, 1);
++    if(!ptr_use || !code_use || !exec_mark || !orig_img)
++        return;
++    trace_on = 1;
++    if(getenv("EMU2_TRACE_READ"))
++    {
++        char *e;
++        trace_rd_lo = strtoul(getenv("EMU2_TRACE_READ"), &e, 16) + 1;
++        trace_rd_hi = (*e == '-' ? strtoul(e + 1, 0, 16) : trace_rd_lo - 1) + 1;
++        rd_seen = calloc(FILE_MAX, 1);
++    }
++    if(getenv("EMU2_TRACE_WATCH"))
++        watch = strtol(getenv("EMU2_TRACE_WATCH"), 0, 16);
++    atexit(trace_dump);
++}
++
++void trace_program(FILE *f)
++{
++    struct stat st;
++    if(trace_on && !fstat(fileno(f), &st))
++    {
++        prog_dev = st.st_dev;
++        prog_ino = st.st_ino;
++    }
++}
++
++void trace_loaded(FILE *f, long pos, uint32_t addr, unsigned n)
++{
++    struct stat st;
++    int ours = trace_on && pos >= 0 && !fstat(fileno(f), &st) && st.st_dev == prog_dev &&
++               st.st_ino == prog_ino;
++    for(unsigned i = 0; i < n; i++)
++    {
++        trace_prov[(addr + i) & 0xFFFFF] = ours ? (uint32_t)(pos + i + 1) : 0;
++        if(ours && pos + i < FILE_MAX)
++            orig_img[pos + i] = memory[(addr + i) & 0xFFFFF];
++    }
++}
++
++void trace_use(uint32_t t)
++{
++    if(t && t <= FILE_MAX)
++    {
++        ptr_use[t - 1]++;
++        if((long)(t - 1) == watch && ptr_use[t - 1] < 20)
++            fprintf(stderr, "watch: use at file %X\n", trace_prov[cur_lin & 0xFFFFF] - 1);
++    }
++}
++
++/* A use counts as an address of a DGROUP item when it goes through DGROUP (EMU2_TRACE_DGROUP:
++ * the paragraph of DGROUP relative to the load segment) with a displacement under 100h from
++ * the loaded value: a pointer to an item or a field of it, not an index into a table. */
++void trace_use_at(uint32_t t, unsigned seg, uint16_t disp, uint16_t value)
++{
++    if(!t || t > FILE_MAX || seg != trace_dgroup || disp >= 0x100)
++        return;
++    /* the register must still hold (about) the word stored at t: a pointer, perhaps moved on
++       through its item, not a number computed from it */
++    uint16_t stored = orig_img[t - 1] | (orig_img[t] << 8);
++    if(stored >= 0x40 && (uint16_t)(value - stored) < 0x100)
++        trace_use(t);
++}
++
++void trace_set_load(unsigned load_seg)
++{
++    const char *e = getenv("EMU2_TRACE_DGROUP");
++    if(trace_on && e)
++        trace_dgroup = load_seg + (unsigned)strtoul(e, 0, 16);
++}
++
++void trace_code(uint32_t t)
++{
++    if(t && t <= FILE_MAX)
++        code_use[t - 1]++;
++}
++
++void trace_exec(uint32_t lin)
++{
++    cur_lin = lin;
++    uint32_t t = trace_prov[lin & 0xFFFFF];
++    if(t && t <= FILE_MAX)
++        exec_mark[t - 1] = 1;
++}
++
++/* EMU2_TRACE_READ=LO-HI: report once each instruction that reads a byte loaded from file
++   offsets LO..HI, with the offset read */
++void trace_read(uint32_t t)
++{
++    uint32_t at = trace_prov[cur_lin & 0xFFFFF];
++    if(at && at <= FILE_MAX && !rd_seen[at - 1])
++    {
++        rd_seen[at - 1] = 1;
++        fprintf(stderr, "read: instruction at file %X reads file %X\n", at - 1, t - 1);
++    }
++}
+diff --git a/src/trace.h b/src/trace.h
+new file mode 100644
+index 0000000..6a335cf
+--- /dev/null
++++ b/src/trace.h
+@@ -0,0 +1,22 @@
++#pragma once
++#include <stdint.h>
++#include <stdio.h>
++
++extern int trace_on;
++extern uint32_t trace_prov[];
++extern uint32_t trace_rt[8];
++extern uint32_t trace_last_rd, trace_last_rdb, trace_wt, trace_bt;
++extern uint32_t trace_ea_t[2];
++extern uint16_t trace_ea_v[2];
++extern unsigned trace_dgroup;
++
++void trace_init(void);
++void trace_program(FILE *f);
++void trace_loaded(FILE *f, long pos, uint32_t addr, unsigned n);
++void trace_use(uint32_t t);
++void trace_use_at(uint32_t t, unsigned seg, uint16_t disp, uint16_t value);
++void trace_set_load(unsigned load_seg);
++void trace_code(uint32_t t);
++void trace_exec(uint32_t lin);
++extern uint32_t trace_rd_lo, trace_rd_hi;
++void trace_read(uint32_t t);
