@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..353281f
+index 0000000..0c18300
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,524 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -620,7 +620,8 @@ index 0000000..353281f
 + *                             as far on as the last.
 + *
 + * Calls nest: a recorded function called inside another recorded call is recorded too, with
-+ * its own record, up to 16 deep.  A call ends when execution reaches its return address with
++ * its own record, up to 32 deep (a call deeper than that leaves every enclosing call
++ * unrecorded, since their records would miss it).  A call ends when execution reaches its return address with
 + * SP above its value at entry (the caller's code may have moved meanwhile: an overlay the
 + * heap moved).  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
 + * recorded call that encloses it with no other child in between (a function a translation
@@ -664,7 +665,7 @@ index 0000000..353281f
 +
 +#define MEM (1u << 20)
 +#define MAX_AT 1024
-+#define DEPTH 16
++#define DEPTH 32
 +
 +int rec_active;
 +void rec_close(void);
@@ -689,6 +690,7 @@ index 0000000..353281f
 +    unsigned at, seq, entry_cs, ret_ip, ret_cs, steps, bios, min_sp;
 +    uint32_t ret_prov_far, ret_prov_near;   /* where the return address's code came from */
 +    unsigned children;          /* children so far (recorded calls) */
++    int lost;                   /* a call inside it came when the frames were all in use */
 +    /* a recorded call: bytes the ignored code wrote while no child was active, kept for the
 +       next child (or the end of the call) */
 +    uint32_t *ext;
@@ -934,7 +936,7 @@ index 0000000..353281f
 +static void finish(void)
 +{
 +    struct frame *f = &fr[--depth];
-+    if(f->child || keep(f))
++    if(!f->lost && (f->child || keep(f)))
 +    {
 +        uint16_t now[13];
 +        cpuGetState(now);
@@ -994,7 +996,13 @@ index 0000000..353281f
 +static void start(int child, unsigned at, unsigned cs)
 +{
 +    if(depth == DEPTH)
++    {
++        /* a call that cannot be followed: every enclosing record would miss it and what
++           it did, so none of them is written */
++        for(int l = 0; l < depth; l++)
++            fr[l].lost = 1;
 +        return;
++    }
 +    struct frame *f = &fr[depth];
 +    if(!f->state)
 +    {
@@ -1039,6 +1047,7 @@ index 0000000..353281f
 +    f->bios = 0;
 +    f->min_sp = f->entry[4];
 +    f->children = 0;
++    f->lost = 0;
 +    rec_active = 1;
 +}
 +
