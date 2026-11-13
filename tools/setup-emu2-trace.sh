@@ -3,7 +3,9 @@
 # tools/setup-emu2.sh pins, with tools/emu2-date.patch and then tools/emu2-trace.patch applied.
 # With EMU2_TRACE=FILE set it records, by program-file offset, which words of the program were
 # used as data or code addresses and which instructions ran (src/trace.c in the patch says
-# how), for layout audits and code coverage. Without EMU2_TRACE it runs like tools/emu2.
+# how), for layout audits and code coverage. With EMU2_RECORD=FILE and EMU2_RECORD_AT=OFFSETS it
+# records calls of the functions at those file offsets: registers in and out, memory read and
+# written (src/record.c). Without either it runs like tools/emu2.
 # Needs git, make and a C compiler. Safe to run again.      usage: sh tools/setup-emu2-trace.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd); dir="$here/emu2-trace"
