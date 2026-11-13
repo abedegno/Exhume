@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..3618bd3
+index 0000000..b2e13ac
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,392 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -604,6 +604,14 @@ index 0000000..3618bd3
 + * EMU2_RECORD_INNER=OFF[,...] functions recorded as children of the recorded calls they are
 + *                             made in: the calls a translation of those functions makes to
 + *                             functions not yet translated, which a replay can then answer.
++ * EMU2_RECORD_IGNORE=LO-HI[,LO-HI...]
++ *                             hex program-file ranges of code whose work is not recorded (an
++ *                             overlay manager: it loads overlays and keeps its own state when
++ *                             one overlay calls into another, which no translation does).
++ *                             From the first instruction of such code until execution leaves
++ *                             it at the stack level it entered with, nothing read or written
++ *                             (by the code it calls and by DOS too) counts for any call, and
++ *                             no call starts a record.
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
@@ -655,6 +663,10 @@ index 0000000..3618bd3
 +static unsigned n_at, n_inner, max_per = 20;
 +static unsigned at_count[MAX_AT], at_seen[MAX_AT], at_next[MAX_AT];
 +static uint8_t *before;         /* memory before a DOS or BIOS call */
++static uint32_t ign_lo[64], ign_hi[64];
++static unsigned n_ign;
++static int ignoring;            /* inside EMU2_RECORD_IGNORE code (or what it called) */
++static unsigned ign_ss, ign_sp;
 +
 +struct frame {
 +    int child;                  /* a call of an EMU2_RECORD_INNER function */
@@ -699,6 +711,14 @@ index 0000000..3618bd3
 +    }
 +    n_at = parse_list(a, at_off, MAX_AT);
 +    n_inner = parse_list(getenv("EMU2_RECORD_INNER"), inner_off, MAX_AT);
++    for(char *p = getenv("EMU2_RECORD_IGNORE"); p && *p && n_ign < 64;)
++    {
++        ign_lo[n_ign] = strtoul(p, &p, 16);
++        ign_hi[n_ign] = *p == '-' ? strtoul(p + 1, &p, 16) : ign_lo[n_ign];
++        n_ign++;
++        while(*p == ',' || *p == ' ')
++            p++;
++    }
 +    if(getenv("EMU2_RECORD_MAX"))
 +        max_per = strtoul(getenv("EMU2_RECORD_MAX"), 0, 10);
 +    trace_need();
@@ -721,6 +741,8 @@ index 0000000..3618bd3
 +
 +void rec_read(uint32_t addr, unsigned n)
 +{
++    if(ignoring)
++        return;
 +    for(int l = 0; l < depth; l++)
 +    {
 +        struct frame *f = &fr[l];
@@ -738,6 +760,8 @@ index 0000000..3618bd3
 +
 +void rec_write(uint32_t addr, unsigned n)
 +{
++    if(ignoring)
++        return;
 +    for(int l = 0; l < depth; l++)
 +        for(unsigned i = 0; i < n; i++)
 +            touch(&fr[l], (addr + i) & (MEM - 1), 2);
@@ -745,7 +769,7 @@ index 0000000..3618bd3
 +
 +void rec_bios(void)
 +{
-+    if(!rec_active)
++    if(!rec_active || ignoring)
 +        return;
 +    for(int l = 0; l < depth; l++)
 +        fr[l].bios++;
@@ -755,7 +779,7 @@ index 0000000..3618bd3
 +/* after a DOS or BIOS call: what it changed counts as written */
 +void rec_bios_done(void)
 +{
-+    if(!rec_active)
++    if(!rec_active || ignoring)
 +        return;
 +    for(uint32_t a = 0; a < MEM; a++)
 +        if(memory[a] != before[a])
@@ -913,13 +937,28 @@ index 0000000..3618bd3
 +    while(depth && returned(&fr[depth - 1], cs, ip, prov))
 +        finish();
 +    unsigned sp = cpuGetSP();
++    if(n_ign)
++    {
++        int in_ign = 0;
++        for(unsigned i = 0; prov && i < n_ign; i++)
++            if(prov - 1 >= ign_lo[i] && prov - 1 <= ign_hi[i])
++                in_ign = 1;
++        if(ignoring && !in_ign && cpuGetSS() == ign_ss && sp >= ign_sp)
++            ignoring = 0;
++        else if(!ignoring && in_ign)
++        {
++            ignoring = 1;
++            ign_ss = cpuGetSS();
++            ign_sp = sp;
++        }
++    }
 +    for(int l = 0; l < depth; l++)
 +    {
 +        fr[l].steps++;
 +        if(sp < fr[l].min_sp)
 +            fr[l].min_sp = sp;
 +    }
-+    if(!prov || (depth && fr[depth - 1].child))
++    if(!prov || ignoring || (depth && fr[depth - 1].child))
 +        return;
 +    if(depth)
 +        for(unsigned i = 0; i < n_inner; i++)
