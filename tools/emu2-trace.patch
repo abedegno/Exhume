@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..ff78fdd
+index 0000000..353281f
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,510 @@
+@@ -0,0 +1,515 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -651,7 +651,8 @@ index 0000000..ff78fdd
 + * kept stay in the file without it.  Bytes below the entry SP in the stack segment (the
 + * call's own frame) are left out of W.  Memory the emulated DOS writes (a file read into a
 + * buffer) is found by comparing memory from the program's PSP up before and after each DOS
-+ * or BIOS call and counts as written; what DOS reads is not seen. */
++ * or BIOS call and counts as written, by the ignored code when it made the call (an overlay
++ * read from the EXE); what DOS reads is not seen. */
 +#include "record.h"
 +#include "cpu.h"
 +#include "emu.h"
@@ -822,17 +823,21 @@ index 0000000..ff78fdd
 +
 +void rec_bios(void)
 +{
-+    if(!rec_active || ignoring)
++    if(!rec_active)
 +        return;
-+    for(int l = 0; l < depth; l++)
-+        fr[l].bios++;
++    /* a DOS call of the ignored code (the overlay manager reading an overlay) is not one
++       of the recorded calls' own, but what it changes is recorded like the ignored code's
++       other writes */
++    if(!ignoring)
++        for(int l = 0; l < depth; l++)
++            fr[l].bios++;
 +    memcpy(before, memory, MEM);
 +}
 +
 +/* after a DOS or BIOS call: what it changed counts as written */
 +void rec_bios_done(void)
 +{
-+    if(!rec_active || ignoring)
++    if(!rec_active)
 +        return;
 +    /* from the program image up: below it are DOS, the BIOS and the PSP (DOS keeps the caller.s
 +       stack there on each call), which an
