@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..38998b0
+index 0000000..3618bd3
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,353 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -601,25 +601,25 @@ index 0000000..38998b0
 + * EMU2_RECORD_AT=OFF[,OFF...] hex program-file offsets of the functions' first instructions.
 + *                             A function is known by where its code came from in the file, so
 + *                             overlay code loaded anywhere is found too.
-+ * EMU2_RECORD_INNER=OFF[,...] functions recorded only inside a recorded call of one of the
-+ *                             EMU2_RECORD_AT functions, as its children: the calls a translation
-+ *                             of that function makes to functions not yet translated, which a
-+ *                             replay can then answer from these records.
++ * EMU2_RECORD_INNER=OFF[,...] functions recorded as children of the recorded calls they are
++ *                             made in: the calls a translation of those functions makes to
++ *                             functions not yet translated, which a replay can then answer.
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
-+ *                             as far on as the last.  Children are always recorded with their
-+ *                             parent; the children of a call not kept stay in the file
-+ *                             without it.
++ *                             as far on as the last.
 + *
-+ * A call starts when an instruction loaded from one of the offsets runs while no recorded
-+ * call is active (calls inside a recorded call, the same function's included, are part of
-+ * it, except children), and ends when execution reaches the return address with SP above its
-+ * value at entry (the caller's code may have moved meanwhile: an overlay the heap moved).  A child starts when an EMU2_RECORD_INNER function is entered directly
-+ * inside a recorded call (not inside another child).  Each record is
++ * Calls nest: a recorded function called inside another recorded call is recorded too, with
++ * its own record, up to 16 deep.  A call ends when execution reaches its return address with
++ * SP above its value at entry (the caller's code may have moved meanwhile: an overlay the
++ * heap moved).  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
++ * recorded call that encloses it with no other child in between (a function a translation
++ * calls directly or through other translated functions), and calls made inside a child are
++ * not recorded.  Each record is
 + *     CALL off seq
-+ *     PARENT off seq index                               (children only) the parent's CALL line,
-+ *                                                        and this child's place among its children
++ *     PARENT off seq index                               (children only, one per parent) the
++ *                                                        parent's CALL line, and this child's
++ *                                                        place among its children
 + *     IN  AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at entry (hex)
 + *     S bytes                                            the 32 bytes at SS:SP at entry: the
 + *                                                        return address and the arguments
@@ -630,10 +630,11 @@ index 0000000..38998b0
 + *     STEPS n                                            instructions executed
 + *     BIOS n                                             (only if n > 0) DOS or BIOS calls made
 + *     END
-+ * A child's record comes before its parent's, which ends later.  Bytes below the entry SP in
-+ * the stack segment (the call's own frame) are left out of W.  Memory the emulated DOS writes
-+ * (a file read into a buffer) is found by comparing memory before and after each DOS or BIOS
-+ * call and counts as written; what DOS reads is not seen. */
++ * A record comes after the records of everything it encloses.  The children of a call not
++ * kept stay in the file without it.  Bytes below the entry SP in the stack segment (the
++ * call's own frame) are left out of W.  Memory the emulated DOS writes (a file read into a
++ * buffer) is found by comparing memory before and after each DOS or BIOS call and counts as
++ * written; what DOS reads is not seen. */
 +#include "record.h"
 +#include "cpu.h"
 +#include "emu.h"
@@ -645,31 +646,30 @@ index 0000000..38998b0
 +
 +#define MEM (1u << 20)
 +#define MAX_AT 1024
++#define DEPTH 16
 +
 +int rec_active;
 +void rec_close(void);
 +static FILE *out;
-+static uint32_t at_off[MAX_AT];
-+static unsigned at_count[MAX_AT], n_at, max_per = 20;
-+static unsigned at_seen[MAX_AT], at_next[MAX_AT];   /* calls so far, the next to record */
-+static uint32_t inner_off[MAX_AT];
-+static unsigned n_inner;
++static uint32_t at_off[MAX_AT], inner_off[MAX_AT];
++static unsigned n_at, n_inner, max_per = 20;
++static unsigned at_count[MAX_AT], at_seen[MAX_AT], at_next[MAX_AT];
 +static uint8_t *before;         /* memory before a DOS or BIOS call */
 +
-+/* one frame per level: 0 the recorded call, 1 a child inside it */
 +struct frame {
-+    int active;
++    int child;                  /* a call of an EMU2_RECORD_INNER function */
 +    uint8_t *state;             /* per byte: 1 read recorded, 2 written */
 +    uint32_t *touched;          /* bytes whose state is set, to clear them afterwards */
++    unsigned n_touched, cap_touched;
 +    uint8_t *in_val;            /* the value of each recorded read */
-+    unsigned n_touched;
 +    uint16_t entry[13];
 +    uint8_t stack[32];
-+    unsigned at, entry_cs, ret_ip, ret_cs, steps, bios, min_sp;
++    unsigned at, seq, entry_cs, ret_ip, ret_cs, steps, bios, min_sp;
 +    uint32_t ret_prov_far, ret_prov_near;   /* where the return address's code came from */
-+    unsigned children;          /* level 0: children so far */
++    unsigned children;          /* children so far (recorded calls) */
 +};
-+static struct frame fr[2];
++static struct frame fr[DEPTH];
++static int depth;
 +
 +static int parse_list(const char *s, uint32_t *list, unsigned max)
 +{
@@ -692,14 +692,6 @@ index 0000000..38998b0
 +    snprintf(name, sizeof name, "%s.%d", e, (int)getpid());
 +    out = fopen(name, "w");
 +    before = malloc(MEM);
-+    for(int l = 0; l < 2; l++)
-+    {
-+        fr[l].state = calloc(MEM, 1);
-+        fr[l].touched = malloc(MEM * sizeof *fr[l].touched);
-+        fr[l].in_val = malloc(MEM);
-+        if(!fr[l].state || !fr[l].touched || !fr[l].in_val)
-+            out = 0;
-+    }
 +    if(!out || !before)
 +    {
 +        out = 0;
@@ -716,17 +708,22 @@ index 0000000..38998b0
 +static void touch(struct frame *f, uint32_t a, uint8_t bit)
 +{
 +    if(!f->state[a])
++    {
++        if(f->n_touched == f->cap_touched)
++        {
++            f->cap_touched = f->cap_touched ? 2 * f->cap_touched : 4096;
++            f->touched = realloc(f->touched, f->cap_touched * sizeof *f->touched);
++        }
 +        f->touched[f->n_touched++] = a;
++    }
 +    f->state[a] |= bit;
 +}
 +
 +void rec_read(uint32_t addr, unsigned n)
 +{
-+    for(int l = 0; l < 2; l++)
++    for(int l = 0; l < depth; l++)
 +    {
 +        struct frame *f = &fr[l];
-+        if(!f->active)
-+            continue;
 +        for(unsigned i = 0; i < n; i++)
 +        {
 +            uint32_t a = (addr + i) & (MEM - 1);
@@ -741,19 +738,17 @@ index 0000000..38998b0
 +
 +void rec_write(uint32_t addr, unsigned n)
 +{
-+    for(int l = 0; l < 2; l++)
-+        if(fr[l].active)
-+            for(unsigned i = 0; i < n; i++)
-+                touch(&fr[l], (addr + i) & (MEM - 1), 2);
++    for(int l = 0; l < depth; l++)
++        for(unsigned i = 0; i < n; i++)
++            touch(&fr[l], (addr + i) & (MEM - 1), 2);
 +}
 +
 +void rec_bios(void)
 +{
 +    if(!rec_active)
 +        return;
-+    for(int l = 0; l < 2; l++)
-+        if(fr[l].active)
-+            fr[l].bios++;
++    for(int l = 0; l < depth; l++)
++        fr[l].bios++;
 +    memcpy(before, memory, MEM);
 +}
 +
@@ -812,7 +807,9 @@ index 0000000..38998b0
 +   on as the last, so late calls are seen too */
 +static int keep(struct frame *f)
 +{
-+    unsigned seen = at_seen[f->at];
++    unsigned seen = f->seq;
++    if(at_count[f->at] >= max_per)
++        return 0;
 +    if(at_count[f->at] < max_per / 2 || f->children)
 +        return 1;
 +    if(seen >= at_next[f->at])
@@ -823,59 +820,65 @@ index 0000000..38998b0
 +    return 0;
 +}
 +
-+static void discard(struct frame *f)
++/* end the innermost frame, writing its record if it is kept */
++static void finish(void)
 +{
++    struct frame *f = &fr[--depth];
++    if(f->child || keep(f))
++    {
++        uint16_t now[13];
++        cpuGetState(now);
++        qsort(f->touched, f->n_touched, sizeof *f->touched, cmp_u32);
++        if(!f->child)
++            fprintf(out, "CALL %X %u\n", at_off[f->at], f->seq);
++        else
++        {
++            fprintf(out, "CALL %X 0\n", inner_off[f->at]);
++            /* parents: the enclosing recorded calls up to the next child */
++            for(int l = depth - 1; l >= 0 && !fr[l].child; l--)
++                fprintf(out, "PARENT %X %u %u\n", at_off[fr[l].at], fr[l].seq, fr[l].children++);
++        }
++        regs("IN ", f->entry);
++        fprintf(out, "S ");
++        for(int i = 0; i < 32; i++)
++            fprintf(out, "%02X", f->stack[i]);
++        fputc('\n', out);
++        runs(f, 'R', 1, f->in_val, 1, 0);
++        regs("OUT", now);
++        uint32_t ss = f->entry[10] * 16u;
++        runs(f, 'W', 2, memory, ss + f->min_sp, ss + f->entry[4]);
++        fprintf(out, "STEPS %u\n", f->steps);
++        if(f->bios)
++            fprintf(out, "BIOS %u\n", f->bios);
++        fprintf(out, "END\n");
++        if(!f->child)
++            at_count[f->at]++;
++    }
 +    for(unsigned i = 0; i < f->n_touched; i++)
 +        f->state[f->touched[i]] = 0;
 +    f->n_touched = 0;
-+    f->active = 0;
-+    rec_active = fr[0].active || fr[1].active;
++    rec_active = depth > 0;
 +}
 +
-+static void finish(int level)
++static void start(int child, unsigned at, unsigned cs)
 +{
-+    struct frame *f = &fr[level];
-+    if(level == 0 && !keep(f))
-+    {
-+        discard(f);
++    if(depth == DEPTH)
 +        return;
-+    }
-+    uint16_t now[13];
-+    cpuGetState(now);
-+    qsort(f->touched, f->n_touched, sizeof *f->touched, cmp_u32);
-+    if(level == 0)
-+        fprintf(out, "CALL %X %u\n", at_off[f->at], at_count[f->at]);
-+    else
++    struct frame *f = &fr[depth];
++    if(!f->state)
 +    {
-+        fprintf(out, "CALL %X 0\n", inner_off[f->at]);
-+        fprintf(out, "PARENT %X %u %u\n", at_off[fr[0].at], at_count[fr[0].at], fr[0].children++);
++        f->state = calloc(MEM, 1);
++        f->in_val = malloc(MEM);
++        if(!f->state || !f->in_val)
++        {
++            out = 0;
++            return;
++        }
 +    }
-+    regs("IN ", f->entry);
-+    fprintf(out, "S ");
-+    for(int i = 0; i < 32; i++)
-+        fprintf(out, "%02X", f->stack[i]);
-+    fputc('\n', out);
-+    runs(f, 'R', 1, f->in_val, 1, 0);
-+    regs("OUT", now);
-+    uint32_t ss = f->entry[10] * 16u;
-+    runs(f, 'W', 2, memory, ss + f->min_sp, ss + f->entry[4]);
-+    fprintf(out, "STEPS %u\n", f->steps);
-+    if(f->bios)
-+        fprintf(out, "BIOS %u\n", f->bios);
-+    fprintf(out, "END\n");
-+    for(unsigned i = 0; i < f->n_touched; i++)
-+        f->state[f->touched[i]] = 0;
-+    f->n_touched = 0;
-+    f->active = 0;
-+    if(level == 0)
-+        at_count[f->at]++;
-+    rec_active = fr[0].active || fr[1].active;
-+}
-+
-+static void start(int level, unsigned at, unsigned cs)
-+{
-+    struct frame *f = &fr[level];
++    depth++;
++    f->child = child;
 +    f->at = at;
++    f->seq = child ? 0 : at_seen[at]++;
 +    cpuGetState(f->entry);
 +    f->entry_cs = cs;
 +    uint32_t sp = f->entry[10] * 16u + f->entry[4];
@@ -889,7 +892,6 @@ index 0000000..38998b0
 +    f->bios = 0;
 +    f->min_sp = f->entry[4];
 +    f->children = 0;
-+    f->active = 1;
 +    rec_active = 1;
 +}
 +
@@ -908,41 +910,31 @@ index 0000000..38998b0
 +{
 +    if(!out)
 +        return;
-+    if(fr[1].active && returned(&fr[1], cs, ip, prov))
-+        finish(1);
-+    if(fr[0].active && returned(&fr[0], cs, ip, prov))
-+    {
-+        finish(0);
-+        return;
-+    }
++    while(depth && returned(&fr[depth - 1], cs, ip, prov))
++        finish();
 +    unsigned sp = cpuGetSP();
-+    for(int l = 0; l < 2; l++)
-+        if(fr[l].active)
-+        {
-+            fr[l].steps++;
-+            if(sp < fr[l].min_sp)
-+                fr[l].min_sp = sp;
-+        }
-+    if(!prov)
-+        return;
-+    if(fr[0].active)
++    for(int l = 0; l < depth; l++)
 +    {
-+        if(fr[1].active)
-+            return;
++        fr[l].steps++;
++        if(sp < fr[l].min_sp)
++            fr[l].min_sp = sp;
++    }
++    if(!prov || (depth && fr[depth - 1].child))
++        return;
++    if(depth)
 +        for(unsigned i = 0; i < n_inner; i++)
 +            if(inner_off[i] == prov - 1)
 +            {
 +                start(1, i, cs);
 +                return;
 +            }
-+        return;
-+    }
 +    for(unsigned i = 0; i < n_at; i++)
 +        if(at_off[i] == prov - 1)
 +        {
-+            at_seen[i]++;
 +            if(at_count[i] < max_per)
 +                start(0, i, cs);
++            else
++                at_seen[i]++;
 +            return;
 +        }
 +}
