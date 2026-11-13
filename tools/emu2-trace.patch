@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..0c18300
+index 0000000..b8c5781
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,555 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -621,9 +621,12 @@ index 0000000..0c18300
 + *
 + * Calls nest: a recorded function called inside another recorded call is recorded too, with
 + * its own record, up to 32 deep (a call deeper than that leaves every enclosing call
-+ * unrecorded, since their records would miss it).  A call ends when execution reaches its return address with
++ * unrecorded, since their records would miss it).  A call ends at the step after it executes
++ * a return with SP at its return address (wherever that goes: the overlay manager may have
++ * moved the caller and rewritten the address), or when execution reaches its return address with
 + * SP above its value at entry (the caller's code may have moved meanwhile: an overlay the
-+ * heap moved).  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
++ * heap moved).  A call the stack unwinds past without a return (a long jump) is not
++ * written, nor are the calls around it.  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
 + * recorded call that encloses it with no other child in between (a function a translation
 + * calls directly or through other translated functions), and calls made inside a child are
 + * not recorded.  Each record is
@@ -691,6 +694,7 @@ index 0000000..0c18300
 +    uint32_t ret_prov_far, ret_prov_near;   /* where the return address's code came from */
 +    unsigned children;          /* children so far (recorded calls) */
 +    int lost;                   /* a call inside it came when the frames were all in use */
++    int ret_seen;               /* it has executed its return (a ret with SP at its return address) */
 +    /* a recorded call: bytes the ignored code wrote while no child was active, kept for the
 +       next child (or the end of the call) */
 +    uint32_t *ext;
@@ -1048,6 +1052,7 @@ index 0000000..0c18300
 +    f->min_sp = f->entry[4];
 +    f->children = 0;
 +    f->lost = 0;
++    f->ret_seen = 0;
 +    rec_active = 1;
 +}
 +
@@ -1066,9 +1071,35 @@ index 0000000..0c18300
 +{
 +    if(!out)
 +        return;
-+    while(depth && returned(&fr[depth - 1], cs, ip, prov))
++    /* the call that executed its own return last step has returned, wherever that took
++       execution: the overlay manager may have moved the caller's code meanwhile and given
++       it a return address that neither its segment nor its provenance would recognise */
++    if(depth && fr[depth - 1].ret_seen)
 +        finish();
++    while(depth)
++    {
++        struct frame *t = &fr[depth - 1];
++        if(returned(t, cs, ip, prov))
++            finish();
++        else if(cpuGetSS() == t->entry[10] && cpuGetSP() > t->entry[4] + 0x40)
++        {
++            /* the stack is far above the call's return address and it did not return: a
++               long jump unwound it (a compile restarted).  Neither it nor any call around
++               it can be replayed, so none of them is written */
++            for(int l = 0; l < depth; l++)
++                fr[l].lost = 1;
++            finish();
++        }
++        else
++            break;
++    }
 +    unsigned sp = cpuGetSP();
++    if(depth && sp == fr[depth - 1].entry[4] && cpuGetSS() == fr[depth - 1].entry[10])
++    {
++        uint8_t op = memory[(cs * 16u + ip) & (MEM - 1)];
++        if(op == 0xC2 || op == 0xC3 || op == 0xCA || op == 0xCB)
++            fr[depth - 1].ret_seen = 1;
++    }
 +    if(n_ign)
 +    {
 +        int in_ign = 0;
