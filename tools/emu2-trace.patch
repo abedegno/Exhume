@@ -12,7 +12,7 @@ index 290e5b0..efca7cc 100644
   video.o\
  
 diff --git a/src/cpu.c b/src/cpu.c
-index c32757f..e9b0288 100644
+index c32757f..6c4b7c8 100644
 --- a/src/cpu.c
 +++ b/src/cpu.c
 @@ -1,3 +1,4 @@
@@ -188,12 +188,13 @@ index c32757f..e9b0288 100644
      switch(ModRM & 0xC7)
      {
      case 0x00:
-@@ -422,13 +464,67 @@ static void next_instruction(void)
+@@ -422,13 +464,68 @@ static void next_instruction(void)
      if(sregs[CS] == 0 && ip < 0x100) // Handle our BIOS codes
      {
          FETCH_B();
 +        rec_bios();
          bios_routine(ip - 1);
++        rec_bios_done();
          do_instruction(0xCF);
      }
 +    else if(trace_on)
@@ -256,7 +257,7 @@ index c32757f..e9b0288 100644
  static void interrupt(unsigned int_num)
  {
      uint16_t dest_seg, dest_off;
-@@ -723,6 +819,7 @@ static void handle_irq(void)
+@@ -723,6 +820,7 @@ static void handle_irq(void)
      break;
  #define MOV_WRi(reg)                                                           \
      wregs[reg] = FETCH_W();                                                    \
@@ -264,7 +265,7 @@ index c32757f..e9b0288 100644
      break;
  
  #define SEG_OVERRIDE(seg)                                                      \
-@@ -1136,6 +1233,7 @@ static void i_lea(void)
+@@ -1136,6 +1234,7 @@ static void i_lea(void)
          return; // TODO: ILLEGAL INSTRUCTION!!!
  
      SetModRMRegW(ModRM, offs);
@@ -272,7 +273,7 @@ index c32757f..e9b0288 100644
  }
  
  static void i_popw(void)
-@@ -1145,7 +1243,11 @@ static void i_popw(void)
+@@ -1145,7 +1244,11 @@ static void i_popw(void)
      //        return; // TODO: illegal instruction - ignored in 8086
      if(ModRM < 0xc0)
          ModRMAddress = GetModRMAddress(ModRM);
@@ -285,7 +286,7 @@ index c32757f..e9b0288 100644
  }
  
  static void i_call_far(void)
-@@ -1181,6 +1283,7 @@ static void i_mov_axdisp(void)
+@@ -1181,6 +1284,7 @@ static void i_mov_axdisp(void)
  {
      uint16_t addr = FETCH_W();
      wregs[AX] = GetMemDSW(addr);
@@ -293,7 +294,7 @@ index c32757f..e9b0288 100644
  }
  
  static void i_mov_dispal(void)
-@@ -1192,12 +1295,17 @@ static void i_mov_dispal(void)
+@@ -1192,12 +1296,17 @@ static void i_mov_dispal(void)
  static void i_mov_dispax(void)
  {
      uint16_t addr = FETCH_W();
@@ -312,7 +313,7 @@ index c32757f..e9b0288 100644
  
      wregs[SI] += 1 - 2 * DF;
      wregs[DI] += 1 - 2 * DF;
-@@ -1205,7 +1313,12 @@ static void i_movsb(void)
+@@ -1205,7 +1314,12 @@ static void i_movsb(void)
  
  static void i_movsw(void)
  {
@@ -326,7 +327,7 @@ index c32757f..e9b0288 100644
  
      wregs[SI] += 2 - 4 * DF;
      wregs[DI] += 2 - 4 * DF;
-@@ -1231,25 +1344,31 @@ static void i_cmpsw(void)
+@@ -1231,25 +1345,31 @@ static void i_cmpsw(void)
  
  static void i_stosb(void)
  {
@@ -358,7 +359,7 @@ index c32757f..e9b0288 100644
      wregs[SI] += 2 - 4 * DF;
  }
  
-@@ -1313,17 +1432,21 @@ static void i_ret(void)
+@@ -1313,17 +1433,21 @@ static void i_ret(void)
  static void i_les_dw(void)
  {
      GET_r16w();
@@ -380,7 +381,7 @@ index c32757f..e9b0288 100644
  }
  
  static void i_mov_bd8(void)
-@@ -1779,6 +1902,7 @@ static void i_salc(void)
+@@ -1779,6 +1903,7 @@ static void i_salc(void)
  
  static void i_xlat(void)
  {
@@ -388,7 +389,7 @@ index c32757f..e9b0288 100644
      wregs[AX] = (wregs[AX] & 0xFF00) | GetMemDSB(wregs[BX] + (wregs[AX] & 0xFF));
  }
  
-@@ -2240,6 +2364,7 @@ static void i_ffpre(void)
+@@ -2240,6 +2365,7 @@ static void i_ffpre(void)
  {
      int ModRM = FETCH_B();
      uint16_t dest = GetModRMRMW(ModRM);
@@ -396,7 +397,7 @@ index c32757f..e9b0288 100644
  
      switch(ModRM & 0x38)
      {
-@@ -2262,6 +2387,7 @@ static void i_ffpre(void)
+@@ -2262,6 +2388,7 @@ static void i_ffpre(void)
          SetModRMRMW(ModRM, dest);
          break;
      case 0x10: /* CALL ew */
@@ -404,7 +405,7 @@ index c32757f..e9b0288 100644
          PushWord(ip);
          ip = dest;
          break;
-@@ -2272,6 +2398,7 @@ static void i_ffpre(void)
+@@ -2272,6 +2399,7 @@ static void i_ffpre(void)
          sregs[CS] = GetMemAbsW(ModRMAddress + 2);
          break;
      case 0x20: /* JMP ea */
@@ -412,7 +413,7 @@ index c32757f..e9b0288 100644
          ip = dest;
          break;
      case 0x28: /* JMP FAR ea */
-@@ -2279,6 +2406,7 @@ static void i_ffpre(void)
+@@ -2279,6 +2407,7 @@ static void i_ffpre(void)
          sregs[CS] = GetMemAbsW(ModRMAddress + 2);
          break;
      case 0x30: /* PUSH ea */
@@ -420,7 +421,7 @@ index c32757f..e9b0288 100644
          PushWord(dest);
          break;
      case 0x38:
-@@ -2332,6 +2460,9 @@ static void debug_instruction(void)
+@@ -2332,6 +2461,9 @@ static void debug_instruction(void)
  
  static void do_instruction(uint8_t code)
  {
@@ -430,7 +431,7 @@ index c32757f..e9b0288 100644
      if(debug_active(debug_cpu) && segment_override == NoSeg)
          debug_instruction();
      switch(code)
-@@ -2377,7 +2508,10 @@ static void do_instruction(uint8_t code)
+@@ -2377,7 +2509,10 @@ static void do_instruction(uint8_t code)
      case 0x26: SEG_OVERRIDE(ES);
      case 0x27: i_daa();                                        break;
      case 0x28: OP_br8(SUB);
@@ -442,7 +443,7 @@ index c32757f..e9b0288 100644
      case 0x2A: OP_r8b(SUB);
      case 0x2B: OP_r16w(SUB);
      case 0x2C: OP_ald8(SUB);
-@@ -2385,9 +2519,15 @@ static void do_instruction(uint8_t code)
+@@ -2385,9 +2520,15 @@ static void do_instruction(uint8_t code)
      case 0x2E: SEG_OVERRIDE(CS);
      case 0x2f: i_das();                                        break;
      case 0x30: OP_br8(XOR);
@@ -460,7 +461,7 @@ index c32757f..e9b0288 100644
      case 0x34: OP_ald8(XOR);
      case 0x35: OP_axd16(XOR);
      case 0x36: SEG_OVERRIDE(SS);
-@@ -2473,9 +2613,33 @@ static void do_instruction(uint8_t code)
+@@ -2473,9 +2614,33 @@ static void do_instruction(uint8_t code)
      case 0x86: i_xchg_br8();                                   break;
      case 0x87: i_xchg_wr16();                                  break;
      case 0x88: OP_br8(MOV);
@@ -496,7 +497,7 @@ index c32757f..e9b0288 100644
      case 0x8c: i_mov_wsreg();                                  break;
      case 0x8d: i_lea();                                        break;
      case 0x8e: i_mov_sregw();                                  break;
-@@ -2541,7 +2705,7 @@ static void do_instruction(uint8_t code)
+@@ -2541,7 +2706,7 @@ static void do_instruction(uint8_t code)
      case 0xca: i_retf_d16();                                   break;
      case 0xcb: do_retf();                                      break;
      case 0xcc: i_int3();                                       break;
@@ -505,7 +506,7 @@ index c32757f..e9b0288 100644
      case 0xce: i_into();                                       break;
      case 0xcf: do_iret();                                      break;
      case 0xd0: i_d0pre();                                      break;
-@@ -2718,3 +2882,12 @@ void cpuTriggerIRQ(int num)
+@@ -2718,3 +2883,12 @@ void cpuTriggerIRQ(int num)
  {
      irq_mask |= (1 << num);
  }
@@ -587,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..431427c
+index 0000000..ff78fdd
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,510 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -600,25 +601,57 @@ index 0000000..431427c
 + * EMU2_RECORD_AT=OFF[,OFF...] hex program-file offsets of the functions' first instructions.
 + *                             A function is known by where its code came from in the file, so
 + *                             overlay code loaded anywhere is found too.
-+ * EMU2_RECORD_MAX=N           records per function (default 20); later calls are skipped.
++ * EMU2_RECORD_INNER=OFF[,...] functions recorded as children of the recorded calls they are
++ *                             made in: the calls a translation of those functions makes to
++ *                             functions not yet translated, which a replay can then answer.
++ * EMU2_RECORD_IGNORE=LO-HI[,LO-HI...]
++ *                             hex program-file ranges of code whose work is not recorded (an
++ *                             overlay manager: it loads overlays and keeps its own state when
++ *                             one overlay calls into another, which no translation does).
++ *                             From the first instruction of such code until execution leaves
++ *                             it at the stack level it entered with, nothing read or written
++ *                             (by the code it calls and by DOS too) counts for any call, and
++ *                             no call starts a record.  What it writes is kept, though: as part
++ *                             of a child running at the time, or else as external writes
++ *                             (X lines) that a replay applies at the next child.
++ * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
++ *                             calls; then calls that had children (the rare paths, such as a
++ *                             pool that grows), and a sample spread over the run, each twice
++ *                             as far on as the last.
 + *
-+ * A call starts when an instruction loaded from one of the offsets runs while no recorded
-+ * call is active (calls inside a recorded call, the same function's included, are part of
-+ * it), and ends when execution reaches the return address with SP above its value at entry.
-+ * Each record is
++ * Calls nest: a recorded function called inside another recorded call is recorded too, with
++ * its own record, up to 16 deep.  A call ends when execution reaches its return address with
++ * SP above its value at entry (the caller's code may have moved meanwhile: an overlay the
++ * heap moved).  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
++ * recorded call that encloses it with no other child in between (a function a translation
++ * calls directly or through other translated functions), and calls made inside a child are
++ * not recorded.  Each record is
 + *     CALL off seq
++ *     PARENT off seq index                               (children only, one per parent) the
++ *                                                        parent's CALL line, and this child's
++ *                                                        place among its children; then
++ *       X lin bytes                                      bytes the ignored code wrote since the
++ *                                                        parent's last child, as they were when
++ *                                                        this one started
 + *     IN  AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at entry (hex)
++ *     S bytes                                            the 32 bytes at SS:SP at entry: the
++ *                                                        return address and the arguments
 + *     R lin bytes                                        memory read before it was written,
 + *                                                        with the value it had (runs, hex)
 + *     OUT AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at the return address
 + *     W lin bytes                                        memory written, final values
++ *     X lin bytes                                        bytes the ignored code wrote after the
++ *                                                        last child, as they were at the end
 + *     STEPS n                                            instructions executed
-+ *     BIOS n                                             (only if n > 0) DOS or BIOS calls made:
-+ *                                                        their memory effects are not recorded
++ *     FRAME sp                                           the lowest SP of the call: its own
++ *                                                        frame runs from there to its entry SP
++ *     BIOS n                                             (only if n > 0) DOS or BIOS calls made
 + *     END
-+ * Bytes below the entry SP in the stack segment (the call's own frame) are left out of W.
-+ * Writes by the emulated DOS (a file read into a buffer) do not pass through the CPU and are
-+ * not seen: a record with BIOS calls is incomplete. */
++ * A record comes after the records of everything it encloses.  The children of a call not
++ * kept stay in the file without it.  Bytes below the entry SP in the stack segment (the
++ * call's own frame) are left out of W.  Memory the emulated DOS writes (a file read into a
++ * buffer) is found by comparing memory from the program's PSP up before and after each DOS
++ * or BIOS call and counts as written; what DOS reads is not seen. */
 +#include "record.h"
 +#include "cpu.h"
 +#include "emu.h"
@@ -629,21 +662,55 @@ index 0000000..431427c
 +#include <unistd.h>
 +
 +#define MEM (1u << 20)
-+#define MAX_AT 256
++#define MAX_AT 1024
++#define DEPTH 16
 +
 +int rec_active;
 +void rec_close(void);
 +static FILE *out;
-+static uint32_t at_off[MAX_AT];
-+static unsigned at_count[MAX_AT];
-+static unsigned n_at, max_per = 20;
++static uint32_t at_off[MAX_AT], inner_off[MAX_AT];
++static unsigned n_at, n_inner, max_per = 20;
++static unsigned at_count[MAX_AT], at_seen[MAX_AT], at_next[MAX_AT];
++static uint8_t *before;         /* memory before a DOS or BIOS call */
++static uint32_t ign_lo[64], ign_hi[64];
++static unsigned n_ign;
++static int ignoring;            /* inside EMU2_RECORD_IGNORE code (or what it called) */
++static unsigned ign_ss, ign_sp;
 +
-+static uint8_t *state;          /* per byte: 1 read recorded, 2 written */
-+static uint32_t *touched;       /* bytes whose state is set, to clear them afterwards */
-+static uint8_t *in_val;         /* the value of each recorded read */
-+static unsigned n_touched;
-+static uint16_t entry[13];
-+static unsigned cur_at, entry_cs, ret_ip, ret_cs, steps, bios, min_sp;
++struct frame {
++    int child;                  /* a call of an EMU2_RECORD_INNER function */
++    uint8_t *state;             /* per byte: 1 read recorded, 2 written */
++    uint32_t *touched;          /* bytes whose state is set, to clear them afterwards */
++    unsigned n_touched, cap_touched;
++    uint8_t *in_val;            /* the value of each recorded read */
++    uint16_t entry[13];
++    uint8_t stack[32];
++    unsigned at, seq, entry_cs, ret_ip, ret_cs, steps, bios, min_sp;
++    uint32_t ret_prov_far, ret_prov_near;   /* where the return address's code came from */
++    unsigned children;          /* children so far (recorded calls) */
++    /* a recorded call: bytes the ignored code wrote while no child was active, kept for the
++       next child (or the end of the call) */
++    uint32_t *ext;
++    unsigned n_ext, cap_ext;
++    uint8_t *ext_seen;
++    /* a child: those bytes for each parent, with their values when the child started */
++    struct ext_byte { int level; uint32_t addr; uint8_t val; } *cx;
++    unsigned n_cx, cap_cx;
++};
++static struct frame fr[DEPTH];
++static int depth;
++
++static int parse_list(const char *s, uint32_t *list, unsigned max)
++{
++    unsigned n = 0;
++    for(char *p = (char *)s; p && *p && n < max;)
++    {
++        list[n++] = strtoul(p, &p, 16);
++        while(*p == ',' || *p == ' ')
++            p++;
++    }
++    return n;
++}
 +
 +void rec_init(void)
 +{
@@ -653,17 +720,19 @@ index 0000000..431427c
 +    char name[4096];
 +    snprintf(name, sizeof name, "%s.%d", e, (int)getpid());
 +    out = fopen(name, "w");
-+    state = calloc(MEM, 1);
-+    touched = malloc(MEM * sizeof *touched);
-+    in_val = malloc(MEM);
-+    if(!out || !state || !touched || !in_val)
++    before = malloc(MEM);
++    if(!out || !before)
 +    {
 +        out = 0;
 +        return;
 +    }
-+    for(char *p = (char *)a; *p && n_at < MAX_AT;)
++    n_at = parse_list(a, at_off, MAX_AT);
++    n_inner = parse_list(getenv("EMU2_RECORD_INNER"), inner_off, MAX_AT);
++    for(char *p = getenv("EMU2_RECORD_IGNORE"); p && *p && n_ign < 64;)
 +    {
-+        at_off[n_at++] = strtoul(p, &p, 16);
++        ign_lo[n_ign] = strtoul(p, &p, 16);
++        ign_hi[n_ign] = *p == '-' ? strtoul(p + 1, &p, 16) : ign_lo[n_ign];
++        n_ign++;
 +        while(*p == ',' || *p == ' ')
 +            p++;
 +    }
@@ -673,36 +742,105 @@ index 0000000..431427c
 +    atexit(rec_close);
 +}
 +
-+static void touch(uint32_t a, uint8_t bit)
++static void touch(struct frame *f, uint32_t a, uint8_t bit)
 +{
-+    if(!state[a])
-+        touched[n_touched++] = a;
-+    state[a] |= bit;
++    if(!f->state[a])
++    {
++        if(f->n_touched == f->cap_touched)
++        {
++            f->cap_touched = f->cap_touched ? 2 * f->cap_touched : 4096;
++            f->touched = realloc(f->touched, f->cap_touched * sizeof *f->touched);
++        }
++        f->touched[f->n_touched++] = a;
++    }
++    f->state[a] |= bit;
 +}
 +
 +void rec_read(uint32_t addr, unsigned n)
 +{
-+    for(unsigned i = 0; i < n; i++)
++    if(ignoring)
++        return;
++    for(int l = 0; l < depth; l++)
 +    {
-+        uint32_t a = (addr + i) & (MEM - 1);
-+        if(!state[a])
++        struct frame *f = &fr[l];
++        for(unsigned i = 0; i < n; i++)
 +        {
-+            in_val[a] = memory[a];
-+            touch(a, 1);
++            uint32_t a = (addr + i) & (MEM - 1);
++            if(!f->state[a])
++            {
++                f->in_val[a] = memory[a];
++                touch(f, a, 1);
++            }
 +        }
 +    }
 +}
 +
++static void add_ext(struct frame *f, uint32_t a)
++{
++    if(!f->ext_seen)
++        f->ext_seen = calloc(MEM, 1);
++    if(!f->ext_seen || f->ext_seen[a])
++        return;
++    f->ext_seen[a] = 1;
++    if(f->n_ext == f->cap_ext)
++    {
++        f->cap_ext = f->cap_ext ? 2 * f->cap_ext : 1024;
++        f->ext = realloc(f->ext, f->cap_ext * sizeof *f->ext);
++    }
++    f->ext[f->n_ext++] = a;
++}
++
++static void clear_ext(struct frame *f)
++{
++    for(unsigned i = 0; i < f->n_ext; i++)
++        f->ext_seen[f->ext[i]] = 0;
++    f->n_ext = 0;
++}
++
 +void rec_write(uint32_t addr, unsigned n)
 +{
-+    for(unsigned i = 0; i < n; i++)
-+        touch((addr + i) & (MEM - 1), 2);
++    if(ignoring)
++    {
++        /* the ignored code's writes: part of the effect of a child that is running, or
++           external writes of the recorded calls, applied by a replay before their next child */
++        for(unsigned i = 0; i < n; i++)
++        {
++            uint32_t a = (addr + i) & (MEM - 1);
++            if(depth && fr[depth - 1].child)
++                for(int l = 0; l < depth; l++)
++                    touch(&fr[l], a, 2);
++            else
++                for(int l = 0; l < depth; l++)
++                    add_ext(&fr[l], a);
++        }
++        return;
++    }
++    for(int l = 0; l < depth; l++)
++        for(unsigned i = 0; i < n; i++)
++            touch(&fr[l], (addr + i) & (MEM - 1), 2);
 +}
 +
 +void rec_bios(void)
 +{
-+    if(rec_active)
-+        bios++;
++    if(!rec_active || ignoring)
++        return;
++    for(int l = 0; l < depth; l++)
++        fr[l].bios++;
++    memcpy(before, memory, MEM);
++}
++
++/* after a DOS or BIOS call: what it changed counts as written */
++void rec_bios_done(void)
++{
++    if(!rec_active || ignoring)
++        return;
++    /* from the program image up: below it are DOS, the BIOS and the PSP (DOS keeps the caller.s
++       stack there on each call), which an
++       interrupt (the timer) may change at any moment */
++    uint32_t low = trace_load_seg * 16u;
++    for(uint32_t a = low; a < MEM; a++)
++        if(memory[a] != before[a])
++            rec_write(a, 1);
 +}
 +
 +static int cmp_u32(const void *a, const void *b)
@@ -712,23 +850,48 @@ index 0000000..431427c
 +}
 +
 +/* runs of consecutive addresses with the given state bit, written as "K lin bytes" */
-+static void runs(char kind, uint8_t bit, const uint8_t *val, uint32_t skip_lo, uint32_t skip_hi)
++static void runs(struct frame *f, char kind, uint8_t bit, const uint8_t *val, uint32_t skip_lo,
++                 uint32_t skip_hi)
 +{
 +    unsigned i = 0;
-+    while(i < n_touched)
++    while(i < f->n_touched)
 +    {
-+        uint32_t a = touched[i];
-+        if(!(state[a] & bit) || (a >= skip_lo && a < skip_hi))
++        uint32_t a = f->touched[i];
++        if(!(f->state[a] & bit) || (a >= skip_lo && a < skip_hi))
 +        {
 +            i++;
 +            continue;
 +        }
 +        fprintf(out, "%c %05X ", kind, a);
 +        uint32_t next = a;
-+        while(i < n_touched && touched[i] == next && (state[next] & bit) &&
++        while(i < f->n_touched && f->touched[i] == next && (f->state[next] & bit) &&
 +              !(next >= skip_lo && next < skip_hi))
 +        {
 +            fprintf(out, "%02X", val[next]);
++            next++;
++            i++;
++        }
++        fputc('\n', out);
++    }
++}
++
++static int cmp_ext(const void *a, const void *b)
++{
++    const struct ext_byte *x = a, *y = b;
++    return x->addr < y->addr ? -1 : x->addr > y->addr;
++}
++
++/* external bytes as runs "X lin bytes" */
++static void ext_runs(struct ext_byte *e, unsigned n)
++{
++    qsort(e, n, sizeof *e, cmp_ext);
++    for(unsigned i = 0; i < n;)
++    {
++        fprintf(out, "X %05X ", e[i].addr);
++        uint32_t next = e[i].addr;
++        while(i < n && e[i].addr == next)
++        {
++            fprintf(out, "%02X", e[i].val);
 +            next++;
 +            i++;
 +        }
@@ -744,61 +907,191 @@ index 0000000..431427c
 +    fputc('\n', out);
 +}
 +
++/* keep a finished call?  The first max/2 calls; then calls that had children (the rare
++   paths, such as a pool that grows); and a sample spread over the run, each one twice as far
++   on as the last, so late calls are seen too */
++static int keep(struct frame *f)
++{
++    unsigned seen = f->seq;
++    if(at_count[f->at] >= max_per)
++        return 0;
++    if(at_count[f->at] < max_per / 2 || f->children)
++        return 1;
++    if(seen >= at_next[f->at])
++    {
++        at_next[f->at] = seen * 2;
++        return 1;
++    }
++    return 0;
++}
++
++/* end the innermost frame, writing its record if it is kept */
 +static void finish(void)
 +{
-+    uint16_t now[13];
-+    cpuGetState(now);
-+    qsort(touched, n_touched, sizeof *touched, cmp_u32);
-+    fprintf(out, "CALL %X %u\n", at_off[cur_at], at_count[cur_at]);
-+    regs("IN ", entry);
-+    runs('R', 1, in_val, 1, 0);
-+    regs("OUT", now);
-+    uint32_t ss = entry[10] * 16u;
-+    runs('W', 2, memory, ss + min_sp, ss + entry[4]);
-+    fprintf(out, "STEPS %u\n", steps);
-+    if(bios)
-+        fprintf(out, "BIOS %u\n", bios);
-+    fprintf(out, "END\n");
-+    for(unsigned i = 0; i < n_touched; i++)
-+        state[touched[i]] = 0;
-+    n_touched = 0;
-+    rec_active = 0;
-+    at_count[cur_at]++;
++    struct frame *f = &fr[--depth];
++    if(f->child || keep(f))
++    {
++        uint16_t now[13];
++        cpuGetState(now);
++        qsort(f->touched, f->n_touched, sizeof *f->touched, cmp_u32);
++        if(!f->child)
++            fprintf(out, "CALL %X %u\n", at_off[f->at], f->seq);
++        else
++        {
++            fprintf(out, "CALL %X 0\n", inner_off[f->at]);
++            /* parents: the enclosing recorded calls up to the next child */
++            for(int l = depth - 1; l >= 0 && !fr[l].child; l--)
++            {
++                fprintf(out, "PARENT %X %u %u\n", at_off[fr[l].at], fr[l].seq, fr[l].children++);
++                struct ext_byte *mine = malloc((f->n_cx + 1) * sizeof *mine);
++                unsigned k = 0;
++                for(unsigned i = 0; i < f->n_cx; i++)
++                    if(f->cx[i].level == l)
++                        mine[k++] = f->cx[i];
++                ext_runs(mine, k);
++                free(mine);
++            }
++        }
++        regs("IN ", f->entry);
++        fprintf(out, "S ");
++        for(int i = 0; i < 32; i++)
++            fprintf(out, "%02X", f->stack[i]);
++        fputc('\n', out);
++        runs(f, 'R', 1, f->in_val, 1, 0);
++        regs("OUT", now);
++        uint32_t ss = f->entry[10] * 16u;
++        runs(f, 'W', 2, memory, ss + f->min_sp, ss + f->entry[4]);
++        if(!f->child && f->n_ext)
++        {
++            struct ext_byte *e = malloc(f->n_ext * sizeof *e);
++            for(unsigned i = 0; i < f->n_ext; i++)
++                e[i] = (struct ext_byte){0, f->ext[i], memory[f->ext[i]]};
++            ext_runs(e, f->n_ext);
++            free(e);
++        }
++        fprintf(out, "STEPS %u\n", f->steps);
++        fprintf(out, "FRAME %04X\n", f->min_sp);
++        if(f->bios)
++            fprintf(out, "BIOS %u\n", f->bios);
++        fprintf(out, "END\n");
++        if(!f->child)
++            at_count[f->at]++;
++    }
++    for(unsigned i = 0; i < f->n_touched; i++)
++        f->state[f->touched[i]] = 0;
++    f->n_touched = 0;
++    if(f->ext_seen)
++        clear_ext(f);
++    f->n_cx = 0;
++    rec_active = depth > 0;
++}
++
++static void start(int child, unsigned at, unsigned cs)
++{
++    if(depth == DEPTH)
++        return;
++    struct frame *f = &fr[depth];
++    if(!f->state)
++    {
++        f->state = calloc(MEM, 1);
++        f->in_val = malloc(MEM);
++        if(!f->state || !f->in_val)
++        {
++            out = 0;
++            return;
++        }
++    }
++    f->n_cx = 0;
++    if(child)
++        for(int l = depth - 1; l >= 0 && !fr[l].child; l--)
++        {
++            for(unsigned i = 0; i < fr[l].n_ext; i++)
++            {
++                if(f->n_cx == f->cap_cx)
++                {
++                    f->cap_cx = f->cap_cx ? 2 * f->cap_cx : 1024;
++                    f->cx = realloc(f->cx, f->cap_cx * sizeof *f->cx);
++                }
++                f->cx[f->n_cx++] = (struct ext_byte){l, fr[l].ext[i], memory[fr[l].ext[i]]};
++            }
++            if(fr[l].ext_seen)
++                clear_ext(&fr[l]);
++        }
++    depth++;
++    f->child = child;
++    f->at = at;
++    f->seq = child ? 0 : at_seen[at]++;
++    cpuGetState(f->entry);
++    f->entry_cs = cs;
++    uint32_t sp = f->entry[10] * 16u + f->entry[4];
++    for(int i = 0; i < 32; i++)
++        f->stack[i] = memory[(sp + i) & (MEM - 1)];
++    f->ret_ip = f->stack[0] | f->stack[1] << 8;
++    f->ret_cs = f->stack[2] | f->stack[3] << 8;
++    f->ret_prov_far = trace_prov[(f->ret_cs * 16u + f->ret_ip) & (MEM - 1)];
++    f->ret_prov_near = trace_prov[(cs * 16u + f->ret_ip) & (MEM - 1)];
++    f->steps = 1;
++    f->bios = 0;
++    f->min_sp = f->entry[4];
++    f->children = 0;
++    rec_active = 1;
++}
++
++/* has the call of this frame returned?  The return address may have moved: when the heap
++   moves an overlay, the overlay manager rewrites return addresses into it, so the caller's
++   code is also known by where it came from in the program file. */
++static int returned(struct frame *f, unsigned cs, unsigned ip, uint32_t prov)
++{
++    if(ip != f->ret_ip || cpuGetSS() != f->entry[10] || cpuGetSP() <= f->entry[4])
++        return 0;
++    return cs == f->ret_cs || cs == f->entry_cs ||
++           (prov && (prov == f->ret_prov_far || prov == f->ret_prov_near));
 +}
 +
 +void rec_step(unsigned cs, unsigned ip, uint32_t prov)
 +{
 +    if(!out)
 +        return;
-+    if(rec_active)
++    while(depth && returned(&fr[depth - 1], cs, ip, prov))
++        finish();
++    unsigned sp = cpuGetSP();
++    if(n_ign)
 +    {
-+        unsigned sp = cpuGetSP();
-+        if(ip == ret_ip && (cs == ret_cs || cs == entry_cs) && cpuGetSS() == entry[10] &&
-+           sp > entry[4])
++        int in_ign = 0;
++        for(unsigned i = 0; prov && i < n_ign; i++)
++            if(prov - 1 >= ign_lo[i] && prov - 1 <= ign_hi[i])
++                in_ign = 1;
++        if(ignoring && !in_ign && cpuGetSS() == ign_ss && sp >= ign_sp)
++            ignoring = 0;
++        else if(!ignoring && in_ign)
 +        {
-+            finish();
-+            return;
++            ignoring = 1;
++            ign_ss = cpuGetSS();
++            ign_sp = sp;
 +        }
-+        steps++;
-+        if(sp < min_sp)
-+            min_sp = sp;
-+        return;
 +    }
-+    if(!prov)
++    for(int l = 0; l < depth; l++)
++    {
++        fr[l].steps++;
++        if(sp < fr[l].min_sp)
++            fr[l].min_sp = sp;
++    }
++    if(!prov || ignoring || (depth && fr[depth - 1].child))
 +        return;
++    if(depth)
++        for(unsigned i = 0; i < n_inner; i++)
++            if(inner_off[i] == prov - 1)
++            {
++                start(1, i, cs);
++                return;
++            }
 +    for(unsigned i = 0; i < n_at; i++)
-+        if(at_off[i] == prov - 1 && at_count[i] < max_per)
++        if(at_off[i] == prov - 1)
 +        {
-+            cur_at = i;
-+            cpuGetState(entry);
-+            entry_cs = cs;
-+            uint32_t sp = entry[10] * 16u + entry[4];
-+            ret_ip = memory[sp & (MEM - 1)] | memory[(sp + 1) & (MEM - 1)] << 8;
-+            ret_cs = memory[(sp + 2) & (MEM - 1)] | memory[(sp + 3) & (MEM - 1)] << 8;
-+            steps = 1;
-+            bios = 0;
-+            min_sp = entry[4];
-+            rec_active = 1;
++            if(at_count[i] < max_per)
++                start(0, i, cs);
++            else
++                at_seen[i]++;
 +            return;
 +        }
 +}
@@ -811,10 +1104,10 @@ index 0000000..431427c
 +}
 diff --git a/src/record.h b/src/record.h
 new file mode 100644
-index 0000000..34a01af
+index 0000000..0fd19f5
 --- /dev/null
 +++ b/src/record.h
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,11 @@
 +#pragma once
 +#include <stdint.h>
 +
@@ -824,13 +1117,14 @@ index 0000000..34a01af
 +void rec_read(uint32_t addr, unsigned n);
 +void rec_write(uint32_t addr, unsigned n);
 +void rec_bios(void);
++void rec_bios_done(void);
 +void rec_close(void);
 diff --git a/src/trace.c b/src/trace.c
 new file mode 100644
-index 0000000..4f813c8
+index 0000000..e29411f
 --- /dev/null
 +++ b/src/trace.c
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,199 @@
 +/* Provenance tracing for emu2 (Exhume): which words of the program file are used as
 + * addresses, and which bytes of it are executed.
 + *
@@ -991,8 +1285,11 @@ index 0000000..4f813c8
 +        trace_use(t);
 +}
 +
++unsigned trace_load_seg;
++
 +void trace_set_load(unsigned load_seg)
 +{
++    trace_load_seg = load_seg;
 +    const char *e = getenv("EMU2_TRACE_DGROUP");
 +    if(trace_on && e)
 +        trace_dgroup = load_seg + (unsigned)strtoul(e, 0, 16);
@@ -1029,10 +1326,10 @@ index 0000000..4f813c8
 +}
 diff --git a/src/trace.h b/src/trace.h
 new file mode 100644
-index 0000000..26976d2
+index 0000000..8284ea4
 --- /dev/null
 +++ b/src/trace.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,24 @@
 +#pragma once
 +#include <stdint.h>
 +#include <stdio.h>
@@ -1051,6 +1348,7 @@ index 0000000..26976d2
 +void trace_use(uint32_t t);
 +void trace_use_at(uint32_t t, unsigned seg, uint16_t disp, uint16_t value);
 +void trace_set_load(unsigned load_seg);
++extern unsigned trace_load_seg;
 +void trace_code(uint32_t t);
 +void trace_exec(unsigned cs, unsigned ip);
 +void trace_need(void);
