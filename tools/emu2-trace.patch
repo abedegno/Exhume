@@ -599,10 +599,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..0724812
+index 0000000..82ce24c
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,641 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -624,7 +624,9 @@ index 0000000..0724812
 + *                             (by the code it calls and by DOS too) counts for any call, and
 + *                             no call starts a record.  What it writes is kept, though: as part
 + *                             of a child running at the time, or else as external writes
-+ *                             (X lines) that a replay applies at the next child.  A call
++ *                             (X lines) that a replay applies at the next child; what it
++ *                             pushes on its own stack, between its SP and the SP it entered
++ *                             with, are dead once it leaves and not kept.  A call
 + *                             that reads such a byte before its next child (the overlay
 + *                             manager asked for memory and the program moved its pools) is
 + *                             not written: a replay would read it too early.
@@ -859,10 +861,15 @@ index 0000000..0724812
 +    if(ignoring)
 +    {
 +        /* the ignored code's writes: part of the effect of a child that is running, or
-+           external writes of the recorded calls, applied by a replay before their next child */
++           external writes of the recorded calls, applied by a replay before their next child.
++           Its own stack (from its SP up to the SP it was entered with; the stack segment is
++           also DGROUP, whose data lies far below) is dead once it leaves: a call that later
++           reads a byte there reads an unset local, recorded like any other input */
 +        for(unsigned i = 0; i < n; i++)
 +        {
 +            uint32_t a = (addr + i) & (MEM - 1);
++            if(cpuGetSS() == ign_ss && a >= ign_ss * 16u + cpuGetSP() && a < ign_ss * 16u + ign_sp)
++                continue;       /* its own stack, from its SP now up to where it entered */
 +            if(depth && fr[depth - 1].child)
 +                for(int l = 0; l < depth; l++)
 +                    touch(&fr[l], a, 2);
