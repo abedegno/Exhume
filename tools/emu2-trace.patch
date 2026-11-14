@@ -530,22 +530,33 @@ index 0f58974..949fe5b 100644
 +
 +void cpuGetState(uint16_t r[13]);
 diff --git a/src/dos.c b/src/dos.c
-index 0b7dcdc..a4dc15b 100644
+index 0b7dcdc..ae77683 100644
 --- a/src/dos.c
 +++ b/src/dos.c
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  #include "dos.h"
 +#include "trace.h"
++#include "record.h"
  #include "codepage.h"
  #include "dbg.h"
  #include "dosnames.h"
-@@ -1767,7 +1768,9 @@ void intr21(void)
+@@ -677,6 +679,8 @@ static void dos_find_next(int first)
+         }
+         // Fills dos file name
+         putmem(dosDTA + 0x1E, d->dosname, 13);
++        // the found file's attribute to name, written whether it changed or not
++        rec_dos_wrote(dosDTA + 0x15, 0x1E + 13 - 0x15);
+         // Next file
+         p->find_first_ptr++;
+         cpuClrFlag(cpuFlag_CF);
+@@ -1767,7 +1771,10 @@ void intr21(void)
          }
          else
          {
 +            long pos = ftell(f);
              unsigned n = fread(buf, 1, cpuGetCX(), f);
 +            trace_loaded(f, pos, cpuGetAddrDS(cpuGetDX()), n);
++            rec_dos_wrote(cpuGetAddrDS(cpuGetDX()), n);
              cpuSetAX(n);
          }
          dos_error = 0;
@@ -588,10 +599,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..cd61838
+index 0000000..0724812
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,624 @@
+@@ -0,0 +1,634 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -662,7 +673,8 @@ index 0000000..cd61838
 + * call's own frame) are left out of W.  Memory the emulated DOS writes (a file read into a
 + * buffer) is found by comparing memory from the program's PSP up before and after each DOS
 + * or BIOS call and counts as written, by the ignored code when it made the call (an overlay
-+ * read from the EXE); what DOS reads is not seen. */
++ * read from the EXE); a found file's details and a file read count as written whole, changed
++ * or not (rec_dos_wrote); what DOS reads is not seen. */
 +#include "record.h"
 +#include "cpu.h"
 +#include "emu.h"
@@ -883,6 +895,15 @@ index 0000000..cd61838
 +        for(int l = 0; l < depth; l++)
 +            fr[l].bios++;
 +    memcpy(before, memory, MEM);
++}
++
++/* what the emulated DOS writes in a buffer it was given (a found file's details, a file
++   read) counts as written even where the value was already there, which comparing memory
++   after the call cannot see */
++void rec_dos_wrote(uint32_t addr, unsigned n)
++{
++    if(rec_active)
++        rec_write(addr, n);
 +}
 +
 +/* after a DOS or BIOS call: what it changed counts as written */
@@ -1218,10 +1239,10 @@ index 0000000..cd61838
 +}
 diff --git a/src/record.h b/src/record.h
 new file mode 100644
-index 0000000..0fd19f5
+index 0000000..53ed5f6
 --- /dev/null
 +++ b/src/record.h
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,12 @@
 +#pragma once
 +#include <stdint.h>
 +
@@ -1232,6 +1253,7 @@ index 0000000..0fd19f5
 +void rec_write(uint32_t addr, unsigned n);
 +void rec_bios(void);
 +void rec_bios_done(void);
++void rec_dos_wrote(uint32_t addr, unsigned n);
 +void rec_close(void);
 diff --git a/src/trace.c b/src/trace.c
 new file mode 100644
