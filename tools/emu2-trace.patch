@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..f417d0b
+index 0000000..89da7f0
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,561 @@
+@@ -0,0 +1,592 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -617,6 +617,9 @@ index 0000000..f417d0b
 + *                             that reads such a byte before its next child (the overlay
 + *                             manager asked for memory and the program moved its pools) is
 + *                             not written: a replay would read it too early.
++ * EMU2_RECORD_UNWIND=OFF[,...] long jump routines: when one runs, the calls open are not
++ *                             written (a long jump unwinds them, or jumps over them, and no
++ *                             translation can replay that).
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
@@ -678,6 +681,9 @@ index 0000000..f417d0b
 +static FILE *out;
 +static uint32_t at_off[MAX_AT], inner_off[MAX_AT];
 +static unsigned n_at, n_inner, max_per = 20;
++static uint32_t unwind_off[8];   /* EMU2_RECORD_UNWIND: long jump routines */
++static unsigned n_unwind;
++static int unwinding;            /* a long jump ran: frames the stack is now above are closed */
 +static unsigned at_count[MAX_AT], at_seen[MAX_AT], at_next[MAX_AT];
 +static uint8_t *before;         /* memory before a DOS or BIOS call */
 +static uint32_t ign_lo[64], ign_hi[64];
@@ -687,7 +693,7 @@ index 0000000..f417d0b
 +
 +struct frame {
 +    int child;                  /* a call of an EMU2_RECORD_INNER function */
-+    uint8_t *state;             /* per byte: 1 read recorded, 2 written */
++    uint8_t *state;             /* per byte: 1 read recorded, 2 written, 4 written by the ignored code and not yet applied */
 +    uint32_t *touched;          /* bytes whose state is set, to clear them afterwards */
 +    unsigned n_touched, cap_touched;
 +    uint8_t *in_val;            /* the value of each recorded read */
@@ -738,6 +744,7 @@ index 0000000..f417d0b
 +    }
 +    n_at = parse_list(a, at_off, MAX_AT);
 +    n_inner = parse_list(getenv("EMU2_RECORD_INNER"), inner_off, MAX_AT);
++    n_unwind = parse_list(getenv("EMU2_RECORD_UNWIND"), unwind_off, 8);
 +    for(char *p = getenv("EMU2_RECORD_IGNORE"); p && *p && n_ign < 64;)
 +    {
 +        ign_lo[n_ign] = strtoul(p, &p, 16);
@@ -782,7 +789,7 @@ index 0000000..f417d0b
 +                touch(f, a, 1);
 +            }
 +            /* a byte the ignored code wrote, which a replay applies only at the next child */
-+            if(f->ext_seen && f->ext_seen[a])
++            if(f->state[a] & 4)
 +                f->lost = 1;
 +        }
 +    }
@@ -806,7 +813,10 @@ index 0000000..f417d0b
 +static void clear_ext(struct frame *f)
 +{
 +    for(unsigned i = 0; i < f->n_ext; i++)
++    {
 +        f->ext_seen[f->ext[i]] = 0;
++        f->state[f->ext[i]] &= ~4;      /* applied now: no longer pending */
++    }
 +    f->n_ext = 0;
 +}
 +
@@ -824,13 +834,20 @@ index 0000000..f417d0b
 +                    touch(&fr[l], a, 2);
 +            else
 +                for(int l = 0; l < depth; l++)
++                {
 +                    add_ext(&fr[l], a);
++                    touch(&fr[l], a, 4);        /* pending until the next child */
++                }
 +        }
 +        return;
 +    }
 +    for(int l = 0; l < depth; l++)
 +        for(unsigned i = 0; i < n; i++)
-+            touch(&fr[l], (addr + i) & (MEM - 1), 2);
++        {
++            uint32_t a = (addr + i) & (MEM - 1);
++            touch(&fr[l], a, 2);
++            fr[l].state[a] &= ~4;       /* written over: the ignored code's byte is gone */
++        }
 +}
 +
 +void rec_bios(void)
@@ -1005,6 +1022,7 @@ index 0000000..f417d0b
 +
 +static void start(int child, unsigned at, unsigned cs)
 +{
++    unwinding = 0;
 +    if(depth == DEPTH)
 +    {
 +        /* a call that cannot be followed: every enclosing record would miss it and what
@@ -1082,6 +1100,8 @@ index 0000000..f417d0b
 +       it a return address that neither its segment nor its provenance would recognise */
 +    if(depth && fr[depth - 1].ret_seen)
 +        finish();
++    while(unwinding && depth && cpuGetSS() == fr[depth - 1].entry[10] && cpuGetSP() > fr[depth - 1].entry[4])
++        finish();
 +    while(depth)
 +    {
 +        struct frame *t = &fr[depth - 1];
@@ -1127,9 +1147,20 @@ index 0000000..f417d0b
 +        if(sp < fr[l].min_sp)
 +            fr[l].min_sp = sp;
 +    }
-+    if(!prov || ignoring || (depth && fr[depth - 1].child))
++    /* a long jump: the calls open now are unwound, or jumped over, and cannot be replayed */
++    for(unsigned i = 0; prov && i < n_unwind; i++)
++        if(unwind_off[i] == prov - 1)
++        {
++            for(int l = 0; l < depth; l++)
++                fr[l].lost = 1;
++            unwinding = 1;
++        }
++    if(!prov || ignoring)
 +        return;
-+    if(depth)
++    /* a call inside a child (a stand-in's own work) is the child's, unless it is itself a
++       recorded function: a translated caller of an untranslated one must not hide the
++       translated functions that one calls in turn */
++    if(depth && !fr[depth - 1].child)
 +        for(unsigned i = 0; i < n_inner; i++)
 +            if(inner_off[i] == prov - 1)
 +            {
