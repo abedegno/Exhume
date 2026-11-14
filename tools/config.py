@@ -115,6 +115,10 @@ class Config:
         # tools/build.py); the environment's EXHUME_NATIVE wins ("0" turns it off)
         self.native = os.environ.get('EXHUME_NATIVE', t.get('native')) or None
         if self.native == '0': self.native = None
+        # its compiles at once (default: one fewer than the cores) and their priority (nice)
+        workers = os.environ.get('EXHUME_NATIVE_WORKERS', t.get('native_workers'))
+        self.native_workers = int(workers) if workers else None
+        self.native_nice = int(os.environ.get('EXHUME_NATIVE_NICE', t.get('native_nice', 0)))
         self.dos = t.get('dos')
         self.dos_sessions = t.get('sessions')
         if self.dos and not os.environ.get('EXHUME_DOS'): os.environ['EXHUME_DOS'] = str(self.dos)

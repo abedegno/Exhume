@@ -46,13 +46,13 @@ def sessions(configured=None):
     return JSDOS if backend() == 'jsdos' else max(1, min(os.cpu_count() or 4, NATIVE_MAX))
 
 
-def compile_many(cfg, srcs, batch=BATCH, jobs=None):
+def compile_many(cfg, srcs, batch=BATCH, jobs=None, native_jobs=None):
     """Build srcs (paths) into cfg.build, batch to a session and jobs (default sessions()) at
     once; a source that fails in a batch is built once more alone. Returns {stem: (ok, msgs)}."""
     import build
     jobs = jobs or sessions()
-    res = build.build(cfg, srcs, jobs=jobs, batch=batch)
+    res = build.build(cfg, srcs, jobs=jobs, batch=batch, native_jobs=native_jobs)
     if batch > 1:
         again = [s for s in srcs if not res[cfg.stem(s)][0]]
-        if again: res.update(build.build(cfg, again, jobs=jobs, batch=1))
+        if again: res.update(build.build(cfg, again, jobs=jobs, batch=1, native_jobs=native_jobs))
     return res
