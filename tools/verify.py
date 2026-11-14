@@ -64,9 +64,26 @@ def note_reference(syms, problems, name, val, where, aliases):
         problems.append(f'{name}: {fmt(prev[0])} at +{prev[1]:X} but {fmt(val)} at +{where:X}')
 
 
+def undo_emulator(buf):
+    """The floating-point emulator's INT 34h-3Dh read back as the WAIT/ESC instructions the
+    linker wrote them over (same lengths), so that decoding keeps its instruction boundaries."""
+    b = bytearray(buf); i = 0
+    while i + 1 < len(b):
+        if b[i] == 0xCD and 0x34 <= b[i + 1] <= 0x3B:
+            b[i:i + 2] = bytes([0x9B, 0xD8 + b[i + 1] - 0x34]); i += 2
+        elif b[i] == 0xCD and b[i + 1] == 0x3C and i + 2 < len(b):
+            b[i:i + 3] = bytes([0x9B, 0x26, 0xD8 | (b[i + 2] & 7)]); i += 3
+        elif b[i] == 0xCD and b[i + 1] == 0x3D:
+            b[i:i + 2] = b'\x90\x9b'; i += 2
+        else:
+            i += 1
+    return bytes(b)
+
+
 def resident_instruction_field(obj, at, rows, size):
     """Return one unprefixed E8/E9 field in an explicit function CODE row."""
     from iced_x86 import Decoder, Code
+    obj = undo_emulator(obj)
     candidates=[]
     for row in rows:
         _,_,start,length=row

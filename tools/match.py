@@ -26,6 +26,30 @@ import config
 from omf import module_masked, publics
 from build import build
 
+# The floating-point emulator's fixups: absolute values the linker adds to an 8087
+# instruction's bytes, turning WAIT/ESC (9B D8..DF) into INT 34h-3Dh (Borland and Microsoft
+# libraries alike). FI* fixups add to a word, FJ* to the byte after a segment override.
+EMULATOR = {'FIDRQQ': 0x5C32, 'FIWRQQ': 0xA23D, 'FIERQQ': 0x1632, 'FICRQQ': 0x0E32,
+            'FISRQQ': 0x0632, 'FIARQQ': 0xFE32, 'FJCRQQ': 0xC000, 'FJSRQQ': 0x8000,
+            'FJARQQ': 0x4000}
+
+
+def apply_emulator(obj, ci, code, mask):
+    """Add the emulator fixups' values into code segment ci's bytes and unmask them, so that
+    floating-point code compares (and disassembles) as the linked program has it."""
+    from fixups import fixups
+    o = fixups(obj)
+    for f in o['fixups']:
+        if f['seg'] != ci or f['target'][0] != 2: continue
+        v = EMULATOR.get(o['ext'][f['target'][1]])
+        if v is None: continue
+        at = f['off']
+        if f['loc'] in (1, 5):
+            w = (code[at] | code[at + 1] << 8) + v + f['disp']
+            code[at] = w & 0xFF; code[at + 1] = w >> 8 & 0xFF; mask[at] = mask[at + 1] = 0
+        elif f['loc'] in (0, 4):
+            code[at] = (code[at] + ((v >> 8) if f['loc'] == 4 else v)) & 0xFF; mask[at] = 0
+
 
 def compare(b, m, o, rewrite=True):
     """Indices where object bytes b (mask m: 1 = written by a fixup) differ from original o."""
@@ -38,11 +62,23 @@ def compare(b, m, o, rewrite=True):
 
 
 def dis(buf):
+    """Instructions as text; the emulator's INT 34h-3Bh (an 8087 opcode D8-DF follows), INT 3Ch
+    (with a segment override) and INT 3Dh (FWAIT) read as the instructions they stand for."""
     from iced_x86 import Decoder, Formatter, FormatterSyntax
-    f = Formatter(FormatterSyntax.NASM); r = []
-    for i in Decoder(16, bytes(buf)):
+    f = Formatter(FormatterSyntax.NASM); r = []; buf = bytes(buf); p = 0
+    while p < len(buf):
+        b0, b1 = buf[p], buf[p + 1] if p + 1 < len(buf) else 0
+        if b0 == 0xCD and 0x34 <= b1 <= 0x3B:
+            i = Decoder(16, bytes([0xD8 + b1 - 0x34]) + buf[p + 2:p + 16]).decode(); n = i.len + 1
+        elif b0 == 0xCD and b1 == 0x3C and p + 2 < len(buf):
+            i = Decoder(16, bytes([0x26, 0xD8 + buf[p + 2] - 0x34]) + buf[p + 3:p + 16]).decode(); n = i.len + 1
+        elif b0 == 0xCD and b1 == 0x3D:
+            r.append('fwait'); p += 2; continue
+        else:
+            i = Decoder(16, buf[p:p + 16]).decode(); n = i.len
         s = f.format(i); mn = s.split()[0]
         r.append(mn if mn.startswith('j') or mn in ('call', 'loop') else s)
+        p += max(n, 1)
     return r
 
 
@@ -87,6 +123,7 @@ def main(argv):
     if not ci: print('object has no code segment'); return 1
     ci = ci[0]; pubs = publics(d)
     code, cm = data[ci], mask[ci]
+    apply_emulator(d, ci, code, cm)
     base, size, rows, org = cfg.load_targets(seg); exe = cfg.exe
     whole = len(code) >= size and not compare(code, cm, exe[base:base + len(code)], rewrite)
     done = 0
