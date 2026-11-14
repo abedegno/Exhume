@@ -599,10 +599,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..3ed5928
+index 0000000..50a4b6e
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,676 @@
+@@ -0,0 +1,731 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -650,8 +650,8 @@ index 0000000..3ed5928
 + * a return with SP at its return address (wherever that goes: the overlay manager may have
 + * moved the caller and rewritten the address), or when execution reaches its return address with
 + * SP above its value at entry (the caller's code may have moved meanwhile: an overlay the
-+ * heap moved).  A call the stack unwinds past without a return (a long jump) is not
-+ * written, nor are the calls around it.  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
++ * heap moved).  A call a long jump lands in (open when the jump ran, but not unwound by it)
++ * is not written, nor is one the stack unwinds past without a known long jump routine.  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
 + * recorded call that encloses it with no other child in between (a function a translation
 + * calls directly or through other translated functions), and calls made inside a child are
 + * not recorded.  Each record is
@@ -667,7 +667,12 @@ index 0000000..3ed5928
 + *                                                        return address and the arguments
 + *     R lin bytes                                        memory read before it was written,
 + *                                                        with the value it had (runs, hex)
-+ *     OUT AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at the return address
++ *     OUT AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at the return address, or
++ *     NORETURN                                           for a call that never returns: one a
++ *                                                        long jump unwinds (EMU2_RECORD_UNWIND:
++ *                                                        the routine is its last child, itself
++ *                                                        NORETURN) or one open at the program's
++ *                                                        exit; W is then what it had written
 + *     W lin bytes                                        memory written, final values
 + *     X lin bytes                                        bytes the ignored code wrote after the
 + *                                                        last child, as they were at the end
@@ -724,6 +729,8 @@ index 0000000..3ed5928
 +    uint32_t ret_prov_far, ret_prov_near;   /* where the return address's code came from */
 +    unsigned children;          /* children so far (recorded calls) */
 +    int lost;                   /* a call inside it came when the frames were all in use */
++    int jumped;                 /* a long jump ran while it was open */
++    int noreturn;               /* it ends by a long jump or the program's exit (NORETURN) */
 +    int ret_seen;               /* it has executed its return (a ret with SP at its return address) */
 +    /* a recorded call: bytes the ignored code wrote while no child was active, kept for the
 +       next child (or the end of the call) */
@@ -837,8 +844,10 @@ index 0000000..3ed5928
 +                f->in_val[a] = memory[a];
 +                touch(f, a, 1);
 +            }
-+            /* a byte the ignored code wrote, which a replay applies only at the next child */
-+            if(f->state[a] & 4)
++            /* a byte the ignored code wrote, which a replay applies only at the next child;
++               but not the program's own bytes an overlay load brought in (a switch table in
++               an overlay's code, read through CS): a translation never reads those */
++            if((f->state[a] & 4) && !trace_prov[a])
 +                f->lost = 1;
 +        }
 +    }
@@ -1026,6 +1035,10 @@ index 0000000..3ed5928
 +static void finish(void)
 +{
 +    struct frame *f = &fr[--depth];
++    /* a long jump landed inside it (it was open when the jump ran, and the jump did not
++       unwind it): no translation can replay that */
++    if(f->jumped && !f->noreturn)
++        f->lost = 1;
 +    if(!f->lost && (f->child || keep(f)))
 +    {
 +        uint16_t now[13];
@@ -1055,7 +1068,10 @@ index 0000000..3ed5928
 +            fprintf(out, "%02X", f->stack[i]);
 +        fputc('\n', out);
 +        runs(f, 'R', 1, f->in_val, 1, 0);
-+        regs("OUT", now);
++        if(f->noreturn)
++            fprintf(out, "NORETURN\n");
++        else
++            regs("OUT", now);
 +        uint32_t ss = f->entry[10] * 16u;
 +        runs(f, 'W', 2, memory, ss + f->min_sp, ss + f->entry[4]);
 +        if(!f->child && f->n_ext)
@@ -1151,6 +1167,8 @@ index 0000000..3ed5928
 +    f->min_sp = f->entry[4];
 +    f->children = 0;
 +    f->lost = 0;
++    f->jumped = 0;
++    f->noreturn = 0;
 +    f->ret_seen = 0;
 +    rec_active = 1;
 +}
@@ -1175,8 +1193,12 @@ index 0000000..3ed5928
 +       it a return address that neither its segment nor its provenance would recognise */
 +    if(depth && fr[depth - 1].ret_seen)
 +        finish();
++    /* the calls a long jump unwound end there (NORETURN), with what they had done */
 +    while(unwinding && depth && cpuGetSS() == fr[depth - 1].entry[10] && cpuGetSP() > fr[depth - 1].entry[4])
++    {
++        fr[depth - 1].noreturn = fr[depth - 1].jumped;
 +        finish();
++    }
 +    while(depth)
 +    {
 +        struct frame *t = &fr[depth - 1];
@@ -1239,13 +1261,39 @@ index 0000000..3ed5928
 +        if(sp < fr[l].min_sp)
 +            fr[l].min_sp = sp;
 +    }
-+    /* a long jump: the calls open now are unwound, or jumped over, and cannot be replayed */
++    /* a long jump: the routine is the last child of the calls open now, a child that never
++       returns, and the calls it unwinds end with it (NORETURN, above); the call it lands in
++       cannot be replayed (finish) */
 +    for(unsigned i = 0; prov && i < n_unwind; i++)
 +        if(unwind_off[i] == prov - 1)
 +        {
++            int child = -1, started = 0;
++            /* the routine is already a child when it lies in the ignored code (a call into
++               it starts one, above) */
++            if(depth && fr[depth - 1].child && inner_off[fr[depth - 1].at] == prov - 1)
++                started = 1;
++            else if(depth && !fr[depth - 1].child && !ignoring)
++                for(unsigned k = 0; k < n_inner; k++)
++                    if(inner_off[k] == prov - 1)
++                        child = (int)k;
++            if(child < 0 && !started)
++            {
++                for(int l = 0; l < depth; l++)
++                    fr[l].lost = 1;
++                unwinding = 1;
++                continue;
++            }
++            if(!started)
++                start(1, (unsigned)child, cs);
++            if(depth && fr[depth - 1].child)
++            {
++                fr[depth - 1].noreturn = 1;
++                finish();
++            }
 +            for(int l = 0; l < depth; l++)
-+                fr[l].lost = 1;
++                fr[l].jumped = 1;
 +            unwinding = 1;
++            return;
 +        }
 +    if(!prov || ignoring)
 +        return;
@@ -1272,6 +1320,13 @@ index 0000000..3ed5928
 +
 +void rec_close(void)
 +{
++    /* the program's exit: the calls open end here, the innermost (the exit's own routine,
++       a child) first */
++    while(out && depth)
++    {
++        fr[depth - 1].noreturn = 1;
++        finish();
++    }
 +    if(out)
 +        fclose(out);
 +    out = 0;
