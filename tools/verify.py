@@ -559,12 +559,18 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
         elif tm == 0 and ti == bss:                    # this file's uninitialised data
             internal += 1
             bss_bases.add((word(exe, base + at) - add) & 0xFFFF)
+            if os.environ.get('EXHUME_VERIFY_BASES'):   # each reference, to see which disagree
+                print(f'  _BSS  +{at:04X}: object offset {add:04X}, original DS:{word(exe, base + at):04X}, '
+                      f'base DS:{(word(exe, base + at) - add) & 0xFFFF:04X}')
         elif (tm == 0 and ti == datas or tm == 1) and loc == 2:     # DGROUP's paragraph
             internal += 1
             if word(exe, base + at) != DS_PARA: problems.append(f'+{at:X}: DGROUP referenced as {word(exe, base + at):04X}')
         elif tm == 0 and ti == datas or tm == 1:       # this file's data, through DGROUP
             internal += 1
             data_bases.add((word(exe, base + at) - add) & 0xFFFF)
+            if os.environ.get('EXHUME_VERIFY_BASES'):
+                print(f'  _DATA +{at:04X}: object offset {add:04X}, original DS:{word(exe, base + at):04X}, '
+                      f'base DS:{(word(exe, base + at) - add) & 0xFFFF:04X}')
         elif tm == 0 and ti in fars and loc in (1, 2, 3, 5):    # this file's own far data
             internal += 1
             r = farref.setdefault(ti, {})
