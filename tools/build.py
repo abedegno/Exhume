@@ -132,7 +132,8 @@ def _session(cfg, srcs, timeout):
 # source), the object and the console text back from memory.  No more than native_workers
 # compiles run at once ([toolchain] native_workers, EXHUME_NATIVE_WORKERS or --jobs; default
 # one fewer than the cores), at native_nice priority.  A compile that has BCC run TASM (-B,
-# inline assembly) goes to DOS, which can run it.
+# inline assembly) stays in-process when an emu2 is at hand (EXHUME_EMU2, or tools/emu2/emu2):
+# the port runs TASM in it on the job's files (BCC_DOS_RUNNER); without one it goes to DOS.
 
 last_in_process = 0             # how many of the last build()'s sources compiled in-process
 
@@ -156,10 +157,21 @@ def _native_root(cfg):
     return root
 
 
+def _dos_runner():
+    """an emu2 for the port to run TASM in (-B), or None"""
+    for p in (os.environ.get('EXHUME_EMU2'), os.path.join(here, 'emu2', 'emu2')):
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
 def build_native(cfg, srcs, workers=None, timeout=300):
     """Compile srcs in-process; returns ({stem: (ok, problem lines)}, sources left for DOS)."""
     import shlex
     import bcc20
+    runner = _dos_runner()
+    if runner and not os.environ.get('BCC_DOS_RUNNER'):
+        os.environ['BCC_DOS_RUNNER'] = runner       # the compile servers inherit it
     root = _native_root(cfg)
     work = []
     for src in srcs:
