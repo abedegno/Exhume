@@ -12,7 +12,7 @@ index 290e5b0..efca7cc 100644
   video.o\
  
 diff --git a/src/cpu.c b/src/cpu.c
-index c32757f..6c4b7c8 100644
+index c32757f..8be8142 100644
 --- a/src/cpu.c
 +++ b/src/cpu.c
 @@ -1,3 +1,4 @@
@@ -421,17 +421,21 @@ index c32757f..6c4b7c8 100644
          PushWord(dest);
          break;
      case 0x38:
-@@ -2332,6 +2461,9 @@ static void debug_instruction(void)
+@@ -2332,6 +2461,13 @@ static void debug_instruction(void)
  
  static void do_instruction(uint8_t code)
  {
 +    trace_wt = trace_bt = 0;
 +    if(trace_on && segment_override == NoSeg)
++    {
 +        trace_exec(sregs[CS], (cpuGetIP() + 0xFFFF) & 0xFFFF);
++        if(rec_take_redirect())     /* EMU2_RECORD_INJECT moved execution (record.c) */
++            return;
++    }
      if(debug_active(debug_cpu) && segment_override == NoSeg)
          debug_instruction();
      switch(code)
-@@ -2377,7 +2509,10 @@ static void do_instruction(uint8_t code)
+@@ -2377,7 +2513,10 @@ static void do_instruction(uint8_t code)
      case 0x26: SEG_OVERRIDE(ES);
      case 0x27: i_daa();                                        break;
      case 0x28: OP_br8(SUB);
@@ -443,7 +447,7 @@ index c32757f..6c4b7c8 100644
      case 0x2A: OP_r8b(SUB);
      case 0x2B: OP_r16w(SUB);
      case 0x2C: OP_ald8(SUB);
-@@ -2385,9 +2520,15 @@ static void do_instruction(uint8_t code)
+@@ -2385,9 +2524,15 @@ static void do_instruction(uint8_t code)
      case 0x2E: SEG_OVERRIDE(CS);
      case 0x2f: i_das();                                        break;
      case 0x30: OP_br8(XOR);
@@ -461,7 +465,7 @@ index c32757f..6c4b7c8 100644
      case 0x34: OP_ald8(XOR);
      case 0x35: OP_axd16(XOR);
      case 0x36: SEG_OVERRIDE(SS);
-@@ -2473,9 +2614,33 @@ static void do_instruction(uint8_t code)
+@@ -2473,9 +2618,33 @@ static void do_instruction(uint8_t code)
      case 0x86: i_xchg_br8();                                   break;
      case 0x87: i_xchg_wr16();                                  break;
      case 0x88: OP_br8(MOV);
@@ -497,7 +501,7 @@ index c32757f..6c4b7c8 100644
      case 0x8c: i_mov_wsreg();                                  break;
      case 0x8d: i_lea();                                        break;
      case 0x8e: i_mov_sregw();                                  break;
-@@ -2541,7 +2706,7 @@ static void do_instruction(uint8_t code)
+@@ -2541,7 +2710,7 @@ static void do_instruction(uint8_t code)
      case 0xca: i_retf_d16();                                   break;
      case 0xcb: do_retf();                                      break;
      case 0xcc: i_int3();                                       break;
@@ -506,7 +510,7 @@ index c32757f..6c4b7c8 100644
      case 0xce: i_into();                                       break;
      case 0xcf: do_iret();                                      break;
      case 0xd0: i_d0pre();                                      break;
-@@ -2718,3 +2883,12 @@ void cpuTriggerIRQ(int num)
+@@ -2718,3 +2887,12 @@ void cpuTriggerIRQ(int num)
  {
      irq_mask |= (1 << num);
  }
@@ -530,22 +534,33 @@ index 0f58974..949fe5b 100644
 +
 +void cpuGetState(uint16_t r[13]);
 diff --git a/src/dos.c b/src/dos.c
-index 0b7dcdc..a4dc15b 100644
+index 0b7dcdc..ae77683 100644
 --- a/src/dos.c
 +++ b/src/dos.c
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  #include "dos.h"
 +#include "trace.h"
++#include "record.h"
  #include "codepage.h"
  #include "dbg.h"
  #include "dosnames.h"
-@@ -1767,7 +1768,9 @@ void intr21(void)
+@@ -677,6 +679,8 @@ static void dos_find_next(int first)
+         }
+         // Fills dos file name
+         putmem(dosDTA + 0x1E, d->dosname, 13);
++        // the found file's attribute to name, written whether it changed or not
++        rec_dos_wrote(dosDTA + 0x15, 0x1E + 13 - 0x15);
+         // Next file
+         p->find_first_ptr++;
+         cpuClrFlag(cpuFlag_CF);
+@@ -1767,7 +1771,10 @@ void intr21(void)
          }
          else
          {
 +            long pos = ftell(f);
              unsigned n = fread(buf, 1, cpuGetCX(), f);
 +            trace_loaded(f, pos, cpuGetAddrDS(cpuGetDX()), n);
++            rec_dos_wrote(cpuGetAddrDS(cpuGetDX()), n);
              cpuSetAX(n);
          }
          dos_error = 0;
@@ -588,10 +603,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..f417d0b
+index 0000000..abf6b2f
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,561 @@
+@@ -0,0 +1,853 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -613,10 +628,36 @@ index 0000000..f417d0b
 + *                             (by the code it calls and by DOS too) counts for any call, and
 + *                             no call starts a record.  What it writes is kept, though: as part
 + *                             of a child running at the time, or else as external writes
-+ *                             (X lines) that a replay applies at the next child.  A call
++ *                             (X lines) that a replay applies at the next child; what it
++ *                             pushes on its own stack, between its SP and the SP it entered
++ *                             with, are dead once it leaves and not kept.  A call
 + *                             that reads such a byte before its next child (the overlay
 + *                             manager asked for memory and the program moved its pools) is
 + *                             not written: a replay would read it too early.
++ * EMU2_RECORD_UNWIND=OFF[,...] long jump routines: when one runs, the calls open are not
++ *                             written (a long jump unwinds them, or jumps over them, and no
++ *                             translation can replay that).
++ * EMU2_RECORD_SP=OUTFILE      also writes OUTFILE.PID: "S off parent parent_sp sp" for every
++ *                             recorded call started (its function, the innermost recorded
++ *                             call around it or 0 and that call's entry SP, its own SP at
++ *                             entry), and "K off entry_sp sp" for each execution of
++ *                             cmp sp,8F0Ch inside a recorded call (BCC's stack checks): the
++ *                             8086 stack a native build must model to stop where BCC.EXE does.
++ * EMU2_RECORD_INJECT=TRIGGER,TARGET,HIT,FLAGS,ARG...
++ *                             makes a call the program itself never makes, so that it is
++ *                             recorded: at the HIT-th execution of the instruction at file
++ *                             offset TRIGGER (a function's entry, in the same code segment
++ *                             as TARGET), the words ARG are pushed (in that order; Tn is the
++ *                             n-th word of the trigger's own arguments, anything else a hex
++ *                             value), then the return address (FLAGS bit 0: a far call, CS
++ *                             and IP; bit 1: the trigger is far, its arguments after a far
++ *                             return address), and execution goes on at file offset TARGET,
++ *                             or, for TARGET Sseg:off, at that far entry of the load module
++ *                             (an overlay stub: the overlay manager loads the overlay), from
++ *                             a trigger anywhere.  When the
++ *                             call returns to the trigger the program ends (the call's record
++ *                             written; WILD in it when the call executed bytes the program
++ *                             never loaded, as through a null pointer).  All values in hex.
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
@@ -628,8 +669,8 @@ index 0000000..f417d0b
 + * a return with SP at its return address (wherever that goes: the overlay manager may have
 + * moved the caller and rewritten the address), or when execution reaches its return address with
 + * SP above its value at entry (the caller's code may have moved meanwhile: an overlay the
-+ * heap moved).  A call the stack unwinds past without a return (a long jump) is not
-+ * written, nor are the calls around it.  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
++ * heap moved).  A call a long jump lands in (open when the jump ran, but not unwound by it)
++ * is not written, nor is one the stack unwinds past without a known long jump routine.  A child is a call of an EMU2_RECORD_INNER function; it belongs to every
 + * recorded call that encloses it with no other child in between (a function a translation
 + * calls directly or through other translated functions), and calls made inside a child are
 + * not recorded.  Each record is
@@ -645,7 +686,12 @@ index 0000000..f417d0b
 + *                                                        return address and the arguments
 + *     R lin bytes                                        memory read before it was written,
 + *                                                        with the value it had (runs, hex)
-+ *     OUT AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at the return address
++ *     OUT AX BX CX DX SP BP SI DI ES CS SS DS FLAGS      registers at the return address, or
++ *     NORETURN                                           for a call that never returns: one a
++ *                                                        long jump unwinds (EMU2_RECORD_UNWIND:
++ *                                                        the routine is its last child, itself
++ *                                                        NORETURN) or one open at the program's
++ *                                                        exit; W is then what it had written
 + *     W lin bytes                                        memory written, final values
 + *     X lin bytes                                        bytes the ignored code wrote after the
 + *                                                        last child, as they were at the end
@@ -659,7 +705,8 @@ index 0000000..f417d0b
 + * call's own frame) are left out of W.  Memory the emulated DOS writes (a file read into a
 + * buffer) is found by comparing memory from the program's PSP up before and after each DOS
 + * or BIOS call and counts as written, by the ignored code when it made the call (an overlay
-+ * read from the EXE); what DOS reads is not seen. */
++ * read from the EXE); a found file's details and a file read count as written whole, changed
++ * or not (rec_dos_wrote); what DOS reads is not seen. */
 +#include "record.h"
 +#include "cpu.h"
 +#include "emu.h"
@@ -670,14 +717,24 @@ index 0000000..f417d0b
 +#include <unistd.h>
 +
 +#define MEM (1u << 20)
-+#define MAX_AT 1024
++#define MAX_AT 4096   /* recorded or inner functions: more than a program has */
 +#define DEPTH 32
 +
 +int rec_active;
 +void rec_close(void);
 +static FILE *out;
++static FILE *sp_out;             /* EMU2_RECORD_SP */
++/* EMU2_RECORD_INJECT */
++static uint32_t inj_trigger, inj_target;
++static unsigned inj_stub_seg, inj_stub_off, inj_stub;     /* TARGET given as Sseg:off */
++static unsigned inj_hit, inj_seen, inj_flags, inj_nargs, inj_state, inj_cs, inj_ip, inj_redirect;
++static unsigned inj_sp;          /* SP with the injected call's return address on top */
++static char inj_args[32][16];
 +static uint32_t at_off[MAX_AT], inner_off[MAX_AT];
 +static unsigned n_at, n_inner, max_per = 20;
++static uint32_t unwind_off[8];   /* EMU2_RECORD_UNWIND: long jump routines */
++static unsigned n_unwind;
++static int unwinding;            /* a long jump ran: frames the stack is now above are closed */
 +static unsigned at_count[MAX_AT], at_seen[MAX_AT], at_next[MAX_AT];
 +static uint8_t *before;         /* memory before a DOS or BIOS call */
 +static uint32_t ign_lo[64], ign_hi[64];
@@ -687,7 +744,7 @@ index 0000000..f417d0b
 +
 +struct frame {
 +    int child;                  /* a call of an EMU2_RECORD_INNER function */
-+    uint8_t *state;             /* per byte: 1 read recorded, 2 written */
++    uint8_t *state;             /* per byte: 1 read recorded, 2 written, 4 written by the ignored code and not yet applied */
 +    uint32_t *touched;          /* bytes whose state is set, to clear them afterwards */
 +    unsigned n_touched, cap_touched;
 +    uint8_t *in_val;            /* the value of each recorded read */
@@ -697,6 +754,9 @@ index 0000000..f417d0b
 +    uint32_t ret_prov_far, ret_prov_near;   /* where the return address's code came from */
 +    unsigned children;          /* children so far (recorded calls) */
 +    int lost;                   /* a call inside it came when the frames were all in use */
++    int jumped;                 /* a long jump ran while it was open */
++    int wild;                   /* it executed bytes not loaded from the program (WILD) */
++    int noreturn;               /* it ends by a long jump or the program's exit (NORETURN) */
 +    int ret_seen;               /* it has executed its return (a ret with SP at its return address) */
 +    /* a recorded call: bytes the ignored code wrote while no child was active, kept for the
 +       next child (or the end of the call) */
@@ -710,6 +770,23 @@ index 0000000..f417d0b
 +static struct frame fr[DEPTH];
 +static int depth;
 +
++/* whether the comma-separated list s holds more than max entries */
++static int list_has_more(const char *s, unsigned max)
++{
++    unsigned n = 0;
++    for(const char *p = s; *p;)
++    {
++        while(*p == ',' || *p == ' ')
++            p++;
++        if(!*p)
++            break;
++        n++;
++        while(*p && *p != ',' && *p != ' ')
++            p++;
++    }
++    return n > max;
++}
++
 +static int parse_list(const char *s, uint32_t *list, unsigned max)
 +{
 +    unsigned n = 0;
@@ -718,6 +795,11 @@ index 0000000..f417d0b
 +        list[n++] = strtoul(p, &p, 16);
 +        while(*p == ',' || *p == ' ')
 +            p++;
++    }
++    if(s && n == max && list_has_more(s, max))
++    {
++        fprintf(stderr, "emu2 record: more than %u offsets in a list\n", max);
++        exit(1);
 +    }
 +    return n;
 +}
@@ -736,8 +818,37 @@ index 0000000..f417d0b
 +        out = 0;
 +        return;
 +    }
++    const char *inject = getenv("EMU2_RECORD_INJECT");
++    if(inject && *inject)
++    {
++        char copy[1024];
++        snprintf(copy, sizeof copy, "%s", inject);
++        unsigned k = 0;
++        for(char *w = strtok(copy, ","); w; w = strtok(0, ","), k++)
++        {
++            if(k == 0) inj_trigger = strtoul(w, 0, 16);
++            else if(k == 1 && w[0] == 'S')
++            {
++                inj_stub = 1;
++                inj_stub_seg = strtoul(w + 1, 0, 16);
++                inj_stub_off = strtoul(strchr(w, ':') ? strchr(w, ':') + 1 : "0", 0, 16);
++            }
++            else if(k == 1) inj_target = strtoul(w, 0, 16);
++            else if(k == 2) inj_hit = strtoul(w, 0, 16);
++            else if(k == 3) inj_flags = strtoul(w, 0, 16);
++            else if(inj_nargs < 32) snprintf(inj_args[inj_nargs++], 16, "%s", w);
++        }
++        inj_state = k >= 4 ? 1 : 0;
++    }
++    const char *s = getenv("EMU2_RECORD_SP");
++    if(s && *s)
++    {
++        snprintf(name, sizeof name, "%s.%d", s, (int)getpid());
++        sp_out = fopen(name, "w");
++    }
 +    n_at = parse_list(a, at_off, MAX_AT);
 +    n_inner = parse_list(getenv("EMU2_RECORD_INNER"), inner_off, MAX_AT);
++    n_unwind = parse_list(getenv("EMU2_RECORD_UNWIND"), unwind_off, 8);
 +    for(char *p = getenv("EMU2_RECORD_IGNORE"); p && *p && n_ign < 64;)
 +    {
 +        ign_lo[n_ign] = strtoul(p, &p, 16);
@@ -781,8 +892,10 @@ index 0000000..f417d0b
 +                f->in_val[a] = memory[a];
 +                touch(f, a, 1);
 +            }
-+            /* a byte the ignored code wrote, which a replay applies only at the next child */
-+            if(f->ext_seen && f->ext_seen[a])
++            /* a byte the ignored code wrote, which a replay applies only at the next child;
++               but not the program's own bytes an overlay load brought in (a switch table in
++               an overlay's code, read through CS): a translation never reads those */
++            if((f->state[a] & 4) && !trace_prov[a])
 +                f->lost = 1;
 +        }
 +    }
@@ -806,7 +919,10 @@ index 0000000..f417d0b
 +static void clear_ext(struct frame *f)
 +{
 +    for(unsigned i = 0; i < f->n_ext; i++)
++    {
 +        f->ext_seen[f->ext[i]] = 0;
++        f->state[f->ext[i]] &= ~4;      /* applied now: no longer pending */
++    }
 +    f->n_ext = 0;
 +}
 +
@@ -815,22 +931,34 @@ index 0000000..f417d0b
 +    if(ignoring)
 +    {
 +        /* the ignored code's writes: part of the effect of a child that is running, or
-+           external writes of the recorded calls, applied by a replay before their next child */
++           external writes of the recorded calls, applied by a replay before their next child.
++           Its own stack (from its SP up to the SP it was entered with; the stack segment is
++           also DGROUP, whose data lies far below) is dead once it leaves: a call that later
++           reads a byte there reads an unset local, recorded like any other input */
 +        for(unsigned i = 0; i < n; i++)
 +        {
 +            uint32_t a = (addr + i) & (MEM - 1);
++            if(cpuGetSS() == ign_ss && a >= ign_ss * 16u + cpuGetSP() && a < ign_ss * 16u + ign_sp)
++                continue;       /* its own stack, from its SP now up to where it entered */
 +            if(depth && fr[depth - 1].child)
 +                for(int l = 0; l < depth; l++)
 +                    touch(&fr[l], a, 2);
 +            else
 +                for(int l = 0; l < depth; l++)
++                {
 +                    add_ext(&fr[l], a);
++                    touch(&fr[l], a, 4);        /* pending until the next child */
++                }
 +        }
 +        return;
 +    }
 +    for(int l = 0; l < depth; l++)
 +        for(unsigned i = 0; i < n; i++)
-+            touch(&fr[l], (addr + i) & (MEM - 1), 2);
++        {
++            uint32_t a = (addr + i) & (MEM - 1);
++            touch(&fr[l], a, 2);
++            fr[l].state[a] &= ~4;       /* written over: the ignored code's byte is gone */
++        }
 +}
 +
 +void rec_bios(void)
@@ -844,6 +972,15 @@ index 0000000..f417d0b
 +        for(int l = 0; l < depth; l++)
 +            fr[l].bios++;
 +    memcpy(before, memory, MEM);
++}
++
++/* what the emulated DOS writes in a buffer it was given (a found file's details, a file
++   read) counts as written even where the value was already there, which comparing memory
++   after the call cannot see */
++void rec_dos_wrote(uint32_t addr, unsigned n)
++{
++    if(rec_active)
++        rec_write(addr, n);
 +}
 +
 +/* after a DOS or BIOS call: what it changed counts as written */
@@ -946,6 +1083,10 @@ index 0000000..f417d0b
 +static void finish(void)
 +{
 +    struct frame *f = &fr[--depth];
++    /* a long jump landed inside it (it was open when the jump ran, and the jump did not
++       unwind it): no translation can replay that */
++    if(f->jumped && !f->noreturn)
++        f->lost = 1;
 +    if(!f->lost && (f->child || keep(f)))
 +    {
 +        uint16_t now[13];
@@ -975,7 +1116,10 @@ index 0000000..f417d0b
 +            fprintf(out, "%02X", f->stack[i]);
 +        fputc('\n', out);
 +        runs(f, 'R', 1, f->in_val, 1, 0);
-+        regs("OUT", now);
++        if(f->noreturn)
++            fprintf(out, "NORETURN\n");
++        else
++            regs("OUT", now);
 +        uint32_t ss = f->entry[10] * 16u;
 +        runs(f, 'W', 2, memory, ss + f->min_sp, ss + f->entry[4]);
 +        if(!f->child && f->n_ext)
@@ -986,6 +1130,8 @@ index 0000000..f417d0b
 +            ext_runs(e, f->n_ext);
 +            free(e);
 +        }
++        if(f->wild)
++            fprintf(out, "WILD\n");
 +        fprintf(out, "STEPS %u\n", f->steps);
 +        fprintf(out, "FRAME %04X\n", f->min_sp);
 +        if(f->bios)
@@ -1005,6 +1151,7 @@ index 0000000..f417d0b
 +
 +static void start(int child, unsigned at, unsigned cs)
 +{
++    unwinding = 0;
 +    if(depth == DEPTH)
 +    {
 +        /* a call that cannot be followed: every enclosing record would miss it and what
@@ -1040,6 +1187,18 @@ index 0000000..f417d0b
 +            if(fr[l].ext_seen)
 +                clear_ext(&fr[l]);
 +        }
++    if(sp_out && !child)
++    {
++        unsigned parent = 0, parent_sp = 0;
++        for(int l = depth - 1; l >= 0; l--)
++            if(!fr[l].child)
++            {
++                parent = at_off[fr[l].at];
++                parent_sp = fr[l].entry[4];
++                break;
++            }
++        fprintf(sp_out, "S %X %X %X %X\n", at_off[at], parent, parent_sp, cpuGetSP());
++    }
 +    depth++;
 +    f->child = child;
 +    f->at = at;
@@ -1058,6 +1217,9 @@ index 0000000..f417d0b
 +    f->min_sp = f->entry[4];
 +    f->children = 0;
 +    f->lost = 0;
++    f->jumped = 0;
++    f->wild = 0;
++    f->noreturn = 0;
 +    f->ret_seen = 0;
 +    rec_active = 1;
 +}
@@ -1073,15 +1235,88 @@ index 0000000..f417d0b
 +           (prov && (prov == f->ret_prov_far || prov == f->ret_prov_near));
 +}
 +
++/* cpu.c, after each rec_step: 1 once when EMU2_RECORD_INJECT has just moved execution to
++   the target, so the instruction already fetched is not executed */
++int rec_take_redirect(void)
++{
++    int r = (int)inj_redirect;
++    inj_redirect = 0;
++    return r;
++}
++
++static void inj_push(uint16_t v)
++{
++    unsigned sp = (cpuGetSP() - 2) & 0xFFFF;
++    cpuSetSP(sp);
++    uint32_t a = cpuGetSS() * 16u + sp;
++    memory[a & (MEM - 1)] = (uint8_t)v;
++    memory[(a + 1) & (MEM - 1)] = (uint8_t)(v >> 8);
++}
++
++/* the injected call: its arguments and return address pushed, execution moved to it */
++static void inject(unsigned cs, unsigned ip)
++{
++    unsigned sp = cpuGetSP();
++    uint32_t args = cpuGetSS() * 16u + sp + ((inj_flags & 2) ? 4 : 2);   /* the trigger's own */
++    uint16_t words[32];
++    for(unsigned i = 0; i < inj_nargs; i++)
++    {
++        if(inj_args[i][0] == 'T')
++        {
++            uint32_t a = args + 2 * strtoul(inj_args[i] + 1, 0, 16);
++            words[i] = memory[a & (MEM - 1)] | memory[(a + 1) & (MEM - 1)] << 8;
++        }
++        else
++            words[i] = (uint16_t)strtoul(inj_args[i], 0, 16);
++    }
++    for(unsigned i = 0; i < inj_nargs; i++)
++        inj_push(words[i]);
++    if(inj_flags & 1)
++        inj_push((uint16_t)cs);
++    inj_push((uint16_t)ip);
++    inj_sp = cpuGetSP();
++    if(inj_stub)                /* a far entry by its segment:offset in the load module */
++    {
++        cpuSetCS((trace_load_seg + inj_stub_seg) & 0xFFFF);
++        cpuSetIP(inj_stub_off);
++    }
++    else
++        cpuSetIP((ip + (inj_target - inj_trigger)) & 0xFFFF);
++    inj_cs = cs;
++    inj_ip = ip;
++    inj_state = 2;
++    inj_redirect = 1;
++}
++
 +void rec_step(unsigned cs, unsigned ip, uint32_t prov)
 +{
 +    if(!out)
 +        return;
++    if(inj_state == 1 && prov && prov - 1 == inj_trigger && ++inj_seen == inj_hit)
++    {
++        inject(cs, ip);
++        return;
++    }
++    /* an injected call that runs the vector table or the BIOS data area as code (a call
++       through a null pointer on made-up arguments lands at 0000:0000): its record is
++       marked, as nothing to compare with.  emu2's own interrupt stubs are 0000:00nn for
++       interrupt nn (handled in next_instruction, their IRET seen here), so a real DOS or
++       BIOS call is not wild */
++    if(inj_state == 2 && !prov && !ignoring && cs * 16u + ip < 0x500 &&
++       !(cs == 0 && ip > 0 && ip < 0x100))
++        for(int l = 0; l < depth; l++)
++            fr[l].wild = 1;
 +    /* the call that executed its own return last step has returned, wherever that took
 +       execution: the overlay manager may have moved the caller's code meanwhile and given
 +       it a return address that neither its segment nor its provenance would recognise */
 +    if(depth && fr[depth - 1].ret_seen)
 +        finish();
++    /* the calls a long jump unwound end there (NORETURN), with what they had done */
++    while(unwinding && depth && cpuGetSS() == fr[depth - 1].entry[10] && cpuGetSP() > fr[depth - 1].entry[4])
++    {
++        fr[depth - 1].noreturn = fr[depth - 1].jumped;
++        finish();
++    }
 +    while(depth)
 +    {
 +        struct frame *t = &fr[depth - 1];
@@ -1099,7 +1334,22 @@ index 0000000..f417d0b
 +        else
 +            break;
 +    }
++    /* the injected call is back at the trigger (with its return address popped: the call
++       may itself run the trigger): its record is written, the program ends */
++    if(inj_state == 2 && cs == inj_cs && ip == inj_ip && cpuGetSP() > inj_sp)
++    {
++        inj_state = 3;
++        rec_close();
++        exit(0);
++    }
 +    unsigned sp = cpuGetSP();
++    if(sp_out && depth && !fr[depth - 1].child)
++    {
++        uint32_t lin = (cs * 16u + ip) & (MEM - 1);
++        if(memory[lin] == 0x81 && memory[(lin + 1) & (MEM - 1)] == 0xFC &&
++           memory[(lin + 2) & (MEM - 1)] == 0x0C && memory[(lin + 3) & (MEM - 1)] == 0x8F)
++            fprintf(sp_out, "K %X %X %X\n", at_off[fr[depth - 1].at], fr[depth - 1].entry[4], sp);
++    }
 +    if(depth && sp == fr[depth - 1].entry[4] && cpuGetSS() == fr[depth - 1].entry[10])
 +    {
 +        uint8_t op = memory[(cs * 16u + ip) & (MEM - 1)];
@@ -1116,6 +1366,16 @@ index 0000000..f417d0b
 +            ignoring = 0;
 +        else if(!ignoring && in_ign)
 +        {
++            /* a call into the ignored code that is itself an EMU2_RECORD_INNER function (an
++               overlay manager entry a translated function calls): recorded as a child, with
++               its result registers and its writes, but none of its reads */
++            if(depth && !fr[depth - 1].child)
++                for(unsigned i = 0; i < n_inner; i++)
++                    if(inner_off[i] == prov - 1)
++                    {
++                        start(1, i, cs);
++                        break;
++                    }
 +            ignoring = 1;
 +            ign_ss = cpuGetSS();
 +            ign_sp = sp;
@@ -1127,9 +1387,46 @@ index 0000000..f417d0b
 +        if(sp < fr[l].min_sp)
 +            fr[l].min_sp = sp;
 +    }
-+    if(!prov || ignoring || (depth && fr[depth - 1].child))
++    /* a long jump: the routine is the last child of the calls open now, a child that never
++       returns, and the calls it unwinds end with it (NORETURN, above); the call it lands in
++       cannot be replayed (finish) */
++    for(unsigned i = 0; prov && i < n_unwind; i++)
++        if(unwind_off[i] == prov - 1)
++        {
++            int child = -1, started = 0;
++            /* the routine is already a child when it lies in the ignored code (a call into
++               it starts one, above) */
++            if(depth && fr[depth - 1].child && inner_off[fr[depth - 1].at] == prov - 1)
++                started = 1;
++            else if(depth && !fr[depth - 1].child && !ignoring)
++                for(unsigned k = 0; k < n_inner; k++)
++                    if(inner_off[k] == prov - 1)
++                        child = (int)k;
++            if(child < 0 && !started)
++            {
++                for(int l = 0; l < depth; l++)
++                    fr[l].lost = 1;
++                unwinding = 1;
++                continue;
++            }
++            if(!started)
++                start(1, (unsigned)child, cs);
++            if(depth && fr[depth - 1].child)
++            {
++                fr[depth - 1].noreturn = 1;
++                finish();
++            }
++            for(int l = 0; l < depth; l++)
++                fr[l].jumped = 1;
++            unwinding = 1;
++            return;
++        }
++    if(!prov || ignoring)
 +        return;
-+    if(depth)
++    /* a call inside a child (a stand-in's own work) is the child's, unless it is itself a
++       recorded function: a translated caller of an untranslated one must not hide the
++       translated functions that one calls in turn */
++    if(depth && !fr[depth - 1].child)
 +        for(unsigned i = 0; i < n_inner; i++)
 +            if(inner_off[i] == prov - 1)
 +            {
@@ -1149,16 +1446,26 @@ index 0000000..f417d0b
 +
 +void rec_close(void)
 +{
++    /* the program's exit: the calls open end here, the innermost (the exit's own routine,
++       a child) first */
++    while(out && depth)
++    {
++        fr[depth - 1].noreturn = 1;
++        finish();
++    }
 +    if(out)
 +        fclose(out);
 +    out = 0;
++    if(sp_out)
++        fclose(sp_out);
++    sp_out = 0;
 +}
 diff --git a/src/record.h b/src/record.h
 new file mode 100644
-index 0000000..0fd19f5
+index 0000000..24e84a7
 --- /dev/null
 +++ b/src/record.h
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,13 @@
 +#pragma once
 +#include <stdint.h>
 +
@@ -1169,7 +1476,9 @@ index 0000000..0fd19f5
 +void rec_write(uint32_t addr, unsigned n);
 +void rec_bios(void);
 +void rec_bios_done(void);
++void rec_dos_wrote(uint32_t addr, unsigned n);
 +void rec_close(void);
++int rec_take_redirect(void);
 diff --git a/src/trace.c b/src/trace.c
 new file mode 100644
 index 0000000..e29411f
