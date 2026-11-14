@@ -45,6 +45,9 @@ steps 4 need). Commands are split like a shell line and may use {python}, {exhum
     mod_link = "{python} {exhume}/examples/uw2/link.py --mod --config {config}"
     exact_exe = "LINK/out/UW2.EXE"       # relative to [project] build
     mod_exe = "MODLINK/out/UW2.EXE"
+    original = "original/GAME.EXE"        # optional: the file the exact link must equal (default:
+                                          # [binary] exe), e.g. the shipped, packed EXE when the link
+                                          # command packs the program as the original build did
     known_diffs = [[0x1234, 0x00, 0x01]]  # optional, default none: file offset, original byte, linked
                                           # byte of each byte the exact link is known to get wrong
     sessions = 12                         # DOS sessions at once (default: tools/dosbatch.py's sessions())
@@ -71,6 +74,7 @@ class Gate:
         self.sessions = dosbatch.sessions(g.get('sessions'))
         self.batch = int(g.get('batch', dosbatch.BATCH))
         self.known = {int(o): (int(a), int(b)) for o, a, b in g.get('known_diffs', [])}
+        self.original = os.path.join(cfg.root, g['original']) if g.get('original') else None
         self.state_path = os.path.join(cfg.build, 'check', 'state.json')
         py = os.path.join(EXHUME, '.venv', 'bin', 'python')
         self.py = py if os.path.exists(py) else sys.executable
@@ -248,7 +252,7 @@ class Gate:
     def exact_diff(self, path):
         """None when path is byte-identical to the original (or, with [gate] known_diffs, differs
         in exactly those bytes), else what differs."""
-        a = self.cfg.exe; b = open(path, 'rb').read()
+        a = open(self.original, 'rb').read() if self.original else self.cfg.exe; b = open(path, 'rb').read()
         if len(a) != len(b): return f'size {len(b):#x}, the original {len(a):#x}'
         diff = [i for i in range(len(a)) if a[i] != b[i]] if a != b else []
         if not self.known:
