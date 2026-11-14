@@ -5,8 +5,8 @@ module_masked() the same, plus a mask per segment: 1 where a fixup writes
 publics()       PUBDEF names: {name: (segment index, offset)}
 lib_modules()   the modules of a Borland/Microsoft .LIB (page-aligned OMF), in library order
 
-LIDATA (repeated data, `db N dup (x)` in TASM) is not expanded: a nonzero dup compares as
-zeros. Write such runs out in full.
+LIDATA (repeated data, `dw N dup (x)` in TASM) is expanded, and a fixup that follows it
+applies to every repetition of the byte it names (lidata()).
 
     python3 omf.py FILE.OBJ      lists the module's segments"""
 import struct,sys
@@ -17,6 +17,29 @@ def records(d,start=0,end=None):
         yield t,d[p+3:p+3+n-1],p
         p+=3+n
         if t==0x8A or t==0x8B: return
+def _lidata_block(b,j):
+    rep,cnt=struct.unpack_from('<HH',b,j); j+=4
+    unit=bytearray(); umap={}
+    if cnt==0:
+        n=b[j]; unit+=b[j+1:j+1+n]; umap={j+1+k:[k] for k in range(n)}; j+=1+n
+    else:
+        for _ in range(cnt):
+            o,m,j=_lidata_block(b,j)
+            for r,ps in m.items(): umap.setdefault(r,[]).extend(q+len(unit) for q in ps)
+            unit+=o
+    return unit*rep,{r:[q+k*len(unit) for k in range(rep) for q in ps] for r,ps in umap.items()},j
+
+def lidata(b,i):
+    """Expand a 16-bit LIDATA record's iterated blocks, b[i:] (after its segment index and
+    offset).  Returns the bytes and {position in b[i:]: [offsets in the bytes]}: a fixup
+    following the record names a position in b[i:] and applies at each of those offsets."""
+    out=bytearray(); places={}; j=i
+    while j<len(b):
+        o,m,j=_lidata_block(b,j)
+        for r,ps in m.items(): places.setdefault(r-i,[]).extend(q+len(out) for q in ps)
+        out+=o
+    return bytes(out),places
+
 def idx(b,i):
     v=b[i]; 
     if v&0x80: return ((v&0x7f)<<8)|b[i+1], i+2
@@ -37,6 +60,9 @@ def module(d,start=0):
         elif t in (0xA0,0xA1):
             si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
             chunk=b[i:]; buf=data[si]; buf[off:off+len(chunk)]=chunk
+        elif t==0xA2:
+            si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
+            chunk,_=lidata(b,i); data[si][off:off+len(chunk)]=chunk
         if t in (0x8A,0x8B): return name,segs,data,p+3+struct.unpack_from('<H',d,p+1)[0]
     return name,segs,data,len(d)
 
@@ -58,7 +84,11 @@ def module_masked(d,start=0):
             si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
             chunk=b[i:]
             if si not in data: last=None; continue
-            data[si][off:off+len(chunk)]=chunk; last=(si,off)
+            data[si][off:off+len(chunk)]=chunk; last=(si,off,None)
+        elif t==0xA2:
+            si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
+            if si not in data: last=None; continue
+            chunk,places=lidata(b,i); data[si][off:off+len(chunk)]=chunk; last=(si,off,places)
         elif t in (0x9C,0x9D) and last:
             i=0
             while i<len(b):
@@ -66,9 +96,10 @@ def module_masked(d,start=0):
                 if c&0x80:
                     loc=(c>>2)&0xF; off=((c&3)<<8)|b[i+1]; i+=2
                     size={0:1,1:2,2:2,3:4,4:1,5:2,9:2,11:6,13:4}.get(loc,2)
-                    si,base=last
-                    for k in range(size):
-                        if si in mask and base+off+k<len(mask[si]): mask[si][base+off+k]=1
+                    si,base,places=last
+                    for at in (places.get(off,[]) if places is not None else [off]):
+                        for k in range(size):
+                            if si in mask and base+at+k<len(mask[si]): mask[si][base+at+k]=1
                     fd=b[i]; i+=1
                     if not fd&0x80 and ((fd>>4)&7)<3: _,i=idx(b,i)
                     if not fd&0x08 and (fd&3)<3: _,i=idx(b,i)

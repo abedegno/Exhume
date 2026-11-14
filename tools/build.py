@@ -51,7 +51,7 @@ def shared_headers(cfg, stage=None):
     for d in cfg.includes:
         if not os.path.isdir(d): continue
         for n in sorted(os.listdir(d)):
-            if not n.lower().endswith(('.h', '.inc', '.ash')) or n.upper() in have: continue
+            if not n.lower().endswith(('.h', '.inc', '.ash', '.equ')) or n.upper() in have: continue
             if n.upper() in staged:
                 sys.exit(f'{os.path.join(d, n)} has the name of a file the toolchain stages; rename it')
             out.append((os.path.join(d, n), n.upper())); have.add(n.upper())

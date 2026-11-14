@@ -105,6 +105,9 @@ def main(argv):
         if '--dis' in a and a[a.index('--dis') + 1] == c:
             for t in difflib.unified_diff(dis(exe[base + off:base + off + sz]), dis(code[o:nxt]), 'exe', 'obj', lineterm='', n=2):
                 print('   ', t)
+    if whole and len(code) > size:
+        print(f'note: the code runs 0x{len(code) - size:X} bytes past the table (they match); unless that is '
+              f'a jump table, the table is too short and the next file starts later')
     print(f'-- {done}/{size} bytes of {seg} matched' + ('; WHOLE SEGMENT MATCHES' if whole else ''))
     return 0
 
