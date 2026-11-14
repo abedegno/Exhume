@@ -140,7 +140,11 @@ def main(argv):
         state = 'MATCH' if ok else (f'{len(bad)} bytes differ, first at +0x{bad[0]:X}' if bad else '') + ('' if mine == sz else f'  size 0x{mine:X} want 0x{sz:X}')
         print(f'{c:22} {ida:45} {state}')
         if '--dis' in a and a[a.index('--dis') + 1] == c:
-            for t in difflib.unified_diff(dis(exe[base + off:base + off + sz]), dis(code[o:nxt]), 'exe', 'obj', lineterm='', n=2):
+            # bytes a fixup writes take the original's value, so only real differences show
+            mine_b = bytearray(code[o:nxt])
+            for k in range(min(len(mine_b), sz)):
+                if cm[o + k]: mine_b[k] = exe[base + off + k]
+            for t in difflib.unified_diff(dis(exe[base + off:base + off + sz]), dis(mine_b), 'exe', 'obj', lineterm='', n=2):
                 print('   ', t)
     if whole and len(code) > size:
         print(f'note: the code runs 0x{len(code) - size:X} bytes past the table (they match); unless that is '
