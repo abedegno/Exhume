@@ -12,7 +12,7 @@ index 290e5b0..efca7cc 100644
   video.o\
  
 diff --git a/src/cpu.c b/src/cpu.c
-index c32757f..6c4b7c8 100644
+index c32757f..8be8142 100644
 --- a/src/cpu.c
 +++ b/src/cpu.c
 @@ -1,3 +1,4 @@
@@ -421,17 +421,21 @@ index c32757f..6c4b7c8 100644
          PushWord(dest);
          break;
      case 0x38:
-@@ -2332,6 +2461,9 @@ static void debug_instruction(void)
+@@ -2332,6 +2461,13 @@ static void debug_instruction(void)
  
  static void do_instruction(uint8_t code)
  {
 +    trace_wt = trace_bt = 0;
 +    if(trace_on && segment_override == NoSeg)
++    {
 +        trace_exec(sregs[CS], (cpuGetIP() + 0xFFFF) & 0xFFFF);
++        if(rec_take_redirect())     /* EMU2_RECORD_INJECT moved execution (record.c) */
++            return;
++    }
      if(debug_active(debug_cpu) && segment_override == NoSeg)
          debug_instruction();
      switch(code)
-@@ -2377,7 +2509,10 @@ static void do_instruction(uint8_t code)
+@@ -2377,7 +2513,10 @@ static void do_instruction(uint8_t code)
      case 0x26: SEG_OVERRIDE(ES);
      case 0x27: i_daa();                                        break;
      case 0x28: OP_br8(SUB);
@@ -443,7 +447,7 @@ index c32757f..6c4b7c8 100644
      case 0x2A: OP_r8b(SUB);
      case 0x2B: OP_r16w(SUB);
      case 0x2C: OP_ald8(SUB);
-@@ -2385,9 +2520,15 @@ static void do_instruction(uint8_t code)
+@@ -2385,9 +2524,15 @@ static void do_instruction(uint8_t code)
      case 0x2E: SEG_OVERRIDE(CS);
      case 0x2f: i_das();                                        break;
      case 0x30: OP_br8(XOR);
@@ -461,7 +465,7 @@ index c32757f..6c4b7c8 100644
      case 0x34: OP_ald8(XOR);
      case 0x35: OP_axd16(XOR);
      case 0x36: SEG_OVERRIDE(SS);
-@@ -2473,9 +2614,33 @@ static void do_instruction(uint8_t code)
+@@ -2473,9 +2618,33 @@ static void do_instruction(uint8_t code)
      case 0x86: i_xchg_br8();                                   break;
      case 0x87: i_xchg_wr16();                                  break;
      case 0x88: OP_br8(MOV);
@@ -497,7 +501,7 @@ index c32757f..6c4b7c8 100644
      case 0x8c: i_mov_wsreg();                                  break;
      case 0x8d: i_lea();                                        break;
      case 0x8e: i_mov_sregw();                                  break;
-@@ -2541,7 +2706,7 @@ static void do_instruction(uint8_t code)
+@@ -2541,7 +2710,7 @@ static void do_instruction(uint8_t code)
      case 0xca: i_retf_d16();                                   break;
      case 0xcb: do_retf();                                      break;
      case 0xcc: i_int3();                                       break;
@@ -506,7 +510,7 @@ index c32757f..6c4b7c8 100644
      case 0xce: i_into();                                       break;
      case 0xcf: do_iret();                                      break;
      case 0xd0: i_d0pre();                                      break;
-@@ -2718,3 +2883,12 @@ void cpuTriggerIRQ(int num)
+@@ -2718,3 +2887,12 @@ void cpuTriggerIRQ(int num)
  {
      irq_mask |= (1 << num);
  }
@@ -599,10 +603,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..50a4b6e
+index 0000000..abf6b2f
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,731 @@
+@@ -0,0 +1,853 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -639,6 +643,21 @@ index 0000000..50a4b6e
 + *                             entry), and "K off entry_sp sp" for each execution of
 + *                             cmp sp,8F0Ch inside a recorded call (BCC's stack checks): the
 + *                             8086 stack a native build must model to stop where BCC.EXE does.
++ * EMU2_RECORD_INJECT=TRIGGER,TARGET,HIT,FLAGS,ARG...
++ *                             makes a call the program itself never makes, so that it is
++ *                             recorded: at the HIT-th execution of the instruction at file
++ *                             offset TRIGGER (a function's entry, in the same code segment
++ *                             as TARGET), the words ARG are pushed (in that order; Tn is the
++ *                             n-th word of the trigger's own arguments, anything else a hex
++ *                             value), then the return address (FLAGS bit 0: a far call, CS
++ *                             and IP; bit 1: the trigger is far, its arguments after a far
++ *                             return address), and execution goes on at file offset TARGET,
++ *                             or, for TARGET Sseg:off, at that far entry of the load module
++ *                             (an overlay stub: the overlay manager loads the overlay), from
++ *                             a trigger anywhere.  When the
++ *                             call returns to the trigger the program ends (the call's record
++ *                             written; WILD in it when the call executed bytes the program
++ *                             never loaded, as through a null pointer).  All values in hex.
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
@@ -705,6 +724,12 @@ index 0000000..50a4b6e
 +void rec_close(void);
 +static FILE *out;
 +static FILE *sp_out;             /* EMU2_RECORD_SP */
++/* EMU2_RECORD_INJECT */
++static uint32_t inj_trigger, inj_target;
++static unsigned inj_stub_seg, inj_stub_off, inj_stub;     /* TARGET given as Sseg:off */
++static unsigned inj_hit, inj_seen, inj_flags, inj_nargs, inj_state, inj_cs, inj_ip, inj_redirect;
++static unsigned inj_sp;          /* SP with the injected call's return address on top */
++static char inj_args[32][16];
 +static uint32_t at_off[MAX_AT], inner_off[MAX_AT];
 +static unsigned n_at, n_inner, max_per = 20;
 +static uint32_t unwind_off[8];   /* EMU2_RECORD_UNWIND: long jump routines */
@@ -730,6 +755,7 @@ index 0000000..50a4b6e
 +    unsigned children;          /* children so far (recorded calls) */
 +    int lost;                   /* a call inside it came when the frames were all in use */
 +    int jumped;                 /* a long jump ran while it was open */
++    int wild;                   /* it executed bytes not loaded from the program (WILD) */
 +    int noreturn;               /* it ends by a long jump or the program's exit (NORETURN) */
 +    int ret_seen;               /* it has executed its return (a ret with SP at its return address) */
 +    /* a recorded call: bytes the ignored code wrote while no child was active, kept for the
@@ -791,6 +817,28 @@ index 0000000..50a4b6e
 +    {
 +        out = 0;
 +        return;
++    }
++    const char *inject = getenv("EMU2_RECORD_INJECT");
++    if(inject && *inject)
++    {
++        char copy[1024];
++        snprintf(copy, sizeof copy, "%s", inject);
++        unsigned k = 0;
++        for(char *w = strtok(copy, ","); w; w = strtok(0, ","), k++)
++        {
++            if(k == 0) inj_trigger = strtoul(w, 0, 16);
++            else if(k == 1 && w[0] == 'S')
++            {
++                inj_stub = 1;
++                inj_stub_seg = strtoul(w + 1, 0, 16);
++                inj_stub_off = strtoul(strchr(w, ':') ? strchr(w, ':') + 1 : "0", 0, 16);
++            }
++            else if(k == 1) inj_target = strtoul(w, 0, 16);
++            else if(k == 2) inj_hit = strtoul(w, 0, 16);
++            else if(k == 3) inj_flags = strtoul(w, 0, 16);
++            else if(inj_nargs < 32) snprintf(inj_args[inj_nargs++], 16, "%s", w);
++        }
++        inj_state = k >= 4 ? 1 : 0;
 +    }
 +    const char *s = getenv("EMU2_RECORD_SP");
 +    if(s && *s)
@@ -1082,6 +1130,8 @@ index 0000000..50a4b6e
 +            ext_runs(e, f->n_ext);
 +            free(e);
 +        }
++        if(f->wild)
++            fprintf(out, "WILD\n");
 +        fprintf(out, "STEPS %u\n", f->steps);
 +        fprintf(out, "FRAME %04X\n", f->min_sp);
 +        if(f->bios)
@@ -1168,6 +1218,7 @@ index 0000000..50a4b6e
 +    f->children = 0;
 +    f->lost = 0;
 +    f->jumped = 0;
++    f->wild = 0;
 +    f->noreturn = 0;
 +    f->ret_seen = 0;
 +    rec_active = 1;
@@ -1184,10 +1235,77 @@ index 0000000..50a4b6e
 +           (prov && (prov == f->ret_prov_far || prov == f->ret_prov_near));
 +}
 +
++/* cpu.c, after each rec_step: 1 once when EMU2_RECORD_INJECT has just moved execution to
++   the target, so the instruction already fetched is not executed */
++int rec_take_redirect(void)
++{
++    int r = (int)inj_redirect;
++    inj_redirect = 0;
++    return r;
++}
++
++static void inj_push(uint16_t v)
++{
++    unsigned sp = (cpuGetSP() - 2) & 0xFFFF;
++    cpuSetSP(sp);
++    uint32_t a = cpuGetSS() * 16u + sp;
++    memory[a & (MEM - 1)] = (uint8_t)v;
++    memory[(a + 1) & (MEM - 1)] = (uint8_t)(v >> 8);
++}
++
++/* the injected call: its arguments and return address pushed, execution moved to it */
++static void inject(unsigned cs, unsigned ip)
++{
++    unsigned sp = cpuGetSP();
++    uint32_t args = cpuGetSS() * 16u + sp + ((inj_flags & 2) ? 4 : 2);   /* the trigger's own */
++    uint16_t words[32];
++    for(unsigned i = 0; i < inj_nargs; i++)
++    {
++        if(inj_args[i][0] == 'T')
++        {
++            uint32_t a = args + 2 * strtoul(inj_args[i] + 1, 0, 16);
++            words[i] = memory[a & (MEM - 1)] | memory[(a + 1) & (MEM - 1)] << 8;
++        }
++        else
++            words[i] = (uint16_t)strtoul(inj_args[i], 0, 16);
++    }
++    for(unsigned i = 0; i < inj_nargs; i++)
++        inj_push(words[i]);
++    if(inj_flags & 1)
++        inj_push((uint16_t)cs);
++    inj_push((uint16_t)ip);
++    inj_sp = cpuGetSP();
++    if(inj_stub)                /* a far entry by its segment:offset in the load module */
++    {
++        cpuSetCS((trace_load_seg + inj_stub_seg) & 0xFFFF);
++        cpuSetIP(inj_stub_off);
++    }
++    else
++        cpuSetIP((ip + (inj_target - inj_trigger)) & 0xFFFF);
++    inj_cs = cs;
++    inj_ip = ip;
++    inj_state = 2;
++    inj_redirect = 1;
++}
++
 +void rec_step(unsigned cs, unsigned ip, uint32_t prov)
 +{
 +    if(!out)
 +        return;
++    if(inj_state == 1 && prov && prov - 1 == inj_trigger && ++inj_seen == inj_hit)
++    {
++        inject(cs, ip);
++        return;
++    }
++    /* an injected call that runs the vector table or the BIOS data area as code (a call
++       through a null pointer on made-up arguments lands at 0000:0000): its record is
++       marked, as nothing to compare with.  emu2's own interrupt stubs are 0000:00nn for
++       interrupt nn (handled in next_instruction, their IRET seen here), so a real DOS or
++       BIOS call is not wild */
++    if(inj_state == 2 && !prov && !ignoring && cs * 16u + ip < 0x500 &&
++       !(cs == 0 && ip > 0 && ip < 0x100))
++        for(int l = 0; l < depth; l++)
++            fr[l].wild = 1;
 +    /* the call that executed its own return last step has returned, wherever that took
 +       execution: the overlay manager may have moved the caller's code meanwhile and given
 +       it a return address that neither its segment nor its provenance would recognise */
@@ -1215,6 +1333,14 @@ index 0000000..50a4b6e
 +        }
 +        else
 +            break;
++    }
++    /* the injected call is back at the trigger (with its return address popped: the call
++       may itself run the trigger): its record is written, the program ends */
++    if(inj_state == 2 && cs == inj_cs && ip == inj_ip && cpuGetSP() > inj_sp)
++    {
++        inj_state = 3;
++        rec_close();
++        exit(0);
 +    }
 +    unsigned sp = cpuGetSP();
 +    if(sp_out && depth && !fr[depth - 1].child)
@@ -1336,10 +1462,10 @@ index 0000000..50a4b6e
 +}
 diff --git a/src/record.h b/src/record.h
 new file mode 100644
-index 0000000..53ed5f6
+index 0000000..24e84a7
 --- /dev/null
 +++ b/src/record.h
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +#pragma once
 +#include <stdint.h>
 +
@@ -1352,6 +1478,7 @@ index 0000000..53ed5f6
 +void rec_bios_done(void);
 +void rec_dos_wrote(uint32_t addr, unsigned n);
 +void rec_close(void);
++int rec_take_redirect(void);
 diff --git a/src/trace.c b/src/trace.c
 new file mode 100644
 index 0000000..e29411f
