@@ -599,10 +599,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..82ce24c
+index 0000000..3ed5928
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,676 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -633,6 +633,12 @@ index 0000000..82ce24c
 + * EMU2_RECORD_UNWIND=OFF[,...] long jump routines: when one runs, the calls open are not
 + *                             written (a long jump unwinds them, or jumps over them, and no
 + *                             translation can replay that).
++ * EMU2_RECORD_SP=OUTFILE      also writes OUTFILE.PID: "S off parent parent_sp sp" for every
++ *                             recorded call started (its function, the innermost recorded
++ *                             call around it or 0 and that call's entry SP, its own SP at
++ *                             entry), and "K off entry_sp sp" for each execution of
++ *                             cmp sp,8F0Ch inside a recorded call (BCC's stack checks): the
++ *                             8086 stack a native build must model to stop where BCC.EXE does.
 + * EMU2_RECORD_MAX=N           records per EMU2_RECORD_AT function (default 20): the first N/2
 + *                             calls; then calls that had children (the rare paths, such as a
 + *                             pool that grows), and a sample spread over the run, each twice
@@ -693,6 +699,7 @@ index 0000000..82ce24c
 +int rec_active;
 +void rec_close(void);
 +static FILE *out;
++static FILE *sp_out;             /* EMU2_RECORD_SP */
 +static uint32_t at_off[MAX_AT], inner_off[MAX_AT];
 +static unsigned n_at, n_inner, max_per = 20;
 +static uint32_t unwind_off[8];   /* EMU2_RECORD_UNWIND: long jump routines */
@@ -777,6 +784,12 @@ index 0000000..82ce24c
 +    {
 +        out = 0;
 +        return;
++    }
++    const char *s = getenv("EMU2_RECORD_SP");
++    if(s && *s)
++    {
++        snprintf(name, sizeof name, "%s.%d", s, (int)getpid());
++        sp_out = fopen(name, "w");
 +    }
 +    n_at = parse_list(a, at_off, MAX_AT);
 +    n_inner = parse_list(getenv("EMU2_RECORD_INNER"), inner_off, MAX_AT);
@@ -1108,6 +1121,18 @@ index 0000000..82ce24c
 +            if(fr[l].ext_seen)
 +                clear_ext(&fr[l]);
 +        }
++    if(sp_out && !child)
++    {
++        unsigned parent = 0, parent_sp = 0;
++        for(int l = depth - 1; l >= 0; l--)
++            if(!fr[l].child)
++            {
++                parent = at_off[fr[l].at];
++                parent_sp = fr[l].entry[4];
++                break;
++            }
++        fprintf(sp_out, "S %X %X %X %X\n", at_off[at], parent, parent_sp, cpuGetSP());
++    }
 +    depth++;
 +    f->child = child;
 +    f->at = at;
@@ -1170,6 +1195,13 @@ index 0000000..82ce24c
 +            break;
 +    }
 +    unsigned sp = cpuGetSP();
++    if(sp_out && depth && !fr[depth - 1].child)
++    {
++        uint32_t lin = (cs * 16u + ip) & (MEM - 1);
++        if(memory[lin] == 0x81 && memory[(lin + 1) & (MEM - 1)] == 0xFC &&
++           memory[(lin + 2) & (MEM - 1)] == 0x0C && memory[(lin + 3) & (MEM - 1)] == 0x8F)
++            fprintf(sp_out, "K %X %X %X\n", at_off[fr[depth - 1].at], fr[depth - 1].entry[4], sp);
++    }
 +    if(depth && sp == fr[depth - 1].entry[4] && cpuGetSS() == fr[depth - 1].entry[10])
 +    {
 +        uint8_t op = memory[(cs * 16u + ip) & (MEM - 1)];
@@ -1243,6 +1275,9 @@ index 0000000..82ce24c
 +    if(out)
 +        fclose(out);
 +    out = 0;
++    if(sp_out)
++        fclose(sp_out);
++    sp_out = 0;
 +}
 diff --git a/src/record.h b/src/record.h
 new file mode 100644
