@@ -4,7 +4,7 @@ Pool), several variants at once.
 
     python3 tools/permute.py FILE.C FUNCTION (--target-obj T.OBJ | --target-bin F.BIN)
         [--opts "-ml -O -G"] [--root DIR] [--headers DIR]... [--jobs N] [--nice N]
-        [--iterations N] [--seed S] [--whole-file] [--out BEST.C]
+        [--iterations N] [--seed S] [--whole-file] [--no-snapshot] [--out BEST.C]
 
 --jobs caps the compiles at once (default: BCC20_WORKERS, else one fewer than the cores) and
 --nice lowers their priority.  --headers DIR gives the .H files of DIR to every compile
@@ -16,6 +16,13 @@ before the next public, depend on the rest): the start compiles both and checks.
 rewrites never add or remove a call, so the check holds for every variant.  In borland-
 reborn's bcc20 sources the cut is exact for 654 of 849 public functions.  --whole-file always
 compiles the whole file.
+
+Where the host can (POSIX), the file up to the function's line is compiled once in every
+server and paused (a snapshot: tools/bcc20.py's Pool.snapshot), and each variant is finished
+on a copy of that compile, after a start check that this gives the function its whole-file
+code (it did for all 849 public functions of borland-reborn's bcc20 sources): about 1000
+variants a second with 11 workers on GENERATE_BITFIELD_STORE, against 420 without.
+--no-snapshot compiles each variant from the start.
 
 The target is the function's code: from an object file (the public FUNCTION, or _FUNCTION,
 to the next public or the segment's end), or raw bytes cut from the original program.  A
@@ -53,9 +60,15 @@ OLD_STYLE_DECL = re.compile(r"[A-Za-z_][\w \t\r\n*\[\],]*;")
 
 
 def function_span(text, name):
-    """(start, end) of FUNCTION's body braces in text: the first `NAME (...)` followed, after
-    any old-style parameter declarations (`int a;`), by `{` (a plain scan: a regular
-    expression for this backtracks without end on some files)"""
+    """(start, end) of FUNCTION's body braces in text"""
+    return definition(text, name)[1:]
+
+
+def definition(text, name):
+    """(name position, start, end) of FUNCTION's definition in text: the first `NAME (...)`
+    followed, after any old-style parameter declarations (`int a;`), by `{` (a plain scan: a
+    regular expression for this backtracks without end on some files); start and end are
+    its body's braces"""
     for m in re.finditer(r"\b%s\s*\(" % re.escape(name), text):
         i, depth = m.end() - 1, 0
         while i < len(text):                        # the parameter list's closing parenthesis
@@ -84,7 +97,7 @@ def function_span(text, name):
         while i < len(text):
             depth += {"{": 1, "}": -1}.get(text[i], 0)
             if depth == 0:
-                return start, i + 1
+                return m.start(), start, i + 1
             i += 1
         raise SystemExit(f"permute: {name}'s body does not end")
     raise SystemExit(f"permute: no definition of {name}")
@@ -327,6 +340,7 @@ def main():
     ap.add_argument("--jobs", type=int, help="compiles at once (default: one fewer than the cores)")
     ap.add_argument("--nice", type=int, default=0, help="lower the compiles' priority")
     ap.add_argument("--whole-file", action="store_true", help="compile the whole file for each variant")
+    ap.add_argument("--no-snapshot", action="store_true", help="compile each variant from the start")
     ap.add_argument("--iterations", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out")
@@ -341,8 +355,9 @@ def main():
     else:
         raise SystemExit("permute: give --target-obj or --target-bin")
     text = Path(args.source).read_text(encoding="latin1")
-    start, end = function_span(text, args.function)
+    named, start, end = definition(text, args.function)
     head, body, tail = text[:start], text[start:end], text[end:]
+    line = text.rfind("\n", 0, named) + 1          # the snapshot's #include goes before this line
     compiled_tail = tail
     cmd = ["-c", *args.opts.split(), "T.C"]
     pool = bcc20.Pool(workers=args.jobs, root=args.root, time=1, nice=args.nice)
@@ -361,22 +376,50 @@ def main():
         code, mask = function_code(obj, args.function)
         return score(code, mask, target, target_mask)
 
+    def same_code(a, b):
+        """the same code as the score sees it: same length and fixups, same other bytes"""
+        return a is not None and b is not None and len(a[0]) == len(b[0]) and a[1] == b[1] \
+            and score(*a, *b) == 0
+
+    def code_of(r):
+        obj = r.outputs.get("T.OBJ")
+        return function_code(obj, args.function) if obj and not r.status else None
+
     if not args.whole_file:
         whole, cut = pool.map([(cmd, {"T.C": (head + body + tail).encode("latin1")}),
                                (cmd, {"T.C": (head + body + "\n").encode("latin1")})])
         code = [function_code(r.outputs["T.OBJ"], args.function) if r.outputs.get("T.OBJ") and not r.status
                 else None for r in (whole, cut)]
-        # the same code, as the score sees it: same length and fixups, same other bytes
-        if code[0] is not None and code[1] is not None and len(code[0][0]) == len(code[1][0]) \
-                and code[0][1] == code[1][1] and score(*code[1], *code[0]) == 0:
+        if same_code(code[1], code[0]):
             compiled_tail = "\n"
             print("compiling the file up to the function only (the same code as the whole file)")
         else:
             print("compiling the whole file (cut after the function, its code differs)")
 
+    snapshot = False
+    # the snapshot: the file up to the function's line compiled once in every server, each
+    # variant finished on a copy of it (POSIX hosts), if that gives the whole file's code
+    if not args.no_snapshot:
+        reference = code_of(pool.map([(cmd, {"T.C": (head + body + tail).encode("latin1")})])[0])
+        prefix = (text[:line] + '#include "VARIANT.C"\n').encode("latin1")
+        if pool.snapshot(cmd, {"T.C": prefix}):
+            snapshot = True
+            if same_code(code_of(pool.resume({"VARIANT.C": (text[line:start] + body + compiled_tail).encode("latin1")})), reference):
+                print("finishing each variant on a copy of the compile paused before the function")
+            else:
+                pool.release()
+                snapshot = False
+                print("no snapshot (the function's code differs when it is included)")
+        else:
+            print("no snapshot on this host")
+
     def evaluate_all(bodies):
+        if snapshot:
+            return [scored(r) for r in pool.resume_map(
+                [{"VARIANT.C": (text[line:start] + b + compiled_tail).encode("latin1")} for b in bodies])]
         jobs = [(cmd, {"T.C": (head + b + compiled_tail).encode("latin1")}) for b in bodies]
         return [scored(r) for r in pool.map(jobs)]
+
 
     # each round: one variant of the current source per worker, compiled at once; the best
     # that scores no worse becomes current (the first of equal ones, so a seed repeats)

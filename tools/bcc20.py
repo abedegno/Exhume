@@ -13,7 +13,9 @@ result.outputs.  Compiles never share state.  explain=True also returns the comp
 explanation of its choices (result.explain, one line per event).
 
 Pool runs compiles on several bcc20run --serve processes at once, capped (workers, default
-one fewer than the cores) and restarted when one crashes or hangs; see its docstring.
+one fewer than the cores) and restarted when one crashes or hangs, and on POSIX hosts can
+pause every server in one compile and finish variants of the rest on copies of it
+(snapshot, resume_map, release); see its docstring.
 """
 import ctypes
 import os
@@ -116,6 +118,8 @@ class _Server:
         kwargs = {}
         if nice and hasattr(os, "nice"):
             kwargs["preexec_fn"] = lambda: os.nice(nice)
+        if os.name == "posix":                      # its snapshot copies die with it (kill)
+            kwargs["start_new_session"] = True
         self.proc = subprocess.Popen([str(program), "--serve"], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, **kwargs)
         self.send(setup)
@@ -132,6 +136,8 @@ class _Server:
             line = out.readline()
             if not line:
                 return None
+            if line.strip() == b"PAUSED":
+                return "PAUSED"
             words = line.split()
             tag, nums = words[0], [int(w) for w in words[1:]]
             if tag == b"STATUS":
@@ -147,6 +153,17 @@ class _Server:
                 return Result(status, console, outputs, explain)
             elif tag == b"ERROR":
                 raise RuntimeError("bcc20run: " + out.read(nums[0]).decode("latin1"))
+
+    def kill(self):
+        """the server and any snapshot copy it is running"""
+        try:
+            if os.name == "posix":
+                import signal
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            else:
+                self.proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
     def close(self):
         try:
@@ -187,6 +204,7 @@ class Pool:
         self.nice, self.timeout = nice, timeout
         self.setup = _record("ROOT", root or "") + f"TIME {int(time)}\nSTACK {1 if stack_limit else 0}\n".encode()
         self.kept = b""
+        self.snap = None                            # the job every server is paused in
         self.lock = threading.Lock()
         self.free = queue.Queue()
         self.servers = [_Server(self.program, nice, self.setup) for _ in range(self.workers)]
@@ -209,32 +227,108 @@ class Pool:
             s.send(data)
             self.free.put(s)
 
-    def compile(self, args, files=None, explain=False):
+    def _exchange(self, server, data):
+        """sends data to server and reads its answer within the timeout; (answer, None), or
+        (None, why) when it timed out or died, the server then killed"""
         import threading
+        killed = threading.Event()
+        timer = threading.Timer(self.timeout, lambda: (killed.set(), server.kill()))
+        timer.start()
+        try:
+            server.send(data)
+            answer = server.answer()
+        except (BrokenPipeError, OSError, ValueError, RuntimeError):
+            answer = None
+        finally:
+            timer.cancel()
+        if answer is None:
+            server.kill()
+            return None, "timed out" if killed.is_set() else "crashed"
+        return answer, None
+
+    def _replace(self, server):
+        """a fresh server in server's place, with the settings, kept files and snapshot"""
+        server.kill()
+        fresh = _Server(self.program, self.nice, self.setup + self.kept)
+        with self.lock:
+            self.servers[self.servers.index(server)] = fresh
+        if self.snap is not None:
+            answer, _ = self._exchange(fresh, self.snap)
+            if answer != "PAUSED":
+                raise RuntimeError("bcc20: a restarted server could not take the snapshot again")
+        return fresh
+
+    def compile(self, args, files=None, explain=False):
+        if self.snap is not None:
+            raise RuntimeError("bcc20: release() the snapshot before compiling other jobs")
         server = self.free.get()
         job = (f"EXPLAIN {1 if explain else 0}\n".encode()
                + b"".join(_record("ARG", a) for a in args)
                + b"".join(_record("FILE", n, d) for n, d in (files or {}).items()) + b"RUN\n")
-        killed = threading.Event()
-        timer = threading.Timer(self.timeout, lambda: (killed.set(), server.proc.kill()))
-        timer.start()
-        try:
-            server.send(job)
-            result = server.answer()
-        except (BrokenPipeError, OSError, ValueError):
-            result = None
-        finally:
-            timer.cancel()
+        result, why = self._exchange(server, job)
         if result is None:
-            why = "timed out" if killed.is_set() else "crashed"
-            server.proc.kill()
-            with self.lock:
-                fresh = _Server(self.program, self.nice, self.setup + self.kept)
-                self.servers[self.servers.index(server)] = fresh
-            server = fresh
+            server = self._replace(server)
             result = Result(-2, f"bcc20: the compile {why}\n", {}, [])
         self.free.put(server)
         return result
+
+    # ---- snapshots (POSIX hosts): one paused compile per server, a copy per variant ----
+
+    def snapshot(self, args, files, pause="VARIANT.C"):
+        """Starts args with files on every server and stops each where BCC first opens the
+        file named pause; returns False (and nothing is paused) if the host cannot, or if
+        the compile never opened that file.  resume() then finishes a copy of the paused
+        compile for each variant: the paused file's text, and any other files."""
+        job = (_record("PAUSE", pause) + b"EXPLAIN 0\n" + b"".join(_record("ARG", a) for a in args)
+               + b"".join(_record("FILE", n, d) for n, d in files.items()) + b"RUN\n")
+        taken = [self.free.get() for _ in range(self.workers)]
+        answers = [self._exchange(s, job)[0] for s in taken]
+        ok = all(a == "PAUSED" for a in answers)
+        if not ok:                                  # put every server back as it was
+            for i, (server, answer) in enumerate(zip(taken, answers)):
+                if answer == "PAUSED" and self._exchange(server, b"RELEASE\n")[0] is None:
+                    answer = None
+                if answer is None:
+                    taken[i] = self._replace(server)
+                else:
+                    server.send(b"PAUSE 0\n")
+        else:
+            self.snap = job
+        for s in taken:
+            self.free.put(s)
+        return ok
+
+    def resume(self, files):
+        """one variant on a copy of the paused compile (files: the paused file and others)"""
+        server = self.free.get()
+        data = b"".join(_record("FILE", n, d) for n, d in files.items()) + b"RESUME\n"
+        result, why = self._exchange(server, data)
+        if result is None or result == "PAUSED":
+            server = self._replace(server)
+            result = Result(-2, f"bcc20: the compile {why or 'failed'}\n", {}, [])
+        self.free.put(server)
+        return result
+
+    def resume_map(self, variants):
+        """variants (dicts of files) at once on the paused copies; results in order"""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(self.workers) as ex:
+            return list(ex.map(self.resume, variants))
+
+    def release(self):
+        """ends the paused compiles; the servers take ordinary jobs again"""
+        if self.snap is None:
+            return
+        self.snap = None
+        taken = [self.free.get() for _ in range(self.workers)]
+        for i, s in enumerate(taken):
+            answer, _ = self._exchange(s, b"RELEASE\n")
+            if answer is None:
+                taken[i] = self._replace(s)
+            else:
+                s.send(b"PAUSE 0\n")
+        for s in taken:
+            self.free.put(s)
 
     def map(self, jobs, explain=False):
         """compiles (args, files) jobs at once; results in the jobs' order"""
@@ -243,6 +337,10 @@ class Pool:
             return list(ex.map(lambda j: self.compile(j[0], j[1] if len(j) > 1 else None, explain), jobs))
 
     def close(self):
+        try:
+            self.release()
+        except Exception:
+            pass
         for s in self.servers:
             s.close()
         self.servers = []
