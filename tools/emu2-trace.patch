@@ -588,10 +588,10 @@ index c40d330..468065b 100644
  
 diff --git a/src/record.c b/src/record.c
 new file mode 100644
-index 0000000..89da7f0
+index 0000000..cd61838
 --- /dev/null
 +++ b/src/record.c
-@@ -0,0 +1,592 @@
+@@ -0,0 +1,624 @@
 +/* Call recording for emu2 (Exhume): what a function of the program reads and what it changes,
 + * call by call, so that a translation of the function can be run from the same state and
 + * compared.
@@ -673,7 +673,7 @@ index 0000000..89da7f0
 +#include <unistd.h>
 +
 +#define MEM (1u << 20)
-+#define MAX_AT 1024
++#define MAX_AT 4096   /* recorded or inner functions: more than a program has */
 +#define DEPTH 32
 +
 +int rec_active;
@@ -716,6 +716,23 @@ index 0000000..89da7f0
 +static struct frame fr[DEPTH];
 +static int depth;
 +
++/* whether the comma-separated list s holds more than max entries */
++static int list_has_more(const char *s, unsigned max)
++{
++    unsigned n = 0;
++    for(const char *p = s; *p;)
++    {
++        while(*p == ',' || *p == ' ')
++            p++;
++        if(!*p)
++            break;
++        n++;
++        while(*p && *p != ',' && *p != ' ')
++            p++;
++    }
++    return n > max;
++}
++
 +static int parse_list(const char *s, uint32_t *list, unsigned max)
 +{
 +    unsigned n = 0;
@@ -724,6 +741,11 @@ index 0000000..89da7f0
 +        list[n++] = strtoul(p, &p, 16);
 +        while(*p == ',' || *p == ' ')
 +            p++;
++    }
++    if(s && n == max && list_has_more(s, max))
++    {
++        fprintf(stderr, "emu2 record: more than %u offsets in a list\n", max);
++        exit(1);
 +    }
 +    return n;
 +}
@@ -1136,6 +1158,16 @@ index 0000000..89da7f0
 +            ignoring = 0;
 +        else if(!ignoring && in_ign)
 +        {
++            /* a call into the ignored code that is itself an EMU2_RECORD_INNER function (an
++               overlay manager entry a translated function calls): recorded as a child, with
++               its result registers and its writes, but none of its reads */
++            if(depth && !fr[depth - 1].child)
++                for(unsigned i = 0; i < n_inner; i++)
++                    if(inner_off[i] == prov - 1)
++                    {
++                        start(1, i, cs);
++                        break;
++                    }
 +            ignoring = 1;
 +            ign_ss = cpuGetSS();
 +            ign_sp = sp;
