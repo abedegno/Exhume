@@ -112,6 +112,10 @@ class Gate:
         for s in self.cfg.stage + [x for c in getattr(self.cfg, 'compilers', {}).values() for x in c['stage']]:
             if os.path.isdir(s): files += sorted(glob.glob(os.path.join(s, '*.EXE')) + glob.glob(os.path.join(s, '*.exe')))
             else: files.append(s)
+        if getattr(self.cfg, 'native', None):      # the in-process compiler (tools/build.py)
+            import bcc20
+            h.update(('native=' + self.cfg.native).encode())
+            files.append(str(bcc20.default_library()))
         for p in files:
             if os.path.exists(p): h.update(os.path.basename(p).encode() + sha1(p).encode())
         return h.hexdigest()
@@ -156,7 +160,8 @@ class Gate:
             res = build.build(cfg, [s for _, s, _ in todo], jobs=self.sessions, batch=self.batch)
             built = {stem: (None if ok else '; '.join(msgs) or 'failed') for stem, (ok, msgs) in res.items()}
         print(f'compiled {len(todo)} of {len(srcs)} sources in {time.time() - t1:.0f}s'
-              + (f' ({dosbatch.backend()}, {self.sessions} sessions)' if todo else '')
+              + ((f' ({build.last_in_process} in-process, the rest in {dosbatch.backend()}, {self.sessions} sessions)'
+                  if build.last_in_process else f' ({dosbatch.backend()}, {self.sessions} sessions)') if todo else '')
               + (' (the rest are unchanged since they last passed)' if len(todo) < len(srcs) else ''))
         check = [x for x in srcs if x[0] in {t[0] for t in todo}] if fast else srcs
 

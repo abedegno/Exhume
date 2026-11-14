@@ -30,6 +30,7 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 - `c_opts`, `asm_opts`: defaults for sources with no `/* opts: */` line (otherwise the profile's).
 - `dos`: the DOS the toolchain runs in: `emu2`, `dosbox-x`, `staging`, `jsdos` or `auto` (the default: emu2 if built, else DOSBox-X, else js-dos). The environment's `EXHUME_DOS` wins over it. docs/method.md, "Choosing the DOS".
 - `sessions`: DOS sessions at once for the gate, `build.py`, the modding build and `buildd.py` (default: one per core up to 12 in a native DOS, 3 in js-dos). The environment's `EXHUME_DOS_SESSIONS` wins over it.
+- `native`: `"bcc20"` compiles the C sources of the default compiler on the borland-bc20 profile in-process, with the bcc20 port's library (borland-reborn's bcc20-port, `make shlib`; `BCC20_LIB` names it) instead of in DOS: the same command line, `C:\` staged as for a DOS session, the object and console text back from memory, one worker process per core. A compile that runs TASM (`-B`, inline assembly) and sources of another compiler still build in DOS. Every source of borland-reborn's bcc20 project matches this way, and a compile takes about 20 ms instead of a DOS session's second. The environment's `EXHUME_NATIVE` wins (`0` turns it off). The gate's toolchain hash includes the setting and the library, so switching rebuilds everything.
 
 ## [names]
 

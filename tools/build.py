@@ -121,9 +121,109 @@ def _session(cfg, srcs, timeout):
     return logs
 
 
+# ---- in-process compiles (the bcc20 port's library) ----
+# With [toolchain] native = "bcc20" (or EXHUME_NATIVE=bcc20) on the Borland C++ 2.0 profile,
+# C sources of the default compiler are compiled by the bcc20 port's library (tools/bcc20.py)
+# instead of in DOS: the same command line, C:\ staged the same way (each stage directory's
+# contents, then the shared headers and the source), the object and the console text back from
+# memory.  Worker processes run compiles in parallel (one compile at a time per process).  A
+# compile that has BCC run TASM (-B, inline assembly) goes to DOS, which can run it.
+
+_native_compiler = None
+last_in_process = 0             # how many of the last build()'s sources compiled in-process
+
+
+def _native_init(library):
+    global _native_compiler
+    import bcc20
+    _native_compiler = bcc20.Compiler(library)
+
+
+def _native_compile(job):
+    args, files, root = job
+    r = _native_compiler.compile(args, files=files, root=root)
+    return r.status, r.console, r.outputs
+
+
+def native_wanted(cfg, src):
+    return (cfg.native == 'bcc20' and cfg.profile_name == 'borland-bc20'
+            and src.upper().endswith('.C') and getattr(cfg, 'compiler', lambda s: None)(src) is None)
+
+
+def _native_root(cfg):
+    r"""a directory standing for C:\ as a DOS session stages it: each stage directory's
+    contents (a later one wins), or the file itself"""
+    root = tempfile.mkdtemp(prefix='exhume-native-')
+    for s in cfg.stage:
+        entries = [(os.path.join(s, e), e) for e in os.listdir(s)] if os.path.isdir(s) \
+            else [(s, os.path.basename(s).upper())]
+        for path, name in entries:
+            link = os.path.join(root, name)
+            if os.path.lexists(link): os.remove(link)
+            os.symlink(os.path.abspath(path), link)
+    return root
+
+
+def build_native(cfg, srcs, jobs=None):
+    """Compile srcs in-process; returns ({stem: (ok, problem lines)}, sources left for DOS)."""
+    import shlex
+    from concurrent.futures import ProcessPoolExecutor
+    import bcc20
+    library = str(bcc20.default_library())
+    root = _native_root(cfg)
+    headers = {name: Path(h).read_bytes() for h, name in shared_headers(cfg)}
+    work = []
+    for src in srcs:
+        stem = cfg.stem(src)
+        obj = cfg.obj(stem)
+        if os.path.exists(obj): os.remove(obj)
+        composed = compile_context.compose_source(src, cfg)
+        text = composed.encode('latin1') if composed is not None else Path(src).read_bytes()
+        _, opts = cfg.directives(src)
+        line = cfg.profile['c']['command'].format(opts=opts, file=stem + '.C')
+        files = dict(headers)
+        files[stem + '.C'] = text
+        work.append((src, stem, (shlex.split(line.replace('\\', '\\\\'))[1:], files, root)))
+    res, to_dos = {}, []
+    try:
+        with ProcessPoolExecutor(max(1, jobs or os.cpu_count() or 1), initializer=_native_init,
+                                 initargs=(library,)) as pool:
+            for (src, stem, _), (status, console, outputs) in zip(work, pool.map(_native_compile, [w[2] for w in work])):
+                if 'Unable to execute command' in console:
+                    to_dos.append(src)
+                    continue
+                out = os.path.join(cfg.build, stem); os.makedirs(out, exist_ok=True)
+                log = console
+                raw = outputs.get(stem.upper() + '.OBJ')
+                if raw is not None:
+                    try:
+                        raw = compile_context.finish_object(src, cfg, raw, os.path.join(out, 'CONTEXT'))
+                        publish_object(os.path.join(out, stem + '.OBJ'), raw)
+                    except (ValueError, OSError, RuntimeError) as error:
+                        log += '\nFatal: compilation context: ' + str(error) + '\n'
+                with open(os.path.join(out, 'BUILD.LOG'), 'w', encoding='latin1') as stream:
+                    stream.write(log)
+                msgs, fatal = log_problems(cfg, log)
+                ok = not fatal and os.path.exists(cfg.obj(stem)) and os.path.getsize(cfg.obj(stem)) > 0
+                res[stem] = (ok, msgs if msgs or ok else ['no object written'])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return res, to_dos
+
+
 def build(cfg, srcs, jobs=None, batch=1, timeout=300):
     """Build srcs, jobs sessions at once (default: dosbatch.sessions()); returns {stem: (ok,
     problem lines)}."""
+    global last_in_process
+    res = {}
+    native = [s for s in srcs if native_wanted(cfg, s)]
+    last_in_process = 0
+    if native:
+        res, back = build_native(cfg, native)
+        last_in_process = len(native) - len(back)
+        srcs = [s for s in srcs if s not in native or s in back]
+        if not srcs:
+            return res
     if jobs is None:
         import dosbatch
         jobs = dosbatch.sessions() if len(srcs) > batch else 1
@@ -131,7 +231,6 @@ def build(cfg, srcs, jobs=None, batch=1, timeout=300):
     which = getattr(cfg, 'compiler', lambda src: None)
     for src in srcs: by_compiler.setdefault(which(src), []).append(src)
     groups = [g[i:i + batch] for g in by_compiler.values() for i in range(0, len(g), batch)]
-    res = {}
     with ThreadPoolExecutor(max(1, jobs)) as pool:
         for logs in pool.map(lambda g: _session(cfg, g, timeout * max(1, len(g) // 4 + 1)), groups):
             for stem, text in logs.items():

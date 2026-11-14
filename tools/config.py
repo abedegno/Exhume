@@ -111,6 +111,10 @@ class Config:
         # the DOS the toolchain runs in (tools/dosbackend.mjs) and how many sessions at once
         # (tools/dosbatch.py); the environment's EXHUME_DOS and EXHUME_DOS_SESSIONS win, and
         # setting them here passes the choice to every tool and DOS run this one starts
+        # a native compiler for this profile's C sources ("bcc20": the bcc20 port's library,
+        # tools/build.py); the environment's EXHUME_NATIVE wins ("0" turns it off)
+        self.native = os.environ.get('EXHUME_NATIVE', t.get('native')) or None
+        if self.native == '0': self.native = None
         self.dos = t.get('dos')
         self.dos_sessions = t.get('sessions')
         if self.dos and not os.environ.get('EXHUME_DOS'): os.environ['EXHUME_DOS'] = str(self.dos)
