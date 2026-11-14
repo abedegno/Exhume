@@ -109,10 +109,7 @@ def resident_target_near(cfg, seg, base, size, rows, org, obj, at, f, code):
     def need(ok,message):
         if not ok:raise ValueError('resident near reference: '+message)
     need(f['frame']==(5,None),'unsupported non-CODE frame')
-    # Borland C++'s built-in assembler writes an inline `call near ptr F` with the M bit set
-    # (segment-relative), and TLINK still links it as the near call it is (BCC.EXE does the
-    # same); the E8/E9 check below decides
-    need(f['rel'] is False or obj[at-1:at] in (b'\xe8',b'\xe9'),'OFFSET16 must be self-relative')
+    need(f['rel'] is False,'OFFSET16 must be self-relative')
     need(cfg.overlay_index(seg) is None,'caller is not resident')
     e=cfg.exe
     need(e[:2]==b'MZ' and len(e)>=0x1c,'invalid original MZ header')
