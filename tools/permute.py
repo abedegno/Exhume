@@ -1,9 +1,21 @@
 """Permuter for Borland C++ 2.0 code: tries small rewrites of one function's C source until
-it compiles to the target bytes, using the bcc20 port in-process (tools/bcc20.py), so it
-tries thousands of variants a second.
+it compiles to the target bytes, using the bcc20 port's compile servers (tools/bcc20.py's
+Pool), several variants at once.
 
     python3 tools/permute.py FILE.C FUNCTION (--target-obj T.OBJ | --target-bin F.BIN)
-        [--opts "-ml -O -G"] [--root DIR] [--iterations N] [--seed S] [--out BEST.C]
+        [--opts "-ml -O -G"] [--root DIR] [--headers DIR]... [--jobs N] [--nice N]
+        [--iterations N] [--seed S] [--whole-file] [--out BEST.C]
+
+--jobs caps the compiles at once (default: BCC20_WORKERS, else one fewer than the cores) and
+--nice lowers their priority.  --headers DIR gives the .H files of DIR to every compile
+under their names (a project's own headers); --root stands for C:\\ (the toolchain's).
+Variants are compiled from the file cut after the function's closing brace when that gives
+the function exactly the code it has in the whole file (BCC compiles one function at a time,
+but a near call to a function defined later in the file, or static functions that follow it
+before the next public, depend on the rest): the start compiles both and checks.  The
+rewrites never add or remove a call, so the check holds for every variant.  In borland-
+reborn's bcc20 sources the cut is exact for 654 of 849 public functions.  --whole-file always
+compiles the whole file.
 
 The target is the function's code: from an object file (the public FUNCTION, or _FUNCTION,
 to the next public or the segment's end), or raw bytes cut from the original program.  A
@@ -37,18 +49,45 @@ PRECEDENCE = {"*": 13, "/": 13, "%": 13, "+": 12, "-": 12, "<<": 11, ">>": 11, "
 SIMPLE = re.compile(r"[A-Za-z_]\w*$|0[xX][0-9A-Fa-f]+[uUlL]*$|\d+[uUlL]*$")
 
 
+OLD_STYLE_DECL = re.compile(r"[A-Za-z_][\w \t\r\n*\[\],]*;")
+
+
 def function_span(text, name):
-    """(start, end) of FUNCTION's body braces in text"""
-    m = re.search(r"\b%s\s*\([^;{]*\)\s*(?:[^;{]*;\s*)*\{" % re.escape(name), text)
-    if not m:
-        raise SystemExit(f"permute: no definition of {name}")
-    depth, i = 0, m.end() - 1
-    while i < len(text):
-        depth += {"{": 1, "}": -1}.get(text[i], 0)
-        if depth == 0:
-            return m.end() - 1, i + 1
+    """(start, end) of FUNCTION's body braces in text: the first `NAME (...)` followed, after
+    any old-style parameter declarations (`int a;`), by `{` (a plain scan: a regular
+    expression for this backtracks without end on some files)"""
+    for m in re.finditer(r"\b%s\s*\(" % re.escape(name), text):
+        i, depth = m.end() - 1, 0
+        while i < len(text):                        # the parameter list's closing parenthesis
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            if depth == 0:
+                break
+            i += 1
         i += 1
-    raise SystemExit(f"permute: {name}'s body does not end")
+        while i < len(text):                        # old-style declarations, then the body
+            while i < len(text) and text[i].isspace():
+                i += 1
+            if text.startswith("/*", i):
+                k = text.find("*/", i + 2)
+                i = len(text) if k < 0 else k + 2
+                continue
+            if i < len(text) and text[i] == "{":
+                break
+            decl = OLD_STYLE_DECL.match(text, i)    # `int a, *b[4];`
+            if decl:
+                i = decl.end()
+                continue
+            i = len(text)                           # a call or a prototype, not the definition
+        if i >= len(text):
+            continue
+        start, depth = i, 0
+        while i < len(text):
+            depth += {"{": 1, "}": -1}.get(text[i], 0)
+            if depth == 0:
+                return start, i + 1
+            i += 1
+        raise SystemExit(f"permute: {name}'s body does not end")
+    raise SystemExit(f"permute: no definition of {name}")
 
 
 def tokens(body):
@@ -284,6 +323,10 @@ def main():
     ap.add_argument("--target-bin")
     ap.add_argument("--opts", default="-ml -O -G")
     ap.add_argument("--root", help="directory standing for C:\\ (the toolchain's headers)")
+    ap.add_argument("--headers", action="append", default=[], help="a directory of the project's headers")
+    ap.add_argument("--jobs", type=int, help="compiles at once (default: one fewer than the cores)")
+    ap.add_argument("--nice", type=int, default=0, help="lower the compiles' priority")
+    ap.add_argument("--whole-file", action="store_true", help="compile the whole file for each variant")
     ap.add_argument("--iterations", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out")
@@ -300,35 +343,64 @@ def main():
     text = Path(args.source).read_text(encoding="latin1")
     start, end = function_span(text, args.function)
     head, body, tail = text[:start], text[start:end], text[end:]
-    bcc = bcc20.Compiler()
+    compiled_tail = tail
     cmd = ["-c", *args.opts.split(), "T.C"]
+    pool = bcc20.Pool(workers=args.jobs, root=args.root, time=1, nice=args.nice)
+    headers = {}
+    for d in args.headers:
+        for h in sorted(Path(d).iterdir()):
+            if h.suffix.upper() == ".H":
+                headers[h.name.upper()] = h.read_bytes()
+    if headers:
+        pool.keep(headers)
 
-    def evaluate(b):
-        r = bcc.compile(cmd, files={"T.C": (head + b + tail).encode("latin1")}, root=args.root, time=1)
+    def scored(r):
         obj = r.outputs.get("T.OBJ")
         if r.status or not obj:
             return 1 << 30
         code, mask = function_code(obj, args.function)
         return score(code, mask, target, target_mask)
 
+    if not args.whole_file:
+        whole, cut = pool.map([(cmd, {"T.C": (head + body + tail).encode("latin1")}),
+                               (cmd, {"T.C": (head + body + "\n").encode("latin1")})])
+        code = [function_code(r.outputs["T.OBJ"], args.function) if r.outputs.get("T.OBJ") and not r.status
+                else None for r in (whole, cut)]
+        # the same code, as the score sees it: same length and fixups, same other bytes
+        if code[0] is not None and code[1] is not None and len(code[0][0]) == len(code[1][0]) \
+                and code[0][1] == code[1][1] and score(*code[1], *code[0]) == 0:
+            compiled_tail = "\n"
+            print("compiling the file up to the function only (the same code as the whole file)")
+        else:
+            print("compiling the whole file (cut after the function, its code differs)")
+
+    def evaluate_all(bodies):
+        jobs = [(cmd, {"T.C": (head + b + compiled_tail).encode("latin1")}) for b in bodies]
+        return [scored(r) for r in pool.map(jobs)]
+
+    # each round: one variant of the current source per worker, compiled at once; the best
+    # that scores no worse becomes current (the first of equal ones, so a seed repeats)
     rng = random.Random(args.seed)
-    best_body, best = body, evaluate(body)
+    best_body, best = body, evaluate_all([body])[0]
     current, current_score = body, best
-    print(f"start: score {best}")
-    for n in range(1, args.iterations + 1):
-        if best == 0:
-            break
-        candidate = mutate(current, rng)
-        if candidate is None:
+    print(f"start: score {best} ({pool.workers} compiles at once)")
+    n = 0
+    while n < args.iterations and best:
+        candidates = [c for c in (mutate(current, rng) for _ in range(pool.workers)) if c is not None]
+        if not candidates:
+            n += pool.workers
             continue
-        s = evaluate(candidate)
-        if s <= current_score:
-            current, current_score = candidate, s
-            if s < best:
-                best_body, best = candidate, s
+        n += len(candidates)
+        scores = evaluate_all(candidates)
+        k = min(range(len(scores)), key=lambda i: scores[i])
+        if scores[k] <= current_score:
+            current, current_score = candidates[k], scores[k]
+            if current_score < best:
+                best_body, best = current, current_score
                 print(f"iteration {n}: score {best}")
                 if args.out:
                     Path(args.out).write_text(head + best_body + tail, encoding="latin1")
+    pool.close()
     print("match" if best == 0 else f"best score {best}")
     if args.out and best_body is not body:
         Path(args.out).write_text(head + best_body + tail, encoding="latin1")

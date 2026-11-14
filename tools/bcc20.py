@@ -11,6 +11,9 @@ Each call is one BCC command line run from memory to memory: the files given com
 memory, other files from root (standing for C:\\), and every file BCC writes comes back in
 result.outputs.  Compiles never share state.  explain=True also returns the compiler's
 explanation of its choices (result.explain, one line per event).
+
+Pool runs compiles on several bcc20run --serve processes at once, capped (workers, default
+one fewer than the cores) and restarted when one crashes or hangs; see its docstring.
 """
 import ctypes
 import os
@@ -83,3 +86,163 @@ class Compiler:
         status = result.status
         self.lib.bcc20_free(ctypes.byref(result))
         return Result(status, console, outputs, lines)
+
+
+# ---- a pool of compile servers (bcc20run --serve) ----
+
+def default_program():
+    """the bcc20 port's bcc20run: BCC20_RUN, else beside the shared library"""
+    if os.environ.get("BCC20_RUN"):
+        return Path(os.environ["BCC20_RUN"])
+    for name in ("bcc20run", "bcc20run.exe"):
+        p = default_library().parent / name
+        if p.exists():
+            return p
+    raise SystemExit("bcc20: set BCC20_RUN to the bcc20 port's bcc20run (make lib)")
+
+
+def default_workers():
+    """how many compiles at once: BCC20_WORKERS, else one fewer than the cores (at least 1)"""
+    if os.environ.get("BCC20_WORKERS"):
+        return max(1, int(os.environ["BCC20_WORKERS"]))
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+class _Server:
+    """one bcc20run --serve process"""
+
+    def __init__(self, program, nice, setup):
+        import subprocess
+        kwargs = {}
+        if nice and hasattr(os, "nice"):
+            kwargs["preexec_fn"] = lambda: os.nice(nice)
+        self.proc = subprocess.Popen([str(program), "--serve"], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, **kwargs)
+        self.send(setup)
+
+    def send(self, data):
+        self.proc.stdin.write(data)
+        self.proc.stdin.flush()
+
+    def answer(self):
+        """the answer to RUN, as a Result; None if the server died"""
+        out = self.proc.stdout
+        status, console, outputs, explain = 0, "", {}, []
+        while True:
+            line = out.readline()
+            if not line:
+                return None
+            words = line.split()
+            tag, nums = words[0], [int(w) for w in words[1:]]
+            if tag == b"STATUS":
+                status = nums[0]
+            elif tag == b"CONSOLE":
+                console = out.read(nums[0]).decode("latin1")
+            elif tag == b"OUTPUT":
+                name = out.read(nums[0]).decode("latin1")
+                outputs[name] = out.read(nums[1])
+            elif tag == b"EXPLAIN":
+                explain = out.read(nums[0]).decode("latin1").splitlines()
+            elif tag == b"DONE":
+                return Result(status, console, outputs, explain)
+            elif tag == b"ERROR":
+                raise RuntimeError("bcc20run: " + out.read(nums[0]).decode("latin1"))
+
+    def close(self):
+        try:
+            self.send(b"QUIT\n")
+            self.proc.stdin.close()
+            self.proc.wait(timeout=5)
+        except Exception:
+            self.proc.kill()
+
+
+def _record(tag, *parts):
+    """one message: TAG with the parts' lengths, then the parts"""
+    parts = [p.encode("latin1") if isinstance(p, str) else bytes(p) for p in parts]
+    return (tag + "".join(f" {len(p)}" for p in parts) + "\n").encode() + b"".join(parts)
+
+
+class Pool:
+    """Compiles on `workers` bcc20run --serve processes at once (default_workers(): no more
+    than that many cores are ever busy), each kept running between jobs.
+
+        with bcc20.Pool(workers=4, root="/path/to/BC20") as pool:
+            pool.keep({"PROJ.H": header_bytes})            # sent once, held by every server
+            results = pool.map([(["-c", "-ml", "A.C"], {"A.C": a}), ...])
+            r = pool.compile(["-c", "-ml", "B.C"], {"B.C": b})
+
+    A compile that takes longer than `timeout` seconds, or crashes its server, comes back
+    with status -2 (and says so in its console text); the server is started again.  `nice`
+    lowers the servers' priority (POSIX), so the machine stays responsive.  Thread-safe:
+    map() and compile() may be called from several threads.
+    """
+
+    def __init__(self, workers=None, program=None, root=None, time=0, stack_limit=True,
+                 nice=0, timeout=60):
+        import queue
+        import threading
+        self.program = program or default_program()
+        self.workers = max(1, workers or default_workers())
+        self.nice, self.timeout = nice, timeout
+        self.setup = _record("ROOT", root or "") + f"TIME {int(time)}\nSTACK {1 if stack_limit else 0}\n".encode()
+        self.kept = b""
+        self.lock = threading.Lock()
+        self.free = queue.Queue()
+        self.servers = [_Server(self.program, nice, self.setup) for _ in range(self.workers)]
+        for s in self.servers:
+            self.free.put(s)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def keep(self, files):
+        """files every later job holds, sent once to each server"""
+        data = b"".join(_record("KEEP", name, content) for name, content in files.items())
+        with self.lock:
+            self.kept += data
+        taken = [self.free.get() for _ in range(self.workers)]
+        for s in taken:
+            s.send(data)
+            self.free.put(s)
+
+    def compile(self, args, files=None, explain=False):
+        import threading
+        server = self.free.get()
+        job = (f"EXPLAIN {1 if explain else 0}\n".encode()
+               + b"".join(_record("ARG", a) for a in args)
+               + b"".join(_record("FILE", n, d) for n, d in (files or {}).items()) + b"RUN\n")
+        killed = threading.Event()
+        timer = threading.Timer(self.timeout, lambda: (killed.set(), server.proc.kill()))
+        timer.start()
+        try:
+            server.send(job)
+            result = server.answer()
+        except (BrokenPipeError, OSError, ValueError):
+            result = None
+        finally:
+            timer.cancel()
+        if result is None:
+            why = "timed out" if killed.is_set() else "crashed"
+            server.proc.kill()
+            with self.lock:
+                fresh = _Server(self.program, self.nice, self.setup + self.kept)
+                self.servers[self.servers.index(server)] = fresh
+            server = fresh
+            result = Result(-2, f"bcc20: the compile {why}\n", {}, [])
+        self.free.put(server)
+        return result
+
+    def map(self, jobs, explain=False):
+        """compiles (args, files) jobs at once; results in the jobs' order"""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(self.workers) as ex:
+            return list(ex.map(lambda j: self.compile(j[0], j[1] if len(j) > 1 else None, explain), jobs))
+
+    def close(self):
+        for s in self.servers:
+            s.close()
+        self.servers = []
