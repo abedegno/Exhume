@@ -24,6 +24,14 @@ library_name_patterns = ["^F_", "^N_", "@$"]
 far_return = 0xCB
 
 [fingerprint]
-strings = ["Borland C++  Version 2.0 Copyright (c) 1991 Borland International",
-           "TC86 Borland Turbo C++ 2.0", "Runtime overlay error"]
+# strings the runtime leaves in a program it built (C0's copyright, the C runtime's messages;
+# Borland C++ 3.0 and 3.1 print the same 1991 banner, so the linker marker tools/fingerprint.py
+# reports, FB 30 for this TLINK, tells them apart), and BCC.EXE's own messages
+strings = ["Borland C++ - Copyright 1991 Borland Intl.", "Null pointer assignment",
+           "Abnormal program termination", "Runtime overlay error",
+           "Borland C++  Version 2.0 Copyright (c) 1991 Borland International",
+           "TC86 Borland Turbo C++ 2.0"]
+# C0's _DATA starts with 4 zero bytes and then the copyright string (as Turbo C++'s)
+dgroup_anchor = "Borland C++ - Copyright 1991 Borland Intl."
+dgroup_anchor_offset = 4
 c_prologue = "55 8B EC"

@@ -25,6 +25,8 @@ DGROUP paragraph, overlay naming and symbol files come from exhume.toml.
   publics' addresses in symbols.tsv.
 Names are always checked against symbols.tsv (one name per address, one address per
 name); --update also merges them in, and refuses to write when there is any problem.
+The file's _DATA and _BSS must not overlap another file's as recorded in dgroup.tsv (beside
+symbols.tsv), which --update keeps (a file checked alone can match bytes that are its neighbour's).
 
 --object PATH verifies that existing proof object instead of the canonical build
 object. It is read-only and cannot be combined with --update.
@@ -64,9 +66,26 @@ def note_reference(syms, problems, name, val, where, aliases):
         problems.append(f'{name}: {fmt(prev[0])} at +{prev[1]:X} but {fmt(val)} at +{where:X}')
 
 
+def undo_emulator(buf):
+    """The floating-point emulator's INT 34h-3Dh read back as the WAIT/ESC instructions the
+    linker wrote them over (same lengths), so that decoding keeps its instruction boundaries."""
+    b = bytearray(buf); i = 0
+    while i + 1 < len(b):
+        if b[i] == 0xCD and 0x34 <= b[i + 1] <= 0x3B:
+            b[i:i + 2] = bytes([0x9B, 0xD8 + b[i + 1] - 0x34]); i += 2
+        elif b[i] == 0xCD and b[i + 1] == 0x3C and i + 2 < len(b):
+            b[i:i + 3] = bytes([0x9B, 0x26, 0xD8 | (b[i + 2] & 7)]); i += 3
+        elif b[i] == 0xCD and b[i + 1] == 0x3D:
+            b[i:i + 2] = b'\x90\x9b'; i += 2
+        else:
+            i += 1
+    return bytes(b)
+
+
 def resident_instruction_field(obj, at, rows, size):
     """Return one unprefixed E8/E9 field in an explicit function CODE row."""
     from iced_x86 import Decoder, Code
+    obj = undo_emulator(obj)
     candidates=[]
     for row in rows:
         _,_,start,length=row
@@ -425,6 +444,7 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
     bss = next((i for i, s in enumerate(segs) if s and s[0] == '_BSS'), None)
     fars = {i for i, s in enumerate(segs) if s and s[1] == 'FAR_DATA'}
     farref = {}; farfx = []     # far segment -> {'seg'|'off': [(value, where)]}; fixups inside them
+    placed = []   # (segment, DS offset, length) of this file's near data, for the overlap check
     syms = {}; problems = []; data_bases = set(); cs_values = set(); internal = 0; entries = {}; bss_bases = set(); halves = {}; offset_addends = {}; datafx = []; segonly = {}
 
     aliases = CFG.raw.get('names', {}).get('extern_aliases', {})
@@ -559,12 +579,18 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
         elif tm == 0 and ti == bss:                    # this file's uninitialised data
             internal += 1
             bss_bases.add((word(exe, base + at) - add) & 0xFFFF)
+            if os.environ.get('EXHUME_VERIFY_BASES'):   # each reference, to see which disagree
+                print(f'  _BSS  +{at:04X}: object offset {add:04X}, original DS:{word(exe, base + at):04X}, '
+                      f'base DS:{(word(exe, base + at) - add) & 0xFFFF:04X}')
         elif (tm == 0 and ti == datas or tm == 1) and loc == 2:     # DGROUP's paragraph
             internal += 1
             if word(exe, base + at) != DS_PARA: problems.append(f'+{at:X}: DGROUP referenced as {word(exe, base + at):04X}')
         elif tm == 0 and ti == datas or tm == 1:       # this file's data, through DGROUP
             internal += 1
             data_bases.add((word(exe, base + at) - add) & 0xFFFF)
+            if os.environ.get('EXHUME_VERIFY_BASES'):
+                print(f'  _DATA +{at:04X}: object offset {add:04X}, original DS:{word(exe, base + at):04X}, '
+                      f'base DS:{(word(exe, base + at) - add) & 0xFFFF:04X}')
         elif tm == 0 and ti in fars and loc in (1, 2, 3, 5):    # this file's own far data
             internal += 1
             r = farref.setdefault(ti, {})
@@ -627,6 +653,7 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
         problems.append('_BSS references disagree on the base: ' + ', '.join(f'DS:{b:X}' for b in sorted(bss_bases)))
     elif bss_bases:
         print(f'_BSS: {segs[bss][2]} bytes at DS:{min(bss_bases):X}')
+        placed.append(('_BSS', min(bss_bases), segs[bss][2]))
     if len(cs_values) > 1: problems.append(f'own segment referenced as {sorted(cs_values)}')
     data = bytes(o['data'][datas])
     if len(data_bases) > 1:
@@ -697,6 +724,7 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
             problems.append(f'_DATA at DS:{db:X} differs at {len(bad)} bytes:\n    obj {data.hex(" ")}\n    exe {theirs.hex(" ")}')
         else:
             print(f'_DATA: {len(data)} bytes match at DS:{db:X}' + (f' ({len(datafx)} pointers checked)' if datafx else ''))
+            placed.append(('_DATA', db, len(data)))
 
     farat = place_far(o, fars, farref, farfx, exe, hdr, word, note, problems)
 
@@ -770,6 +798,7 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
                                 f'it first sees the names (the first seen is listed last, so it takes the earlier stub entry): '
                                 f'name {want[i]} before {listed[i]}, with a prototype at the top of the file if need be')
             if not any(p.startswith('stub order') for p in problems): print(f'stub order: {len(ks)} entries agree with their names')
+    problems.extend(range_overlaps(CFG, stem, placed))
     # without --update, still check the names against symbols.tsv, read-only
     if code_frame_resident_ds:
         try:
@@ -801,9 +830,54 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
     else:
         if on_names: on_names(syms)
         update(syms, pubs, problems, write='--update' in a)
+    if not problems and '--update' in a: record_ranges(CFG, stem, placed)
     for p in problems: print('PROBLEM', p)
     print('-- fixups and data verified' if not problems else f'-- {len(problems)} problems')
     return 1 if problems else 0
+
+
+# Each file is verified on its own, so its data can match bytes that really belong to the
+# file next to it: a made-up variable at the start of one file's _DATA matched the end of the
+# previous file's strings, and a file's _BSS placed by its references ran into the next
+# file's. TLINK would lay them end to end and the link would come out shifted. So --update
+# records where each file's _DATA and _BSS lie (dgroup.tsv beside symbols.tsv), and every verify refuses
+# a placement that overlaps another file's recorded one.
+def ranges_path(cfg):
+    # beside symbols.tsv and following it, so the gate's rebuild from scratch (which points
+    # cfg.symbols at a scratch file) keeps its own table
+    return os.path.join(os.path.dirname(os.path.abspath(cfg.symbols)), 'dgroup.tsv')
+
+def read_ranges(cfg):
+    rows = []
+    try:
+        with open(ranges_path(cfg)) as f:
+            for line in f:
+                if line.startswith('#') or not line.strip(): continue
+                stem, segname, start, length = line.split('\t')[:4]
+                rows.append((stem, segname, int(start, 16), int(length, 16)))
+    except FileNotFoundError:
+        pass
+    return rows
+
+def range_overlaps(cfg, stem, placed):
+    problems = []
+    for segname, start, length in placed:
+        if not length: continue
+        for other, oseg, ostart, olength in read_ranges(cfg):
+            if other == stem or not olength: continue
+            if start < ostart + olength and ostart < start + length:
+                problems.append(f'{segname} DS:{start:X}-{start + length - 1:X} overlaps {other}\'s {oseg} '
+                                f'DS:{ostart:X}-{ostart + olength - 1:X} ({ranges_path(cfg)}): '
+                                f'one of the two files claims bytes that are the other\'s')
+    return problems
+
+def record_ranges(cfg, stem, placed):
+    rows = [r for r in read_ranges(cfg) if r[0] != stem]
+    rows += [(stem, segname, start, length) for segname, start, length in placed if length]
+    with open(ranges_path(cfg), 'w') as f:
+        f.write('# near data of each verified file (verify.py --update): file, segment, DS offset, length\n')
+        for r in sorted(rows, key=lambda r: (r[2], r[0])):
+            f.write(f'{r[0]}\t{r[1]}\t{r[2]:04X}\t{r[3]:X}\n')
 
 def place_far(o, fars, farref, farfx, exe, hdr, word, note, problems):
     """Place each of the file's own far segments and compare its bytes with the EXE's.

@@ -40,6 +40,7 @@ The backends build the same bytes. On UW2, every object built in emu2, DOSBox-X 
 Find the exact compiler, assembler, linker, memory model and switches, and prove them by compiling one function to the original's bytes (skills/fingerprint-toolchain).
 
 - `tools/fingerprint.py GAME.EXE` reports the executable's format, overlay scheme, telling byte patterns and which profile's runtime strings it contains, and suggests the DGROUP paragraph.
+  It also reports Borland's linker marker (FB and a version byte at 1Eh: 30 for Borland C++ 2.0's TLINK, 50 for Borland C++ 3.x, 61 for 4.x), which separates compilers whose runtime prints the same copyright year, and recognises LZEXE and PKLITE packing, which hides all of it. `tools/unlzexe.py` unpacks LZEXE 0.90/0.91 from the file's bytes alone.
 - The proof is a match: a small function written in C that `tools/match.py` reports as MATCH. Then switches, one at a time, by what each one changes.
 - Assemblers are fingerprinted by their padding: a single-pass assembler's unshortened forward jumps leave `nop`s that the compiler never emits.
 
@@ -48,6 +49,7 @@ Find the exact compiler, assembler, linker, memory model and switches, and prove
 Lay out every segment and procedure, decide which segment is which source file, and recover original names (skills/map-binary).
 
 - An IDA listing gives procedures; `tools/locate.py` checks each segment's place in the file by disassembling it against the listing, and corrects stale offsets.
+- A small- or compact-model program has one code segment for all its C files and may have no listing at all: `tools/mapsmall.py` finds the functions by recursive descent, places the start-up module and the runtime library modules byte for byte, and lists each function's calls and DGROUP references. File boundaries inside the segment come from DGROUP, where each file's strings and initialised data follow the previous file's in link order, the order of the code. On Dangerous Dave in the Haunted Mansion the game's strings led to a released sibling's source (Hovertank 3-D), whose link order and files gave the library files' extents.
 - A sibling build that kept its symbols (UW2: the FM Towns release) names functions: if it was linked from the same object list, its functions are in the same order, so `tools/align.py` aligns the two builds between known pairs and confirms each pairing against both call graphs.
 - `tools/targets.py` writes one target table per segment: where the file's code is and what each function is called. Read every table before using it; listings mis-split procedures and tables can overrun into the next module.
 

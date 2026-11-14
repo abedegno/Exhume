@@ -26,6 +26,19 @@ def main(path):
         stubs = [i for i, e in enumerate(ents) if e[2] == 3]
         print(f'Borland VROOMM overlays (FBOV): segment table at file {tab:#x}, {n} entries of '
               f'(paragraph, end, flags, start); {len(stubs)} overlay stubs (flags 3), entries {stubs[0] if stubs else "-"}..{stubs[-1] if stubs else "-"}')
+    # Borland's TLINK leaves FB and its version byte at 1Ch; a packer replaces the header
+    if d[0x1C:0x1E] in (b'LZ', ) and d[0x1C:0x20] in (b'LZ09', b'LZ91'):
+        print(f'    packed by LZEXE {d[0x1E:0x20].decode()}: unpack it first (tools/unlzexe.py); the runtime strings and '
+              'the linker marker are inside')
+    elif b'PKLITE' in d[:0x200] or d[0x1E:0x20] == b'PK':
+        print('    packed by PKLITE: unpack it first; the runtime strings and the linker marker are inside')
+    elif d[0x1E] == 0xFB:
+        v = d[0x1F]
+        known = {0x20: 'Turbo C 2.x\'s TLINK (measured: Turbo C 2.01)',
+                 0x30: 'Borland C++ 2.0\'s TLINK 4.0 (measured: its HELLO.EXE and BCC.EXE)',
+                 0x50: 'TLINK 5.x of Borland C++ 3.0/3.1 (measured: Turbo Pascal 7\'s TEMC.EXE and MAKE.EXE)',
+                 0x61: 'TLINK 6.1 of Borland C++ 4.x (measured: Scorched Earth 1.5)'}
+        print(f'    linker marker FB {v:02X} at 1Eh: {known.get(v, "a Borland TLINK, version byte not yet measured")}')
     img = d[hdr:end]
     pats = {'push bp; mov bp,sp (55 8B EC)': b'\x55\x8b\xec', 'enter (C8 xx xx 00)': None,
             'far call (9A)': b'\x9a', 'INT 3Fh overlay thunk (CD 3F)': b'\xcd\x3f', 'far return (CB)': b'\xcb'}

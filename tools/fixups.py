@@ -4,7 +4,7 @@ fixups(objbytes) -> dict with segs, groups, externs, publics, data, and a list o
 loc: 0 lobyte, 1 offset16, 2 base16, 3 ptr32, 4 hibyte, 5 offset16 (loader).
 target/frame methods: 0 SEGDEF, 1 GRPDEF, 2 EXTDEF, 3 frame, 4 LOCATION, 5 TARGET."""
 import struct
-from omf import records, idx
+from omf import records, idx, lidata
 
 def fixups(d):
     lnames=['']; segs=[None]; groups=[None]; ext=[None]; pubs={}; data={}; fx=[]
@@ -35,7 +35,10 @@ def fixups(d):
                 o=struct.unpack_from('<H',b,i)[0]; i+=2; _,i=idx(b,i); pubs[n]=(s,o)
         elif t in (0xA0,0xA1):
             si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
-            data[si][off:off+len(b)-i]=b[i:]; last=(si,off)
+            data[si][off:off+len(b)-i]=b[i:]; last=(si,off,None)
+        elif t==0xA2:           # LIDATA: a following fixup applies to every repetition
+            si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
+            chunk,places=lidata(b,i); data[si][off:off+len(chunk)]=chunk; last=(si,off,places)
         elif t in (0x9C,0x9D):
             i=0
             while i<len(b):
@@ -57,7 +60,8 @@ def fixups(d):
                     tm=fd&3; ti,i=idx(b,i)
                 disp=0
                 if not fd&0x04: disp=struct.unpack_from('<H',b,i)[0]; i+=2
-                fx.append(dict(seg=last[0],off=last[1]+off,loc=loc,rel=rel,frame=frame,target=(tm,ti),disp=disp))
+                for at in (last[2].get(off,[]) if last[2] is not None else [off]):
+                    fx.append(dict(seg=last[0],off=last[1]+at,loc=loc,rel=rel,frame=frame,target=(tm,ti),disp=disp))
     return dict(lnames=lnames,segs=segs,groups=groups,ext=ext,pubs=pubs,data=data,fixups=fx)
 
 def target_name(o,tgt):
