@@ -942,8 +942,21 @@ int plat_run(const PlatConfig *cfg0, const PlatHooks *h, int (*game)(void *), vo
            fits all looked alike (the settings file keeps the larger scale for a larger display) */
         if (scale > plat_max_scale(cfg->aspect)) scale = plat_max_scale(cfg->aspect);
         live.scale = scale;
-        L.win = SDL_CreateWindow(cfg->title ? cfg->title : PLAT_TITLE, 320 * scale,
-                               (cfg->aspect ? 240 : 200) * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (cfg->fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+        {
+            SDL_WindowFlags wf = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (cfg->fullscreen ? SDL_WINDOW_FULLSCREEN : 0);
+#ifdef __EMSCRIPTEN__
+            /* in a browser the window is made for WebGL at once: without SDL_WINDOW_OPENGL the
+               GLES2 renderer remakes it (SDL_ReconfigureWindow, which Emscripten cannot do in
+               place, so SDL_RecreateWindow), and the destroyed window leaves an inline 1px CSS size
+               on the canvas wherever devicePixelRatio is not 1. The new window then measures that
+               1px instead of the page's CSS: at 1.25 it reads 1.0 and takes a fixed 960x720; at
+               1.1 (Windows at 110%) or 1.21 the browser snaps it to 0.994, SDL takes the canvas as
+               sized by CSS, and the window is 0x0: the game runs and plays sound with no picture. */
+            wf |= SDL_WINDOW_OPENGL;
+#endif
+            L.win = SDL_CreateWindow(cfg->title ? cfg->title : PLAT_TITLE, 320 * scale,
+                                     (cfg->aspect ? 240 : 200) * scale, wf);
+        }
         if (L.win) L.ren = SDL_CreateRenderer(L.win, NULL);
         if (!L.win || !L.ren) {
             fprintf(stderr, PLAT_NAME ": no window: %s\n", SDL_GetError());
