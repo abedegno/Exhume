@@ -84,8 +84,9 @@ const cases = {
       const span = await litSpan(p);
       check(span.span >= 0.95 * span.height, `start: ${g}'s picture fills the window's height (${span.span} of ${span.height} rows lit)`, JSON.stringify(span));
       // the settings screen's rows on the web: none that cannot work in a browser (the game folder,
-      // the MT-32 ROMs: no folder picker; Fullscreen and Window scale: the page's)
-      const tabs = await p.evaluate(() => { const M = window.__exhumeModule; return [0, 1, 2, 4].map(t => M.UTF8ToString(M._web_test_settings(t))); });
+      // the MT-32 ROMs: no folder picker; Fullscreen and Window scale: the page's). Tabs Sound,
+      // Controls, Display and Game (settings.c's tab_name: Game is 5, after Enhancements and Fixes)
+      const tabs = await p.evaluate(() => { const M = window.__exhumeModule; return [0, 1, 2, 5].map(t => M.UTF8ToString(M._web_test_settings(t))); });
       const all = tabs.join('|');
       check(!/Game folder|MT-32 ROMs|Fullscreen|Window scale/.test(all) && tabs[3] === 'Record sessions|Show this at start' && /Volume/.test(tabs[0]) && /Whole-number scaling/.test(tabs[2]),
             `start: ${g}'s settings screen offers only the rows that work on the web`, JSON.stringify(tabs));
