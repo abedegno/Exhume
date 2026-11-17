@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "modules": {
+    "src/example.c": {
+      "placements": {"1": [1, 0], "2": [2, 0], "3": [2, 16]},
+      "symbols": {"helper_": [1, 256]},
+      "options": ["/5r", "/s", "/otexan"],
+      "include": ["include"]
+    },
+    "src/helper.asm": {
+      "placements": {"1": [1, 256]},
+      "assembler": "tasm31",
+      "home": "toolchains/tasm-3.1",
+      "options": ["/ml"],
+      "source_name": "HELPER.ASM"
+    }
+  },
+  "link": {
+    "command": ["python3", "tools/link_project.py"],
+    "output": "build/linked.exe"
+  }
+}

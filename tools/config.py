@@ -13,7 +13,7 @@ rules, the library-name patterns, the linker's call rewrite.
 
     python3 tools/config.py [KEY]     prints the resolved config, or one value (for scripts)
 """
-import os, re, sys, struct, tomllib
+import os, re, sys, struct, tomllib, hashlib
 
 EXHUME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ${EXHUME} in exhume.toml names this checkout (a project's config can point at its examples)
@@ -51,7 +51,9 @@ def find(explicit=None):
 class Config:
     def __init__(self, path):
         self.file = path
-        raw = _walk(tomllib.load(open(path, 'rb')))
+        with open(path, 'rb') as stream: self.config_raw = stream.read()
+        self.config_sha256 = hashlib.sha256(self.config_raw).hexdigest()
+        raw = _walk(tomllib.loads(self.config_raw.decode('utf-8')))
         self.raw = raw
         p = raw.get('project', {})
         here = os.path.dirname(path)
@@ -93,7 +95,9 @@ class Config:
         t = raw.get('toolchain', {})
         self.profile_name = t.get('profile', 'borland-tc101')
         self.profile_dir = os.path.join(EXHUME, 'profiles', self.profile_name)
-        self.profile = _walk(tomllib.load(open(os.path.join(self.profile_dir, 'profile.toml'), 'rb')))
+        with open(os.path.join(self.profile_dir, 'profile.toml'), 'rb') as stream: self.profile_raw = stream.read()
+        self.profile_sha256 = hashlib.sha256(self.profile_raw).hexdigest()
+        self.profile = _walk(tomllib.loads(self.profile_raw.decode('utf-8')))
         self.home = os.path.join(self.root, t['home']) if t.get('home') else None
         self.stage = [os.path.join(self.root, x) for x in t.get('stage', [])]
         # alternative compilers a source selects with /* compiler: NAME */ (e.g. an older
@@ -174,11 +178,18 @@ class Config:
         return int(m.group(1)) if m else None
 
     # ---- names --------------------------------------------------------------------
-    def mangle(self, name):
+    def mangle(self, name, *, kind='function'):
         """The name as the object file spells it: prefix, then cut to the profile's limit."""
+        return self.mangle_kind(name, kind)
+
+    def mangle_kind(self, name, kind='function'):
+        if kind not in ('function', 'data'):
+            raise ValueError('symbol kind must be function or data')
         c = self.profile.get('c', {})
-        pre = c.get('public_prefix', '_'); lim = c.get('name_limit', 32)
-        return (pre + name)[:lim + len(pre)]
+        pre = c.get(kind + '_prefix', c.get('public_prefix', '_'))
+        suffix = c.get(kind + '_suffix', c.get('public_suffix', ''))
+        limit = c.get('name_limit', 32)
+        return pre + (name[:limit] if limit else name) + suffix
 
     def is_code_class(self, cls):
         """True when an object's segment class marks code: it ends in the profile's

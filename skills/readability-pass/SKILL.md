@@ -9,6 +9,14 @@ A matched tree is correct but hard to read: every file declares what it uses for
 
 Start only when every source matches and verifies, the exact link is byte-identical to the original, and the modding build with nothing changed equals the exact link (skills/modding-build). Keep each step in its own commit, never mixed with a change meant to alter the program.
 
+## Emitting source, reading aids and harmless compiler-sensitive shapes
+
+Identify each file as an emitting build node, historical reference, or C reading aid. Named assembly can be owned source; a C counterpart does not prove that C emits the accepted bytes. Keep navigation from emitted procedures to their algorithms and document outstanding compiler-faithful C lowering. Mark names as original, inferred or descriptive from actual evidence.
+
+Ordinary unused declarations, unused prototypes and dead stores are allowed when a controlled fresh compile proves the required bytes, data/BSS layout and fixups. Old compilers can change register allocation or symbol/BSS order even for apparently inert text. Keep a short `match:` explanation and a negative control before deleting such constructs. Do not replace them with opcode arrays, inline machine-byte payloads, post-object edits or executable patching. Initializers and switch tables are data only when source ownership and relocation roles prove that classification.
+
+Use the final proof level appropriate to the backend in [link-and-diff](../link-and-diff/SKILL.md). Duke's source-native exact file is built from C and named assembly with C aids, original supplied runtime libraries and a vendor prefix; it is not proof of an all-C or historically original source tree. Preserved unidentified DATA remains explicitly unknown and earns no historical-source credit. These distinctions supplement, and do not replace, the existing Borland readability/modding gates below.
+
 ## 1. Build driver and gate
 
 Make one command prove the whole tree, before anything else changes.

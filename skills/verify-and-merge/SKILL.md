@@ -7,6 +7,14 @@ description: Use when a source file reports WHOLE SEGMENT MATCHES and is to be a
 
 Paths are relative to the Exhume checkout. Only one merge at a time: symbols.tsv and matched.txt are shared.
 
+## Provider identity and proof scope
+
+Before reconstructing a linked library, use [recover-linked-library](../recover-linked-library/SKILL.md): search historical GitHub releases, source/SDK archives and sibling versions first. A masked match is a placement candidate. Bind each import to an actual provider: pinned library/member identity or independently proved owned contribution, PUBLIC/EXTDEF scope, selected instance, typed relocation field, addend, segment/group frame and final address. Two private symbols with the same spelling are not one global provider. Preserve native first-wins and duplicate-definition selection; document exact allowed duplicates rather than suppressing warnings globally.
+
+Report which providers are independently witnessed and which are merely nominated from original member calls. Replaying a consumer with names inferred from that same consumer is circular evidence. Prove code, initialized data, BSS ownership, alignment and every relocation together; publish byte totals separately from recovered historical-source credit.
+
+Compare semantic objects across timestamped compiler runs as described below, while freezing the actual RAW output/hash before parsing and staging in each run. Semantic equality is not serialized object identity. Then use [link-and-diff](../link-and-diff/SKILL.md)'s staged gates: contribution, loaded image, serialized native image and complete bound file. A current full-file equality does not erase retained earlier negative evidence.
+
 ## Verify
 
 `python3 tools/verify.py src/FILE.C` reads the last build and checks what match.py masked:

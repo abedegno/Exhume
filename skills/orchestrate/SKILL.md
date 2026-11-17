@@ -7,6 +7,16 @@ description: Use when running a whole byte-matching decompilation with several A
 
 Paths are relative to the Exhume checkout. You (the orchestrator) prepare target tables, hand one file to each agent, review reports, and merge. Agents never merge, commit, or edit shared files.
 
+## Start with discovery; bound each experiment
+
+For a linked library, first assign or perform the source-discovery task in [recover-linked-library](../recover-linked-library/SKILL.md), before decompiling it. Historical source and SDK versions can settle months of plausible compiler guessing. Record sources searched, pinned revisions, notices and missing evidence; finish that inventory before launching matching variants.
+
+Each experiment brief states the hypothesis, discriminating positive/negative controls, input/tool hashes, exact file ownership, worker/compiler-call/disk budgets, deadline and stop/report rule. Use the cheapest focused native/contribution check that can settle the hypothesis. Rebuild the whole executable only at integration/release gates or when an unresolved layout dependency requires it; multiple reviewers should consume one frozen evidence bundle rather than rerun unchanged whole builds. Resume existing workers, and stop when their declared result is achieved. Do not start a fresh reviewer loop after all concrete findings have been resolved unless inputs, scope or evidence changed.
+
+Proceed within the user's standing authorization for reversible research, edits and checks. Do not repeatedly ask to perform already approved work. A new external publication is governed by its actual authorization and [package-source-release](../package-source-release/SKILL.md); complete the concrete audited package first when approval is still required. Give the parent one concise report: changed paths, hypothesis/outcome, controls, gate level, remaining uncertainty and consumed budget.
+
+The historical model measurements below describe their recorded environment, not a requirement to switch today's model or expand the worker pool. The no-nested-workers budget applies even where an older example mentions function forks.
+
 ## Pool
 
 - Run about three agents at once. Seven parallel Opus agents exhausted a session's usage limit in a few hours on UW2 and all seven died mid-file. Resume an interrupted agent with SendMessage (it keeps its context, which is cheaper than restarting); do not relaunch it.

@@ -217,6 +217,8 @@ def build(cfg, srcs, jobs=None, batch=1, timeout=300, native_jobs=None):
     """Build srcs, jobs sessions at once (default: dosbatch.sessions()); returns {stem: (ok,
     problem lines)}."""
     global last_in_process
+    if cfg.object_model == "omf32-le":
+        raise ValueError("Watcom programmatic builds use wproject.build_source; shared CLI: tools/build.py")
     res = {}
     native = [s for s in srcs if native_wanted(cfg, s)]
     last_in_process = 0
@@ -256,6 +258,10 @@ def all_sources(cfg):
 def main(argv):
     path, a = config.pop_config(argv)
     cfg = config.load(path)
+    if cfg.object_model == 'omf32-le':
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        import importlib
+        return importlib.import_module('wbuild').main(cfg, a)
     def opt(name, default):
         return int(a[a.index(name) + 1]) if name in a else default
     jobs = opt('--jobs', None)

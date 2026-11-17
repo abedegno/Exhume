@@ -1,0 +1,39 @@
+name = "Watcom C32 / WASM / WLINK (DOS protected mode)"
+
+[c]
+command = "wcc386 {file} /fo=OUT.OBJ {opts}"
+default_opts = "/4r /s /ort"
+code_class = "CODE"
+function_prefix = ""
+function_suffix = "_"
+data_prefix = "_"
+data_suffix = ""
+# Preserve full symbol spellings; do not apply Borland's 32-character truncation.
+name_limit = 0
+
+[asm]
+command = "wasm {opts} {file}"
+default_opts = "/zq"
+
+[log]
+problem = "(Error|Warning|Fatal)"
+fatal = "(Error|Fatal)"
+
+[link]
+object_model = "omf32-le"
+match_tool = "wmatch"
+verify_tool = "wverify"
+build_tool = "wbuild"
+merge_tool = "wmerge"
+gate_tool = "wgate"
+
+[fingerprint]
+strings = ["WATCOM C/C++32 Run-Time system", "DOS/4GW", "DOS/4G"]
+
+[capabilities]
+le_reader = true
+lx_reader = false
+omf32_subset = true
+typed_relocations = true
+private_symbol_scope = true
+dosbox_x_runner = true

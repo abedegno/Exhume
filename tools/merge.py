@@ -21,6 +21,10 @@ def run(tool, args):
 
 def main(argv):
     path, a = config.pop_config(argv); cfg = config.load(path)
+    if cfg.object_model == 'omf32-le':
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        import importlib
+        return importlib.import_module('wmerge').main(cfg, a)
     if cfg.object_model == 'linked-image':
         sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
         tool = cfg.profile.get('link', {}).get('merge_tool', 'armmerge' if cfg.profile_name == 'armcc5' else None)
