@@ -1,0 +1,20 @@
+# Copy into your own project and supply its sources, target and tool homes.
+[project]
+name = "OMF32 example"
+root = "."
+src = "src"
+include = "include"
+build = "build"
+
+[binary]
+image = "reference/program.exe"
+
+[toolchain]
+profile = "watcom"
+home = "toolchains/watcom-10.0-ga"
+c_opts = "/5r /s /otexan"
+assembler_profile = "wasm"
+
+[watcom]
+modules = "modules.json"
+# Recommended: reference_sha256 = "<actual full-file SHA-256>"

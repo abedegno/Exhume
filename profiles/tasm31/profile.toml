@@ -1,0 +1,17 @@
+name = "Borland Turbo Assembler 3.1"
+kind = "assembler"
+
+[asm]
+producer = "tasm"
+command = "TASM {opts} {file}"
+default_opts = "/ml"
+
+[log]
+problem = "(Error|Warning|Fatal)"
+benign = "messages:\\s+None"
+fatal = "(Error|Fatal)"
+
+[setup]
+tasm_sha256 = "80534cd6a1e2c2b4376ae3f21954c6dbfa77a6998d5e0bf8b8bee6153f3174ea"
+tasmx_sha256 = "421decd9cde792c49cc35c096c93e092df98188e96fc43a58e00ee48a21b2724"
+archive_sha256 = "76e155a7fb7eb0590930ecd513644c977497a020466a272943776fbf683d0f27"

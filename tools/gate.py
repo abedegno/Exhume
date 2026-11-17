@@ -348,6 +348,10 @@ def main(argv):
     path, a = config.pop_config(argv)
     if not a or a[0] in ('-h', '--help'): print(__doc__); return 0
     cfg = config.load(path)
+    if cfg.object_model == 'omf32-le':
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        import importlib
+        return importlib.import_module('wgate').main(cfg, a)
     if cfg.object_model == 'linked-image':
         # a linked image (armcc5) has its own gate: the image rebuilt in pieces, and its modded build
         sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))

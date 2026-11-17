@@ -89,6 +89,10 @@ def code_segment(cfg, segs):
 def main(argv):
     path, a = config.pop_config(argv)
     cfg = config.load(path)
+    if cfg.object_model == 'omf32-le':
+        sys.path.insert(0, os.path.join(cfg.profile_dir, 'tools'))
+        import importlib
+        return importlib.import_module('wmatch').main(cfg, a)
     object_path = None
     if '--object' in a:
         i = a.index('--object')

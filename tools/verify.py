@@ -350,6 +350,10 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
     global CFG, DS_FILE, DS_PARA
     path, a = config.pop_config(sys.argv[1:] if argv is None else argv)
     CFG = config.load(path)
+    if CFG.object_model == 'omf32-le':
+        sys.path.insert(0, os.path.join(CFG.profile_dir, 'tools'))
+        import importlib
+        return importlib.import_module('wverify').main(CFG, a)
     if type(code_frame_resident_ds) is not bool:
         print('PROBLEM resident own-CODE policy: keyword must be exact bool')
         print('-- 1 problems')

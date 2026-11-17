@@ -32,6 +32,19 @@ Paths are relative to `[project] root` (and root to the config file) unless abso
 - `sessions`: DOS sessions at once for the gate, `build.py`, the modding build and `buildd.py` (default: one per core up to 12 in a native DOS, 3 in js-dos). The environment's `EXHUME_DOS_SESSIONS` wins over it.
 - `native`: `"bcc20"` compiles the C sources of the default compiler on the borland-bc20 profile in-process, with the bcc20 port's library (borland-reborn's bcc20-port, `make shlib`; `BCC20_LIB` names it) instead of in DOS: the same command line, `C:\` staged as for a DOS session, the object and console text back from memory, at most `native_workers` at once (`[toolchain] native_workers`, the environment's `EXHUME_NATIVE_WORKERS`, or build.py's `--jobs`; default one fewer than the cores), on the port's compile servers (`bcc20run --serve`, tools/bcc20.py's `Pool`), at `native_nice` priority (`EXHUME_NATIVE_NICE`; POSIX). A compile that runs TASM (`-B`, inline assembly) and sources of another compiler still build in DOS. Every source of borland-reborn's bcc20 project matches this way, and a compile takes about 20 ms instead of a DOS session's second. The environment's `EXHUME_NATIVE` wins (`0` turns it off). The gate's toolchain hash includes the setting and the library, so switching rebuilds everything.
 
+## [watcom]
+
+With `[toolchain] profile = "watcom"`, the public build/match/verify/merge/gate commands dispatch to the [Watcom profile](../profiles/watcom/README.md). `[binary] image` (or `exe`) is the reference LE file. The profile runs DOSBox-X directly, selected by PATH or `EXHUME_DOSBOX_X`; the generic `dos`, `stage`, queue and session settings do not select this runner.
+
+- `modules`: required project-relative JSON manifest path. See [the example config](../profiles/watcom/examples/exhume.toml) and [manifest](../profiles/watcom/examples/modules.json).
+- `reference_sha256`: optional expected SHA-256 of the complete reference file; set it to pin target identity.
+
+The manifest has `schema: 1` and a nonempty `modules` object keyed by project-relative source paths. Each module requires `placements`: one-based OMF segment index to `[one-based LE object, object-relative offset]`, covering exactly all nonempty segments. Optional fields are `symbols`, `group_frames`, `options`, `home`, `assembler`, `include`, `module_name` and `source_name`; [the profile guide](../profiles/watcom/README.md#project-configuration) describes them. Per-module compiler/assembler homes and switches allow mixed measured tool revisions. `assembler_profile` under `[toolchain]` defaults to `wasm`; a module can independently select the `tasm31` assembler component or `masm51`.
+
+The complete declared-module CLI does not use Borland target TSVs, `/* opts: */` source comments or `symbols.tsv` acceptance. Match/verify build fresh unless `--no-build` or a single `--object PATH` is requested; merge/gate require fresh builds. Merge writes `<build>/watcom/accepted.json`.
+
+For gate `check`/`exact`, the same manifest must include `link.command` as a nonempty argv list and `link.output` as a project-relative path to a separate file inside the build directory. The command runs in the project root without shell expansion or the generic `[gate]` placeholders. Supply your own link driver and exact library/member order, tool identities and vendor binding policy. The gate compares the entire resulting file without masks; it does not infer that all target spans came from owned sources. Complete source coverage and supplied-component attribution remain separate project obligations. LE is supported; LX is not.
+
 ## [names]
 
 - `original_symbols`: a symbol table whose names count as original (the sibling's). symbols.tsv labels such names with `original_label`, runtime helpers `library`, and the rest `provisional`.

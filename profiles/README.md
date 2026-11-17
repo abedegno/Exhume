@@ -50,11 +50,19 @@ environment (`profiles/ti-c2000/tests/synth.py`).
 Next for this family: EABI (from 18.12; other section names and an ELF object reader), the CLA
 compiler, and the C2000 parts without the FPU (`rts2800_ml.lib`).
 
+## watcom
+
+[Watcom C32 / OMF32 / LE](watcom/README.md), with DOSBox-X builds, complete declared-module verification, typed fixups, private symbol scope and a project-owned exact-link command. The callable function matcher supports focused work; the CLI proves complete modules. LE is supported, LX is not. Full-file identity and complete source coverage are separate claims. Historical compiler media and libraries remain user supplied. See the [generic config and manifest](watcom/examples/exhume.toml).
+
+## tasm31 (assembler component)
+
+[Turbo Assembler 3.1](tasm31/assembler.md) can be selected per assembly module alongside Watcom C/WASM or MASM. It selects no C compiler, linker or extender. Its setup verifies user-supplied media and extracts local tools; no proprietary binaries are bundled.
+
 ## Profiles that would come naturally next (not written)
 
 - **Borland C++ 2.0 / 3.x and Turbo C 2.0.** The nearest neighbours: same object format, same linker family and overlay manager in 3.x, much of compiler.md likely to carry over but every rule to be re-proven (the `_BSS` hash and public order in particular).
 - **Microsoft C 5.1 to 7.0 and MASM 5.1/6.0 with LINK.** The other large DOS family. Different runtime strings, `_TEXT` naming and frame habits, its own overlay scheme (MOVE in 7.0 or the older static overlays), no FBOV. MASM 5.1 is also single-pass, and some of UW2's overlay manager code looks MASM-assembled, so assembler.md's padding rules are the place to start telling them apart.
-- **Watcom C/C++ 9.x to 11 with WLINK, often with a DOS/4GW extender.** 32-bit flat code and register calling (UW2's FM Towns sibling is Watcom code). It needs an LE/LX reader beside the MZ one, and a different model of fixups.
+- **Broader Watcom/Open Watcom and LX support.** Extend the measured OMF32/LE profile above with independently tested releases and formats. Current LE support does not imply LX support.
 - **DJGPP (GCC for DOS, COFF in a stub EXE).** Matching GCC means pinning the exact GCC and binutils versions and flags; register allocation is far less predictable than Turbo C's.
 
 Each needs its own fingerprint strings, build commands, log patterns, object-format support where it is not OMF, and its compiler.md written from matched code, not from documentation.

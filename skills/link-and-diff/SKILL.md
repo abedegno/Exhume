@@ -7,6 +7,26 @@ description: Use when the matched objects of a DOS decompilation are to be linke
 
 Paths are relative to the Exhume checkout. The link is the strongest check there is: it sees what byte matching with masked fixups cannot (wrong callees, missing relocations, wrong statics, public order), and a byte-identical EXE that runs is the end of the method.
 
+## Proof levels and source ownership (Watcom and new backends)
+
+Declare the attained level in each report; these checks answer different questions.
+
+| Level | Establishes | Does not establish |
+| --- | --- | --- |
+| Masked byte candidate | Likely placement/code-generation shape | Callee identities, data ownership or relocation correctness |
+| Complete contribution | All emitted bytes, BSS, publics/private scopes and typed fixups at declared placements | Link selection/order or original object serialization |
+| Semantic linked image | Loaded bytes and loader operations, including addends and logical segment frames | Raw relocation packet order, page encoding or bound container identity |
+| Serialized native image | Complete native file bytes, headers, page tables and relocation serialization | Separately bound vendor prefix or complete target file |
+| Full target file | Fresh complete build has equal size and SHA-256, with an unmasked byte comparison | Unique historical spelling, all-C reconstruction, or ownership of supplied libraries |
+
+For a final **owned-source** gate, production compiles every declared owned node in a fresh child. Reference images and SDK/game object members are observer inputs only. Declare supplied stock compiler members, library order, sound banks and vendor binder prefix separately with hashes and zero recovered-source credit. Keep the observer outside production. Run fresh normal and `python3 -O` validation when introducing a producer/checker; required checks must use explicit exceptions, not assertions removed by optimization.
+
+Freeze each raw producer output and SHA-256 **before parsing, copying or publication**. Parse that same immutable RAW snapshot; verify staged bytes against the pre-copy hash, recheck producer/tool/source namespaces across tools, and publish only bytes equal to the frozen snapshot. A parsed model or later hash cannot prove that earlier bytes were unchanged. Test mutation and truncated/stale-output rejection.
+
+Source-owned CODE record-span plans may control native emitter metadata over fresh ELF/COFF inputs: prove exact contiguous coverage and that every relocation field fits wholly inside a span. Plans contain no opcodes, target-byte substitutions or relocation permutations. Do not patch objects/executables or use instruction-byte payloads to earn source credit. Classify preserved noninstruction DATA honestly, with explicit extents and unknown origin; it earns no historical source credit.
+
+This strengthens the final gate for the Duke Watcom case and new backends. Existing Borland extraction-based links above remain useful **partial reconstruction** stages; their extracted gaps/code must be counted as supplied bytes, and an exact extracted link alone is not an owned-source result. No Borland command or acceptance dispatch is changed here. Optional GNU/objconv emission is separately licensed; see [the audit](../../docs/audits/duke3d-reuse.md), not a license grant to copy it into MIT core.
+
 ## What a link needs
 
 - Every object, in the original module order. The relocation table records it: the linker writes relocations module by module, and a library's modules in library order. An overlay segment table (Borland FBOV) lists every segment in link order too.

@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "scope": "Measured DOS tool identities; not historical compiler identification or bundled binaries",
+  "toolchains": [
+    {
+      "version": "10.0-ga",
+      "tools": {
+        "BINB/wcc386.exe": {
+          "sha256": "a4f4da1b8b2cd4e38b2b041975fc6b1d131255ae5eb575828b02f927fbf9bf65",
+          "bytes": 536624
+        },
+        "BINB/wasm.exe": {
+          "sha256": "a4419d0acab40f841d6fd00540f1813f6128d9630fbb150fc4618646c358f7f2",
+          "bytes": 181568
+        }
+      }
+    },
+    {
+      "version": "10.0a",
+      "tools": {
+        "BINB/wcc386.exe": {
+          "sha256": "c3666de94f6fa6800f452dae8acf45505ecdb62f0ade2cc27cc86c2d9e8e2b6b",
+          "bytes": 541364
+        },
+        "BINB/wasm.exe": {
+          "sha256": "a79e0dc11a26b098728aa988cfc974113e7ac5d28c81baded1f077ed27be0513",
+          "bytes": 181668
+        }
+      }
+    },
+    {
+      "version": "10.0b",
+      "tools": {
+        "BINB/wcc386.exe": {
+          "sha256": "2b6672b7cb109452a31cb7fd6bf6776f518f43466f66dc3efd8365708fd243c6",
+          "bytes": 537990
+        },
+        "BINB/wasm.exe": {
+          "sha256": "a79e0dc11a26b098728aa988cfc974113e7ac5d28c81baded1f077ed27be0513",
+          "bytes": 181668
+        }
+      }
+    },
+    {
+      "version": "10.5",
+      "tools": {
+        "BINW/wcc386.exe": {
+          "sha256": "1b97a68f7b8a3efd89b05f64ce99836b1e533f398699305f96dc423254939d6a",
+          "bytes": 567558
+        },
+        "BINW/wasm.exe": {
+          "sha256": "06c5bb2488d3b5f936d01c1006712ba618c8c802e1cecb8372db16d5e75adad8",
+          "bytes": 201181
+        },
+        "BINW/wlink.exe": {
+          "sha256": "a0f1162b3e68a80bdee2cf6d10db9b33235fb1f074146e3d0a08f928f4a1685c",
+          "bytes": 282554
+        }
+      }
+    }
+  ]
+}

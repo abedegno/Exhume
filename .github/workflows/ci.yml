@@ -28,6 +28,11 @@ jobs:
           node-version: "22"
       - name: The repository check
         run: python3 tools/repocheck.py
+      - name: Watcom and TASM synthetic proofs (no proprietary tools)
+        run: |
+          python3 -m unittest discover -s profiles/watcom/tests -t .
+          python3 -O -m unittest discover -s profiles/watcom/tests -t .
+          python3 -m unittest profiles.tasm31.test_setup
       - name: Every tool compiles
         run: python3 -m py_compile tools/*.py examples/uw2/*.py
       - name: actionlint
