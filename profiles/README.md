@@ -43,7 +43,8 @@ placeholder object (`c28disasm.py`), per-function matching by linking each sourc
 addresses (`c28match.py`), the whole-image gate (`c28gate.py`), the `.ebss` order solver
 (`c28ebss.py`), the runtime-library fingerprint (`c28libfp.py`) and a batch search for one
 function's variants (`c28batch.py`). `compiler.md` and `linker.md` hold what matching taught,
-`match-brief.md` is the brief for matching agents. Its tests run without the toolchain; the
+`match-brief.md` is the brief for matching agents, and `ghidra.md` is how to read a bare image in
+Ghidra before matching. Its tests run without the toolchain; the
 integration tests build a synthetic firmware with TI's compiler when one is named in the
 environment (`profiles/ti-c2000/tests/synth.py`).
 
