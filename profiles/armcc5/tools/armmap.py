@@ -132,6 +132,11 @@ def groups(placements):
             # needs that one's region (armlink rounds a region's end up to 4)
             if same_space and addr % 4 and addr == end:
                 out[-1].append((sec, addr, size)); continue
+            # two sections of one name (an object's second .data, say) can't be told apart by a
+            # selector, and their sizes are known only by name: one region with the name once
+            # places both in order (a gap between them then shows as a mismatch)
+            if same_space and sec.split('#')[0] == psec.split('#')[0]:
+                out[-1].append((sec, addr, size)); continue
         out.append([(sec, addr, size)])
     return out
 
@@ -170,8 +175,9 @@ def scatter_text(obj_name, placements):
     for i, g in enumerate(groups(placements), 1):
         regions[f'ER_{i}'] = [(sec, addr) for sec, addr, _ in g]
         first = g[0][1]
-        pin = len(g) > 1 and not first % 4          # an unaligned group's pad is already +FIRST
-        sel = ' '.join(f'{obj_name}({sec}{", +FIRST" if k == 0 and pin else ""})' for k, (sec, _, _) in enumerate(g))
+        # an unaligned group's pad is already +FIRST; a group of one name needs no pin
+        pin = len(g) > 1 and not first % 4 and len({sec.split('#')[0] for sec, _, _ in g}) > 1
+        sel = ' '.join(dict.fromkeys(f'{obj_name}({sec.split("#")[0]}{", +FIRST" if k == 0 and pin else ""})' for k, (sec, _, _) in enumerate(g)))
         if first % 4:
             k += 1
             lines += [f'LR_{i} 0x{0x0E000000 + 0x10000 * k:08X} {{',
