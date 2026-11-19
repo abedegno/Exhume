@@ -337,10 +337,11 @@ def link(o, bases, table):
 def section_indexes(info, placements):
     """([(section index, addr)], errors) for armmatch.place's placements [(name, addr)].
 
-    armmatch.place names a section, but one object can hold several sections of one name. It
-    walks the sections in index order and places each by its own symbols, so the k-th placement
-    of a repeated name is the k-th section of that name. That holds only when every section of
-    the name is placed (none left unplaced); otherwise it is an error."""
+    armmatch.place names a section, as name#index where one object holds several sections of
+    one name (armmatch.section_keys). A bare repeated name (a forced placement) is taken in
+    order: armmatch.place walks the sections in index order, so the k-th placement of the name
+    is the k-th section of that name. That holds only when every section of the name is placed
+    (none left unplaced); otherwise it is an error."""
     by_name = {}
     for i, (n, _) in sorted(info.sections.items()):
         by_name.setdefault(n, []).append(i)
@@ -349,6 +350,9 @@ def section_indexes(info, placements):
         count[name] = count.get(name, 0) + 1
     out, errors, seen = [], [], {}
     for name, a in placements:
+        base, _, num = name.rpartition('#')
+        if base and num.isdigit() and info.sections.get(int(num), (None,))[0] == base:
+            out.append((int(num), a)); continue     # armmatch.section_keys names the section itself
         ix = by_name.get(name, [])
         if not ix:
             errors.append(f'section {name}: no section of that name'); continue
