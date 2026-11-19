@@ -5,6 +5,9 @@
     python3 armreplay.py [--config PATH] sweep TRACE --webs WEBS.json (--swap A:B | --want WANT.json)
                          [--vars a,b,c] [--top N] [--jobs N] [--otime | --no-otime]
     python3 armreplay.py [--config PATH] sweep TRACE --webs WEBS.json --order a,b,c [--against TRACE2]
+    python3 armreplay.py [--config PATH] premoves TRACE [--index N] [--out FILE]
+    python3 armreplay.py [--config PATH] refs TRACE [--index N] NODE=REFS[,NODE=REFS...] ...
+    (check, tie, sweep and refs take --premoves FILE and --plain)
 
 TRACE is a level-5 allocator trace (armtrace.py run). The replay starts from the trace's first
 graph, the nodes' initial work lists and their weighted reference counts, and runs armcc 5.06's
@@ -14,6 +17,8 @@ changes, move clashes added at each removal, the strict coalescing test, a secon
 removes the first pass's spills first, and the vote among copy partners. With no vote a node
 takes the first free register in the build's order: r0-r7, ip, r8-r11, lr from a preferred set
 (r0-r3, ip and registers already handed out) without -Otime; r0-r3, ip, r4-r11, lr with it.
+--plain (or ARMREPLAY_PLAIN=1) drops the preferred set: the traces of one 5.06u3 -O1 firmware
+without -Otime fit only that (compiler.md, "How the register allocator chooses").
 --otime or --no-otime chooses; otherwise -Otime is read from the project's options (SRC's
 `/* opts: */` line with --src, else c_opts), and with no project, the rule that reproduces the
 trace's colours is used.
@@ -37,6 +42,19 @@ trace's colours is used.
          in the traced numbering. --order scores one order and prints its colours; with --against
          TRACE2 (a real trace of the source in that order) it compares node for node, the check to
          make before trusting a sweep. A score of 0 is a candidate to build, never a match.
+
+  premoves  the graph dump leaves out moves to precoloured registers, and the coalescing test at
+         a removal needs them (graphs with spills disagree without them). premoves starts from
+         every such move the removals print and drops those a move-clash event contradicts, and
+         writes them as JSON for --premoves. Each takes part in the coalescing test. One the node
+         holds from the start counts as a move in the heap keys too, and one it only gained by
+         coalescing (a partner's move to the register) does not: premoves marks the first kind
+         with a third field 'k'. ascii_dispatch_command of one 4009 firmware (14,966 nodes)
+         agrees only so; 85 smaller functions agree either way (ARMREPLAY_PMKEYS=none restores
+         the earlier rule).
+  refs   set nodes' weighted reference counts to other values and list the nodes whose register
+         changes. When the image has two values the other way round, this shows which count has
+         to move and how far (compiler.md, "Reference counts as targets").
 
 Registers are numbered 0-12 and 14 (12 is ip, 14 lr); -5 is a spill.
 """
@@ -137,12 +155,34 @@ class State:
         self.C = {n: set(G['C'].get(n, ())) for n in nodes}
         self.X = {n: set() for n in nodes}
         self.M = {n: set(G['M'].get(n, ())) for n in nodes}
+        # moves to precoloured registers the graph dump leaves out (graph(premoves=)): they take
+        # part in the coalescing test at a removal, not in the heap keys
+        self.PM = {n: set(G.get('PM', {}).get(n, ())) for n in nodes}
         self.direct, self.uncoal, self.refs = G['direct'], G['uncoal'], G['refs']
+        self.size = G.get('size', {})
+        self.extra = G.get('extra', {})
         self.nonspill, self.second = G['nonspill'], move_clashes
         self.status, self.pos, self.alias, self.stack, self.snap, self.log = {}, {}, {}, [], {}, []
+        self.frag = {}
+        if UNINIT_EDGES:
+            ns_ = set(nodes)
+            self.frag = {n: n + 1 for n in nodes if self.size.get(n, 1) == 2 and n + 1 in ns_
+                         and G['init'].get(n + 1) == UNINIT}
+        self.parent = {f: n for n, f in self.frag.items()}
+        self.pair_extra = 0
+        self.pass2 = False
+        self.keep = collections.Counter()   # removed clashes of a second half that never left the pair's count
         refs, sec, C, X, M = self.refs, self.second, self.C, self.X, self.M
-        deg = lambda n: len(C[n])
-        deg2 = lambda n: len(C[n]) + len(X[n])
+        EX = G.get('extra', {})
+        FR = self.frag
+        _pre = lambda a, b: sum(1 for x in a & b if self.status.get(x) == PRE)
+        # the keys count clashes; with ARMREPLAY_UNINIT a pair counts both halves (as its status)
+        deg = lambda n: (len(C[n]) + len(C[FR[n]]) + self.keep[n] if n in FR else len(C[n])) + EX.get(n, 0)
+        deg2 = lambda n: deg(n) + (len(X[n]) + len(X[FR[n]]) if n in FR else len(X[n]))
+        PM = self.PM
+        PMK = {n: set(G.get('PMK', {}).get(n, ())) for n in nodes}
+        OM = G.get('OM', {})
+        mv = lambda h: (lambda n: len(M[n] | PMK[n]) + OM.get(n, 0)) if h in PMKEYS else (lambda n: len(M[n]) + OM.get(n, 0))
 
         def keys(a, b, *fs):
             for f in fs:
@@ -150,19 +190,20 @@ class State:
                 if r: return r
             return b - a                      # on a tie of every key, the higher number first
 
-        def cmp_low(a, b):
-            fs = [refs.get, lambda n: len(M[n])] + ([deg2] if sec else []) + [deg]
+        def cmp_low(a, b, nmov=mv('lo')):
+            fs = [refs.get, nmov] + ([deg2] if sec else []) + [deg]
             return keys(a, b, *fs)
 
-        def cmp_high(a, b):
-            fs = [refs.get, lambda n: len(M[n])] + ([lambda n: -deg2(n)] if sec else []) + [lambda n: -deg(n)]
+        def cmp_high(a, b, nmov=mv('hi')):
+            fs = [refs.get, nmov] + ([lambda n: -deg2(n)] if sec else []) + [lambda n: -deg(n)]
             return keys(a, b, *fs)
 
-        def cmp_hns(a, b):
-            fs = [deg, refs.get, lambda n: len(M[n])] + ([deg2] if sec else [])
+        def cmp_hns(a, b, nmov=mv('hns')):
+            fs = [deg, refs.get, nmov] + ([deg2] if sec else [])
             return keys(a, b, *fs)
 
-        self.H = {XL: Heap(cmp_low, self.pos), LO: Heap(cmp_low, self.pos), HI: Heap(cmp_high, self.pos),
+        cmp_xl = lambda a, b, nmov=mv('xl'): keys(a, b, *([refs.get, nmov] + ([deg2] if sec else []) + [deg]))
+        self.H = {XL: Heap(cmp_xl, self.pos), LO: Heap(cmp_low, self.pos), HI: Heap(cmp_high, self.pos),
                   HNS: Heap(cmp_hns, self.pos)}
         for n in sorted(nodes):
             s = G['init'][n]
@@ -171,54 +212,110 @@ class State:
             if s in self.H: self.H[s].push(n)
 
     def calc_status(self, n):
-        d = len(self.C[n])
+        # a node of two registers (a 64-bit value) needs a free pair: its degree counts twice
+        w = self.size.get(n, 1)
+        f = self.frag.get(n)
+        if f is not None:
+            # ARMREPLAY_UNINIT: the pair's second register is its own node. The low test counts each
+            # half's clashes (the pair's clash with itself too) with a precoloured register that
+            # clashes with both halves once; the extra-low test leaves precoloured clashes out and
+            # adds every move clash of both halves
+            C, X, P = self.C, self.X, (lambda x: self.status.get(x) == PRE)
+            k = self.keep[n]
+            d = len(C[n]) + len(C[f]) - sum(1 for x in C[n] & C[f] if P(x)) + self.extra.get(n, 0) + k
+            dv = sum(1 for x in C[n] if not P(x)) + sum(1 for x in C[f] if not P(x)) + self.extra.get(n, 0) + k
+            # a half's clash with a move partner of the other half counts two more in the
+            # extra-low test
+            odd = 2 * sum(1 for p in (self.M[n] & C[f]) | (self.M[f] & C[n]) if not P(p))
+            if self.second and d < K and dv + len(X[n]) + len(X[f]) + odd < K: return XL
+            if not self.second and d < K: return XL
+            if d < K: return LO
+            return HNS if n in self.nonspill else HI
+        d = len(self.C[n]) * w + self.extra.get(n, 0)
+        dx = len(self.X[n]) * w
         if self.second:
-            if d + len(self.X[n]) < K: return XL
+            if d + dx < K: return XL
         elif d < K:
             return XL
         if d < K: return LO
         return HNS if n in self.nonspill else HI
 
-    def update(self, n):
+    def update(self, n, via_half=False):
         s = self.status.get(n, UNINIT)
+        if s == UNINIT and n in self.parent and via_half: n = self.parent[n]; s = self.status.get(n, UNINIT)
         if s in (SIMP, COAL, UNINIT, PRE): return
         t = self.calc_status(n)
+        if UNINIT_EDGES and n in self.frag and s == XL: return     # a pair never leaves extra low
         if t != s:
             self.log.append(('chg', n, NS[s], NS[t]))
             self.H[s].remove(n); self.status[n] = t; self.H[t].push(n)
 
     def add_x(self, a, b):
-        if a == b or b in self.C[a] or self.status.get(a) == UNINIT or self.status.get(b) == UNINIT: return
+        if a == b or b in self.C[a]: return
+        if not UNINIT_EDGES and (self.status.get(a) == UNINIT or self.status.get(b) == UNINIT): return
         self.X[a].add(b)
 
     def simplify(self, v, second=True):
         """Remove v from the graph. second=False is the plain removal of a pass-1 spill at the
-        start of pass 2: clash neighbours are updated, no move clashes are made."""
+        start of pass 2: clash neighbours are updated, no move clashes are made. A 64-bit node's
+        second register (ARMREPLAY_UNINIT) is removed with it as its fragment 1."""
         C, X, M = self.C, self.X, self.M
-        self.snap[v] = (frozenset(C[v]), frozenset(X[v]))
-        for w in C[v]: C[w].discard(v)
-        if second:
-            for w in X[v]: X[w].discard(v)
-        self.status[v] = SIMP
+        f = self.frag.get(v)
+        parts = [v] + ([f] if f is not None else [])
+        if not second and UNINIT_EDGES:
+            self.pass2 = True
+        for u in parts:
+            self.snap[u] = (frozenset(C[u]), frozenset(X[u]))
+            if UNINIT_EDGES:
+                # a removed node that clashes only with a pair's second half leaves the pair's count
+                for w in C[u]:
+                    p = self.parent.get(w)
+                    if p is not None and p not in C[u]: self.keep[p] += 1
+            for w in C[u]: C[w].discard(u)
+            if second:
+                for w in X[u]: X[w].discard(u)
+            self.status[u] = SIMP
         if not second:
-            for w in sorted(C[v], reverse=True): self.update(w)
-        else:
-            if len(C[v]) * len(M[v]) < 1000:
-                for m in sorted(M[v], reverse=True):
-                    if self.status.get(m) in (SIMP, COAL): continue
-                    if X[v] & M[m]: self.log.append(('int', 'move', m))
-                    elif C[v] & M[m]: self.log.append(('int', 'clashes', m))
+            # pre-spilling (the trace prints no status changes here); a pair is not rechecked
+            # through its second half
+            for u in parts:
+                for w in sorted(C[u], reverse=True):
+                    if UNINIT_EDGES and w in self.frag:
+                        # pre-spilling: a pair is rechecked with the spilled node's clashes still counted
+                        f2 = self.frag[w]; back = [x for x in (w, f2) if x in self.snap[u][0]]
+                        for x in back: C[x].add(u)
+                        sec, self.second = self.second, False   # no move clashes in this test
+                        self.update(w, False)
+                        self.second = sec
+                        for x in back: C[x].discard(u)
                     else:
-                        self.log.append(('amc', m))
-                        for e in sorted(C[v], reverse=True): self.add_x(m, e); self.add_x(e, m)
-                        for e in sorted(X[v], reverse=True): self.add_x(m, e); self.add_x(e, m)
-                self.log.append(('mkrel',))
-                for m in [m for m in M[v] if self.status.get(m) not in (SIMP, COAL)]:
-                    for p in M[v]:
-                        if p != m: M[m].add(p)
-            for w in sorted(X[v], reverse=True): self.update(w)
-            for w in sorted(C[v], reverse=True): self.update(w)
-            for w in sorted(M[v], reverse=True): self.update(w)
+                        self.update(w, False)
+        else:
+            for u in parts:
+                if len(C[u]) * len(M[u]) < 1000:
+                    for m in sorted(M[u], reverse=True):
+                        if self.status.get(m) in (SIMP, COAL): continue
+                        if m not in M: continue
+                        # pass 2: a pair's second half is not a move partner here
+                        if self.pass2 and m in self.parent: continue
+                        Mm = M[m] | self.PM.get(m, set()) if self.status.get(m) == PRE else (
+                            M[m] | (self.PM.get(m, set()) & C[m]) if UNINIT_EDGES else M[m])
+                        # the fragment's partners get the 64-bit node's clashes
+                        if u == v and X[u] & Mm: self.log.append(('int', 'move', m))
+                        elif C[u] & Mm: self.log.append(('int', 'clashes', m))
+                        else:
+                            self.log.append(('amc', m))
+                            for e in sorted(C[v], reverse=True): self.add_x(m, e); self.add_x(e, m)
+                            for e in sorted(X[v], reverse=True): self.add_x(m, e); self.add_x(e, m)
+                    self.log.append(('mkrel',))
+                    rel = M[u] | (self.PM.get(u, set()) if UNINIT_EDGES else set())
+                    for m in [m for m in rel if self.status.get(m) not in (SIMP, COAL) and m in M]:
+                        for p in rel:
+                            if p != m: M[m].add(p)
+                # each half's neighbours are rechecked before the next half is handled
+                for w in sorted(X[u], reverse=True): self.update(w)
+                for w in sorted(C[u], reverse=True): self.update(w)
+                for w in sorted(M[u], reverse=True): self.update(w)
         if not self.coalesce(v): self.stack.append(v)
 
     def coalesce(self, v):
@@ -258,24 +355,43 @@ class State:
 # ---------------------------------------------------------------- the graph from a trace
 
 
-def graph(T, hidden=()):
+PREMOVES = ()      # set by --premoves
+PLAIN = bool(os.environ.get('ARMREPLAY_PLAIN'))     # set by --plain
+# the heaps whose keys count the initial premoves as moves: ARMREPLAY_PMKEYS=hi,lo,xl,hns (the
+# default, all four), or ARMREPLAY_PMKEYS=none for the earlier rule (premoves in no key)
+PMKEYS = set(os.environ.get('ARMREPLAY_PMKEYS', 'hi,lo,xl,hns').split(',')) - {'none', ''}
+# ARMREPLAY_UNINIT=1: count the dump's clashes and moves to uninitialised nodes (in place of the
+# extra-degree estimate); soc_reconcile_capacity of one 4009 firmware needs it
+UNINIT_EDGES = bool(os.environ.get('ARMREPLAY_UNINIT'))
+
+
+def graph(T, hidden=(), premoves=None):
     """The allocator's input from a parsed colouring: nodes, clashes, moves, direct copies,
-    weighted references, non-spill nodes, pairs the trace says cannot coalesce, initial lists."""
+    weighted references, non-spill nodes, pairs the trace says cannot coalesce, initial lists.
+    premoves: (node, precoloured register) pairs that are moves at the start (premoves())."""
     g0, P1 = T['g0'], T['passes'][0]
     init = {n: SN[v[2]] for n, v in P1['init'].items()}
-    nodes = [n for n, s in init.items() if s in (XL, LO, HI, HNS, PRE)]
+    nodes = [n for n, s in init.items() if s in (XL, LO, HI, HNS, PRE) or (UNINIT_EDGES and s == UNINIT)]
     ns = set(nodes)
     C, M = collections.defaultdict(set), collections.defaultdict(set)
+    # an uninitialised node right after a 64-bit node is that value's second register; the clash
+    # between them counts in the pair's degree although the removals do not print it
     for a, b in g0['clash']:
         if a in ns and b in ns: C[a].add(b); C[b].add(a)
     for (a, b) in g0['move']:
         if a in ns and b in ns: M[a].add(b); M[b].add(a)
     for a, b in hidden:
         M[a].add(b); M[b].add(a)
+    PM, PMK = collections.defaultdict(set), collections.defaultdict(set)
+    for x in (PREMOVES if premoves is None else premoves):
+        a, b = x[0], x[1]
+        if a in ns and b in ns:
+            PM[a].add(b); PM[b].add(a)
+            if len(x) > 2: PMK[a].add(b)
     direct = {frozenset(k) for k, w in g0['move'].items() if w == 5} | {frozenset(k) for k in hidden}
     refs = {}
     for P in T['passes']:
-        for s in P['steps']: refs[s['n']] = s['refs']
+        for s in P['steps']: refs.setdefault(s['n'], s['refs'])     # the first pass's count
         for c in P['col']: refs.setdefault(c['n'], c['refs'])
     for n in nodes: refs.setdefault(n, 0)
     uncoal = set()
@@ -284,7 +400,18 @@ def graph(T, hidden=()):
             for t in s['coal'] or []:
                 if 'uncoalesceable' in t: uncoal.add(frozenset((s['n'], int(t.split()[3]))))
     nonspill = {n for n, s in init.items() if s == HNS}
-    return dict(nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
+    size = {n: max(1, v[0]) for n, v in P1['init'].items()}
+    # the dump leaves out some clashes (as it leaves out moves to precoloured registers): a node
+    # the trace starts as high with fewer clashes than K gets the missing count as extra degree
+    extra, OM = {}, collections.defaultdict(int)
+    if UNINIT_EDGES:
+        pass   # uninitialised nodes are in the graph (never removed): their clashes and moves count
+    else:
+        for n in nodes:
+            if init[n] in (HI, HNS):
+                d = len(C[n]) * size.get(n, 1)
+                if d < K: extra[n] = K - d
+    return dict(extra=extra, OM=OM, size=size, PM=PM, PMK=PMK, nodes=nodes, C=C, M=M, direct=direct, refs=refs, nonspill=nonspill, uncoal=uncoal, init=init)
 
 
 def nullset(T, passno=1):
@@ -310,12 +437,21 @@ def colour(st, otime, nulls=frozenset()):
         while w in alias: w = alias[w]
         return col.get(w)
 
+    frag = getattr(st, 'frag', {})
     for v in reversed(st.stack):
         Cv, Xv = st.snap[v]
+        fv = frag.get(v)
         cc = {get(w) for w in Cv}
         A = [r for r in REGS if r not in cc]
         xc = {get(w) for w in Xv}
         B = [r for r in A if r not in xc]
+        if fv is not None:
+            # a 64-bit value takes r and r+1: r against the first half's clashes, r+1 against
+            # the second's
+            cf = {get(w) for w in st.snap[fv][0]}; xf = {get(w) for w in st.snap[fv][1]}
+            A = [r for r in A if r + 1 in REGS and r + 1 not in cf]
+            B = [r for r in B if r + 1 in REGS and r + 1 not in cf and r + 1 not in xf]
+            Cv = Cv | st.snap[fv][0]
         unc = sum(1 for w in Cv if not real(get(w)))
 
         def vote(S):
@@ -331,7 +467,7 @@ def colour(st, otime, nulls=frozenset()):
 
         def choose(S):
             if v in nulls or not S: return None
-            if not otime:
+            if not otime and not PLAIN:
                 pref = [r for r in S if r in PREFERRED or r in handed]
                 if pref and unc < len(pref):
                     c = next(r for r in order if r in pref); handed.add(c); return c
@@ -346,6 +482,7 @@ def colour(st, otime, nulls=frozenset()):
             if c is None: c, how = choose(A), 'first-all'
             if c is None: c, how = NULL, 'null'
         col[v] = c; rec[v] = (A, B, how)
+        if fv is not None: col[fv] = c + 1 if real(c) else c
     for v in st.alias:
         col[v] = get(v)
     return col, rec
@@ -405,11 +542,14 @@ def check_pass(T, passno, G, spills_first=(), maxerr=5):
         if 'before' not in s: return
         for k, mine in (('Clashes', st.C[v]), ('Extra', st.X[v]), ('Moves', st.M[v])):
             tr = {m for m, _ in s['before'].get(k, ())}
+            if UNINIT_EDGES: tr = {m for m in tr if m in st.M}   # uninitialised partners count in G['OM'] / extra
             if tr != mine:
                 err['sets'].append((i, v, k, 'replay only', sorted(mine - tr)[:8], 'trace only', sorted(tr - mine)[:8]))
                 if k == 'Moves':
-                    hid.update((v, p) for p in tr - mine if p in C0[v])
+                    hid.update((v, p) for p in tr - mine if p in C0[v] or G['init'].get(p) == PRE)
                     st.M[v] = set(tr)
+                    for p in tr:
+                        if p in st.M: st.M[p].add(v)
                 if k == 'Extra': st.X[v] = set(tr)
 
     i = 0
@@ -646,6 +786,97 @@ def sweep(T, webs, want, otime, vars_=None, jobs=1, hidden=()):
 # ---------------------------------------------------------------- command line
 
 
+# ---------------------------------------------------------------- moves to precoloured registers
+
+
+def premoves(T, rounds=30):
+    """The moves to precoloured registers that are there at the start: every one the trace's
+    pass-1 removals print, less those a move-clash event contradicts (an 'amc' to a register
+    whose moves meet the node's clashes). Returns (sorted pairs, unresolved 'int' events)."""
+    G0 = graph(T, premoves=())
+    pre = {n for n, s in G0['init'].items() if s == PRE}
+    ns = set(G0['nodes'])
+    S = T['passes'][0]['steps']
+    seen, cand = set(), set()
+    for k, P in enumerate(T['passes']):
+        for s in P['steps']:
+            if k and s['n'] in seen: continue
+            seen.add(s['n'])
+            for p, _ in s.get('before', {}).get('Moves', ()):
+                if p in pre and s['n'] in ns: cand.add((s['n'], p))
+
+    def run(init):
+        G = graph(T, premoves=())
+        for w, p in init:
+            G['M'][w].add(p); G['M'][p].add(w)
+        st = State(G, move_clashes(T))
+        drops, needs = [], []
+        for i, s in enumerate(S):
+            v = s['n']
+            if st.status.get(v) not in st.H: break
+            st.H[st.status[v]].remove(v)
+            tr = {m for m, _ in s.get('before', {}).get('Moves', ()) if m in st.M}
+            st.M[v] = set(tr)
+            for q in tr: st.M[q].add(v)
+            st.X[v] = {m for m, _ in s.get('before', {}).get('Extra', ()) if m in st.M}
+            for e in s['ev']:
+                if e[0] not in ('amc', 'int') or e[-1] not in pre: continue
+                q = e[-1]
+                inter = st.C[v] & st.M[q]
+                if e[0] == 'amc' and inter: drops.append((v, q, inter))
+                if e[0] == 'int' and not inter and not (st.X[v] & st.M[q]): needs.append((i, v, q))
+            st.log = []
+            st.simplify(v, True)
+        return drops, needs
+
+    # a move the node only gained by coalescing (its partner's move to the register) is not
+    # there at the start: replay with none and drop the ones the node already holds at removal
+    if True:
+        G = graph(T, premoves=())
+        st = State(G, move_clashes(T))
+        had = set()
+        for s in S:
+            v = s['n']
+            if st.status.get(v) not in st.H: break
+            had |= {(v, p) for p in st.M[v] if p in pre}
+            st.H[st.status[v]].remove(v)
+            tr = {m for m, _ in s.get('before', {}).get('Moves', ()) if m in st.M}
+            st.M[v] = set(tr)
+            for q in tr: st.M[q].add(v)
+            st.X[v] = {m for m, _ in s.get('before', {}).get('Extra', ()) if m in st.M}
+            st.log = []
+            st.simplify(v, True)
+    init = set(cand)
+    for _ in range(rounds):
+        drops, needs = run(init)
+        gone = {(w, q) for _, q, inter in drops for w in inter} & init
+        if not gone: break
+        init -= gone
+    # a third field 'k' marks the moves there from the start (not gained by coalescing): only
+    # those count as moves in the heap keys (ARMREPLAY_PMKEYS)
+    return sorted((w, q, 'k') if (w, q) not in had else (w, q) for w, q in init), needs
+
+
+# ---------------------------------------------------------------- what a node's count would do
+
+
+def refs_effect(T, otime, changes, hidden=()):
+    """Replay with some nodes' weighted reference counts set to other values ({node: refs}) and
+    list the nodes whose register changes: [(node, before, after, refs)]."""
+    def run(ch):
+        G = graph(T, hidden)
+        for n, v in ch.items(): G['refs'][n] = v
+        st, col, _ = replay(T, otime, G)[-1]
+
+        def get(w):
+            while w in st.alias: w = st.alias[w]
+            return col.get(w)
+        return {n: get(n) for n in G['nodes']}, G
+    base, G = run({})
+    new, _ = run(changes)
+    return [(n, rname(base[n]), rname(new[n]), G['refs'].get(n)) for n in sorted(base) if base[n] != new[n]]
+
+
 def _rule(a, cfg_path):
     if '--otime' in a: return True
     if '--no-otime' in a: return False
@@ -663,10 +894,25 @@ def main(argv):
     sys.path.insert(0, os.path.join(EXHUME, 'tools'))
     import config
     path, a = config.pop_config(argv)
-    if not a or a[0] not in ('check', 'tie', 'sweep'):
+    if not a or a[0] not in ('check', 'tie', 'sweep', 'premoves', 'refs'):
         print(__doc__); return 2
     opt = lambda k, d=None: a[a.index(k) + 1] if k in a else d
     T = armtrace.pick(armtrace.parse(a[1]), int(opt('--index')) if '--index' in a else None)
+    if a[0] in ('refs', 'sweep'):
+        # each step's heap lists, clash sets and events serve check only; a 15,000-node trace
+        # replays in 11 GB with them and in 0.3 GB without, and sweep runs a replay per worker
+        for P in T['passes']:
+            for s in P['steps']:
+                s['lists'] = None; s.pop('before', None); s['ev'] = []
+    global PREMOVES, PLAIN
+    PLAIN = PLAIN or '--plain' in a
+    if a[0] == 'premoves':
+        pairs, needs = premoves(T)
+        with open(opt('--out', 'premoves.json'), 'w') as f: json.dump(pairs, f)
+        print(f'{len(pairs)} initial moves to precoloured registers; {len(needs)} unexplained events {needs[:3]}')
+        return 0
+    if '--premoves' in a:
+        with open(opt('--premoves')) as f: PREMOVES = [tuple(x) for x in json.load(f)]
     otime = _rule(a, path)
     if otime is None:
         otime = infer_otime(T)
@@ -678,6 +924,13 @@ def main(argv):
         print('\n'.join(lines))
         return 0 if ok else 1
     hidden = check(T, otime)[2]
+    if a[0] == 'refs':
+        for arg in [x for x in a[2:] if '=' in x and not x.startswith('-')]:
+            ch = {int(k): int(v) for k, v in (y.split('=') for y in arg.split(','))}
+            d = refs_effect(T, otime, ch, hidden)
+            print(f'{arg}: {len(d)} nodes change register')
+            for x in d[:40]: print('  ', x)
+        return 0
     if a[0] == 'tie':
         print('\n'.join(tie(T, int(a[2]), int(a[3]), otime, hidden)))
         return 0

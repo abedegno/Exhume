@@ -36,6 +36,14 @@ def offset(sym):
     return sym.value & ~1 if sym.type == 'Code' else sym.value
 
 
+def section_keys(info):
+    """{section index: key}: the section's name, or name#index where an object has two sections of
+    one name (a second .data, say), so each is placed and compared on its own."""
+    count = {}
+    for n, _ in info.sections.values(): count[n] = count.get(n, 0) + 1
+    return {i: (n if count[n] == 1 else f'{n}#{i}') for i, (n, _) in info.sections.items()}
+
+
 def place(info, m, extra, unused_ok=False):
     """(placements [(section, addr)], defined {name: addr}, errors, unplaced [section]).
 
@@ -43,8 +51,10 @@ def place(info, m, extra, unused_ok=False):
     unplaced and linked out of the way (UNPLACED); match() then refuses a whole match unless
     the source marks all its symbols /* dropped: */ (data the original's armlink left out)."""
     placements, defined, errors, unplaced = [], {}, [], []
+    keys = section_keys(info)
     for idx, (sname, _) in sorted(info.sections.items()):
-        if not allocatable(sname, (info.flags or {}).get(idx) if info.flags else None): continue
+        sname = keys[idx]
+        if not allocatable(sname.split('#')[0], (info.flags or {}).get(idx) if info.flags else None): continue
         members = [s for s in info.symbols if s.sec == idx and s.type in ('Code', 'Data')]
         # what places the section: its annotated symbols if any (authoritative), else its strong
         # ones, else all. A weak symbol the map puts elsewhere was overridden by a real
@@ -157,7 +167,8 @@ def match(cfg, src, dis=None):
     res.defined = defined
     if errors:
         res.lines += ['ERROR ' + e for e in errors]; res.lines.append('-- not linked'); return res
-    size_of = {n: z for n, z in info.sections.values()}
+    keys = section_keys(info)
+    size_of = {keys[i]: z for i, (n, z) in info.sections.items()}
     sized = [(sec, a, size_of.get(sec) or 0) for sec, a in placements]
     scatter, regions = armmap.scatter_text(os.path.basename(obj), sized)
     dead = armmap.dropped(text)
@@ -166,7 +177,7 @@ def match(cfg, src, dis=None):
         sel = ' '.join(f'{os.path.basename(obj)}({x})' for x in unplaced)
         scatter += f'LR_UNPLACED 0x{UNPLACED:08X} {{\n  ER_UNPLACED 0x{UNPLACED:08X} {{ {sel} }}\n}}\n'
         for x in unplaced:
-            idx = next(i for i, (n, _) in info.sections.items() if n == x)
+            idx = next(i for i, k in keys.items() if k == x)
             syms = [s.name for s in info.symbols if s.sec == idx and s.type in ('Code', 'Data')]
             idx_code = is_code(info, idx)
             if idx_code and unused_ok:
@@ -202,10 +213,10 @@ def match(cfg, src, dis=None):
     addr_of = dict(placements)
     names = {}
     for s in info.symbols:
-        if s.type == 'Code' and isinstance(s.sec, int): names[info.sections[s.sec][0]] = s.name
-    sec_index = {n: i for i, (n, _) in info.sections.items()}
-    code_sec = {n for i, (n, _) in info.sections.items() if is_code(info, i)}
-    zi_sec = {n for i, (n, _) in info.sections.items() if is_zi(info, i)}
+        if s.type == 'Code' and isinstance(s.sec, int): names[keys[s.sec]] = s.name
+    sec_index = {k: i for i, k in keys.items()}
+    code_sec = {k for i, k in keys.items() if is_code(info, i)}
+    zi_sec = {k for i, k in keys.items() if is_zi(info, i)}
     good = total = 0; whole = True
     for region, members in regions.items():
       rbase = members[0][1] & ~3
