@@ -189,6 +189,8 @@ class Config:
         pre = c.get(kind + '_prefix', c.get('public_prefix', '_'))
         suffix = c.get(kind + '_suffix', c.get('public_suffix', ''))
         limit = c.get('name_limit', 32)
+        if name.startswith('@'):    # a C++ name, mangled: Borland C++ keeps it whole
+            return name
         return pre + (name[:limit] if limit else name) + suffix
 
     def is_code_class(self, cls):
