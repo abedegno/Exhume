@@ -23,6 +23,13 @@ def fixups(d):
             gn,i=idx(b,0); members=[]
             while i<len(b): i+=1; s,i=idx(b,i); members.append(s)
             groups.append((lnames[gn],members))
+        elif t==0xB0:           # COMDEF (and Borland C++'s vtable definitions): externals too
+            i=0
+            while i<len(b):
+                l=b[i]; ext.append(b[i+1:i+1+l].decode('latin1')); i+=1+l; _,i=idx(b,i)
+                dt=b[i]; i+=1
+                for _n in range(2 if dt==0x61 else 1):
+                    c=b[i]; i+={0x81:3,0x84:4,0x88:5}.get(c,1)
         elif t in (0x8C,0xB4):
             i=0
             while i<len(b):
@@ -35,6 +42,9 @@ def fixups(d):
                 o=struct.unpack_from('<H',b,i)[0]; i+=2; _,i=idx(b,i); pubs[n]=(s,o)
         elif t in (0xA0,0xA1):
             si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
+            if si not in data:      # Borland C++'s virtual segments (vtables: index 4000h+n)
+                data[si]=bytearray()
+            if len(data[si])<off+len(b)-i: data[si]+=bytearray(off+len(b)-i-len(data[si]))
             data[si][off:off+len(b)-i]=b[i:]; last=(si,off,None)
         elif t==0xA2:           # LIDATA: a following fixup applies to every repetition
             si,i=idx(b,0); off=struct.unpack_from('<H',b,i)[0]; i+=2
