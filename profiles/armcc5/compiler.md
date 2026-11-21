@@ -1259,3 +1259,27 @@ blocks). The search found a different source from the recorded one in seven of t
 often a dead-code one: the permuter will fit probes where a person found a natural form, so its
 results are evidence of where the tie is, not the vendor's source. `armpermute2.py` keeps a
 Pareto front of score against the number of dead-code constructs added (best_dead+N.c).
+
+After the regression, three more changes, measured on the misses and on the real target: a
+bandit over the logged outcomes (a rule's weight is scaled by how often its variants change the
+code at all) and a tabu list of (rule, site) moves that twice left the code unchanged; inlining
+across stores to other named objects (two named objects cannot alias; only a store through a
+pointer, or to an object the value reads, blocks it) plus an "every local at once" move; and a
+dead-code penalty (`--dead-penalty N`: each dead construct added costs N instructions in the
+ordering). The misses stayed misses. On a 5.6 KB function stuck at 60 by hand, a two-hour search
+reached 47 at the right size, but only with eight dead constructs (stored comparisons, an
+address comparison, an unused local, a pointer store): a fit, not the source. With half the
+submissions duplicate text after 15 minutes the neighbourhood was exhausted.
+
+Cut files did not help on this unit: the file cut after the function, and the file with the
+other bodies stubbed (callees kept), both gave other code for the function (sizes differ), so
+armcc's code for a function depends on more of the file than its callees; the start-up check
+rejects them and the whole unit is compiled.
+
+What is not done (worth doing next): generate variants in the workers (the parent spends 4-10 ms
+a variant and becomes the limit above about 150 variants a second); candidates as edit lists
+against the base, which would give crossover between islands and a cheap reduction at every new
+best; compound moves for the structural rewrites the misses needed (a temporary used for a store
+and the following call; sized arrays with locals removed across sibling blocks; goto chains
+with locals reached by pointer arithmetic); and a check of each new best against a second
+build of the same function where one exists.

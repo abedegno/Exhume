@@ -173,6 +173,9 @@ class Search:
         self.p_pair = arg(a, '--pair', 0.3, float)
         self.p_every = arg(a, '--everywhere', 0.35, float)
         self.temp = arg(a, '--temp', 0.6, float)
+        self.dead_penalty = arg(a, '--dead-penalty', 0.0, float)
+        self.noop = collections.Counter()      # (rule, site) -> variants that left the code as it was
+        self.tabu_after = arg(a, '--tabu', 2, int)
         self.restart = arg(a, '--restart', 400, int)
         self.screen_on = '--no-screen' not in a
         kind = arg(a, '--runner', os.environ.get('EXHUME_PERMUTE_RUNNER', 'native'))
@@ -221,6 +224,8 @@ class Search:
         self.islands = [Island(k, self.text, toks, ctx, r0, []) for k in range(self.nisl)]
         self.best = Island(-1, self.text, toks, ctx, r0, [])
         self.origin = Island(-2, self.text, toks, ctx, r0, [])
+        h0 = hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest()
+        for x in self.islands + [self.best, self.origin]: x.ohash = h0
         self.seen.add(norm_hash(toks))
         self.dead0 = dead_count(toks, self.func)
         self.front = {}                     # dead-code edits added -> (key, text, result)
@@ -273,11 +278,19 @@ class Search:
         print(f'  cut {form}: other code for FUNC'); return None
 
     # ---- variants
+    def eff_weight(self, r):
+        """The rule's weight scaled by how often it changes the code at all (a bandit over the
+        logged outcomes: a rule whose variants mostly compile to the object already in hand
+        is proposed less)."""
+        s = self.stats[r.id]
+        changed = (s['compiled'] - s['noop'] + 5) / (s['compiled'] + 10)
+        return self.weights[r.id] * (0.15 + 0.85 * changed)
+
     def pick_rule(self):
-        tot = sum(self.weights[r.id] for r in self.rules)
-        x = self.rng.random() * tot
-        for r in self.rules:
-            x -= self.weights[r.id]
+        ws = [self.eff_weight(r) for r in self.rules]
+        x = self.rng.random() * sum(ws)
+        for r, w in zip(self.rules, ws):
+            x -= w
             if x <= 0: return r
         return self.rules[-1]
 
@@ -299,6 +312,8 @@ class Search:
                     nt = R.apply(toks, ed.spans)
                 except ValueError:
                     self.stats[r.id]['badedit'] += 1; continue
+                if self.noop[(r.id, ed.desc)] >= self.tabu_after:      # tabu: a move that already
+                    self.stats[r.id]['tabu'] += 1; continue           # left the code unchanged
                 trail.append((r.id + ('*' if every else ''), ed.desc, ed.meaning))
                 toks = nt
                 break
@@ -397,8 +412,15 @@ class Search:
         if ohash in self.obj_seen: self.counts['dup_obj'] += 1
         self.obj_seen.add(ohash)
         for rid, _, _ in trail: self.stats[rid.rstrip('*')]['compiled'] += 1
+        if ohash == getattr(isl, 'ohash', None):            # the code did not change
+            for rid, desc, _ in trail:
+                self.noop[(rid.rstrip('*'), desc)] += 1; self.stats[rid.rstrip('*')]['noop'] += 1
         k = r.key()
-        old = isl.result.key()
+        if self.dead_penalty:
+            # prefer natural edits: each dead-code construct added costs this many instructions
+            d = dead_count(toks, self.func) - self.dead0
+            k = (k[0], k[1], k[2] + self.dead_penalty * max(0, d)) if k[0] else k
+        old = getattr(isl, 'key', None) or isl.result.key()
         accepted = False
         strict = isl.k % 2 == 1          # odd islands keep only improvements: they stay near
         if k < old or (k == old and not strict):   # their base, where a one- or two-edit answer is
@@ -411,10 +433,9 @@ class Search:
         self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\t{r.diff}\t{r.size:#x}\t{"acc" if accepted else ""}\t{desc}\t{ohash}\n')
         d = dead_count(toks, self.func) - self.dead0
         f = self.front.get(d)
-        if (f is None or k < f[0]) and (not self.screen or self.screen.check(permc.render(toks, self.tail))[0]):
-            self.front[d] = (k, permc.render(toks, self.tail), r)
-            with open(os.path.join(self.out, f'best_dead{d:+d}.c'), 'w', encoding='latin1') as fh: fh.write(self.front[d][1])
-        newbest = k < self.best.result.key()
+        if f is None or k < f[0]:                  # screened when reported, not here (clang
+            self.front[d] = (k, toks, r)           # in the parent would starve the workers)
+        newbest = k < (getattr(self.best, 'key', None) or self.best.result.key())
         if newbest:
             text = permc.render(toks, self.tail)
             ok, why = self.screen.check(text) if self.screen else (True, [])
@@ -431,6 +452,7 @@ class Search:
             for rid, _, _ in trail: self.stats[rid.rstrip('*')]['new_best'] += 1
             ctx = self.make_ctx(toks)
             self.best = Island(-1, text, toks, ctx, r, isl.trail + [(rules, desc)])
+            self.best.key, self.best.ohash = k, ohash
             self.write_best()
             print(f'  new best {r.text()}  [{rules}] {desc[:150]}', flush=True)
         if accepted:
@@ -441,6 +463,7 @@ class Search:
                 except Exception:
                     return False
             isl.text, isl.toks, isl.ctx, isl.result = None, toks, ctx, r
+            isl.ohash, isl.key = ohash, k
             isl.trail = isl.trail + [(rules, desc)]
         if better or newbest: isl.stale = 0
         else: isl.stale += 1
@@ -450,6 +473,7 @@ class Search:
             self.counts['restarts'] += 1
             src = self.best if self.counts['restarts'] % 2 or self.origin is None else self.origin
             isl.toks, isl.ctx, isl.result, isl.trail = src.toks, src.ctx, src.result, list(src.trail)
+            isl.key, isl.ohash = getattr(src, 'key', None), getattr(src, 'ohash', None)
             isl.stale = 0
         return r.exact and not r.neighbours
 
@@ -504,16 +528,19 @@ class Search:
         c = self.counts
         print(f'\n{self.func}: best {self.best.result.text()} after {el:.0f} s')
         for rules, desc in self.best.trail: print(f'    {rules}: {desc}')
-        print('\nrule              tried  compiled  failed  improved  accepted  new_best  nosite  screened')
+        print('\nrule              tried  compiled  failed  improved  accepted  new_best  nosite  screened  noop  tabu')
         for r in sorted(self.rules, key=lambda r: -self.stats[r.id]['tried']):
             s = self.stats[r.id]
             print(f'{r.id:16} {s["tried"]:7} {s["compiled"]:9} {s["failed"]:7} {s["improved"]:9} {s["accepted"]:9} '
-                  f'{s["new_best"]:9} {s["nosite"]:7} {s["screened_out"]:9}')
+                  f'{s["new_best"]:9} {s["nosite"]:7} {s["screened_out"]:9} {s["noop"]:5} {s["tabu"]:5}')
         print('\nPareto front (dead-code constructs added against the start, best score with that many):')
         for d in sorted(self.front):
-            k, _, r = self.front[d]
+            k, toks, r = self.front[d]
             if all(self.front[e][0] > k for e in self.front if e < d):
-                print(f'  {d:+d}: {r.text()}   (best_dead{d:+d}.c)')
+                text = permc.render(toks, self.tail)
+                ok, why = self.screen.check(text) if self.screen else (True, [])
+                with open(os.path.join(self.out, f'best_dead{d:+d}.c'), 'w', encoding='latin1') as fh: fh.write(text)
+                print(f'  {d:+d}: {r.text()}   (best_dead{d:+d}.c){"" if ok else "  SCREEN: " + "; ".join(why)[:200]}')
         jobs = self.jobs
         print(f'\nthroughput: generated {c["generated"]} ({c["generated"] / el:.1f}/s), submitted {c["submitted"]}, '
               f'compiled {c["compiled"]} ({c["compiled"] / el:.1f}/s, {c["compiled"] / el / jobs:.2f}/s per worker), '

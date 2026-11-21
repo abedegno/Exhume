@@ -586,9 +586,28 @@ def r_local_inline(ctx, rng, everywhere=False):
                 sites.append((loc.node, rhs))
         if sites: cands.append((name, loc, sites))
     if not cands: return None
+    if everywhere and len(cands) > 1 and rng.random() < 0.3:
+        # every eligible local at once (a run of byte locals removed in one step)
+        eds = []
+        sub = random.Random(rng.random())
+        for nm, lc, st in cands:
+            ctx1 = ctx
+            ed = _inline_one(ctx1, sub, nm, lc, st, True, False)
+            if ed: eds.append(ed)
+        spans, used = [], []
+        for ed in eds:
+            if all(b <= a2 or a >= b2 for a, b, _ in ed.spans for a2, b2, _ in spans):
+                spans += ed.spans; used.append(ed.desc)
+        if not spans: return None
+        return Edit(spans, 'inline every local: ' + '; '.join(used)[:200])
     name, loc, sites = rng.choice(cands)
+    return _inline_one(ctx, rng, name, loc, sites, everywhere, None)
+
+
+def _inline_one(ctx, rng, name, loc, sites, everywhere, single_use):
+    t = ctx.toks
     chosen = sites if everywhere else [rng.choice(sites)]
-    single_use_only = everywhere and rng.random() < 0.5    # 'everywhere' over the sites of one
+    single_use_only = (everywhere and rng.random() < 0.5) if single_use is None else single_use
     spans, done = [], 0                                     # shape: those read exactly once
     for n, rhs in chosen:
         blk = n.parent if n is not loc.node else loc.block
@@ -609,7 +628,10 @@ def r_local_inline(ctx, rng, everywhere=False):
         deps = permc.idents(rhs, t)
         if written_in(ctx, a, b, deps): continue
         has_glob = any(d in ctx.types.globals for d in deps) or any(x.kind in ('member', 'index', 'unary') for x in permc.ewalk(rhs))
-        if has_glob and (has_call(ctx, a, last + 1) or _stores_between(ctx, a, last + 1)): continue
+        # calls and stores before the last use's statement (a call taking the value as an
+        # argument runs after it is read)
+        lim = ctx.enclosing(last).start
+        if has_glob and (has_call(ctx, a, lim) or _stores_between(ctx, a, lim, deps)): continue
         # a use inside a loop that does not contain the assignment would re-read: refuse
         if any(_in_loop_between(ctx, n, j) for j in uses): continue
         ty = loc.type
@@ -646,8 +668,10 @@ def r_local_inline(ctx, rng, everywhere=False):
     return Edit(spans, f'inline local {name} ({done} site{"s" if done > 1 else ""})')
 
 
-def _stores_between(ctx, a, b):
-    """A store to anything but a local in tokens a..b (an aliasing write could change a global)."""
+def _stores_between(ctx, a, b, deps=None):
+    """A store in tokens a..b that could change what deps read: through a pointer, or to one of
+    deps itself (two named objects cannot alias; a store through a pointer may hit anything).
+    Without deps, any store to anything but a plain local."""
     t = ctx.toks
     for i in range(a, b):
         if t[i][1] in permc.ASSIGN or t[i][1] in ('++', '--'):
@@ -656,7 +680,12 @@ def _stores_between(ctx, a, b):
             while j > a and t[j][1] in (']', ')'): j = ctx.pair[j] - 1
             while j > a and t[j - 1][1] in ('.', '->'): j -= 2
             base = t[j][1] if t[j][0] == 'id' else None
-            if base is None or base not in ctx.locals or ctx.locals[base].stars: return True
+            if deps is None:
+                if base is None or base not in ctx.locals or ctx.locals[base].stars: return True
+                continue
+            through_ptr = base is None or t[j - 1][1] == '*' or '->' in [x[1] for x in t[j:i]] \
+                or (base in ctx.locals and ctx.locals[base].stars) or (base in ctx.params and ctx.params[base].endswith('*'))
+            if through_ptr or base in deps: return True
     return False
 
 

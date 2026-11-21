@@ -151,6 +151,12 @@ class RuleTest(unittest.TestCase):
         outs, _ = run_rule('local_inline', 'void f(void) { ushort v; v = counter; counter = 0; send(1, v); }')
         self.assertEqual(outs, [])
 
+    def test_inline_across_a_store_to_another_object(self):
+        outs, _ = run_rule('local_inline', 'void f(uchar *p) { uchar h; h = table[2] >> 8; status = 1; send(h, 0); }')
+        self.assertTrue(any('send((uchar)(table[2] >> 8), 0)' in n for _, n, _ in outs))
+        outs, _ = run_rule('local_inline', 'void f(ushort *p) { uchar h; h = table[2] >> 8; *p = 1; send(h, 0); }')
+        self.assertEqual(outs, [])
+
     def test_swap_refuses_dependent_statements(self):
         outs, _ = run_rule('stmt_swap', 'void f(void) { status = 1; phase = status; }')
         self.assertEqual(outs, [])
