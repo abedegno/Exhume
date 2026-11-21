@@ -220,10 +220,10 @@ def file_types(path, text, include_dirs=()):
 
 # ---------------------------------------------------------------- the function
 
-def find_function(toks, name):
+def find_function(toks, name, pair=None):
     """(start, lb, rb) of FUNC's definition: start is the first token of its declaration
     (after the previous top-level ; or } or preprocessor line), lb/rb its body's braces."""
-    pair = match_brackets(toks)
+    pair = pair or match_brackets(toks)
     depth = 0
     for i, t in enumerate(toks):
         if t[1] == '{': depth += 1

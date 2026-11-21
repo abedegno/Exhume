@@ -151,8 +151,18 @@ CTXN = 6
 
 
 def make_patch(toks, spans):
-    return [([t[1] for t in toks[max(0, a - CTXN):a]], [t[1] for t in toks[a:b]], [t[1] for t in toks[b:b + CTXN]],
-             [tuple(x) for x in new]) for a, b, new in sorted(spans, key=lambda s: (s[0], s[1]))]
+    """[(tokens before, old tokens, tokens after, new tokens)] per span; the context grows until
+    it is found in one place only (repetitive code would otherwise be ambiguous on replay)."""
+    words = [t[1] for t in toks]
+    out = []
+    for a, b, new in sorted(spans, key=lambda s: (s[0], s[1])):
+        n = CTXN
+        while True:
+            before, after = words[max(0, a - n):a], words[b:b + n]
+            if len(_find(words, before + words[a:b] + after)) == 1 or n >= 200: break
+            n *= 2
+        out.append((before, words[a:b], after, [tuple(x) for x in new]))
+    return out
 
 
 def _find(words, pat):
@@ -183,9 +193,24 @@ def apply_patch(toks, patch):
         return None
 
 
+def make_move(rule, desc, toks, ed):
+    """A move from an Edit on toks: one patch, or for a compound move one patch per step."""
+    m = {'rule': rule, 'desc': desc}
+    if getattr(ed, 'parts', None): m['seq'] = [make_patch(t, sp) for t, sp in ed.parts]
+    else: m['patch'] = make_patch(toks, ed.spans)
+    return m
+
+
+def apply_move(toks, m):
+    for p in m.get('seq') or [m['patch']]:
+        toks = apply_patch(toks, p)
+        if toks is None: return None
+    return toks
+
+
 def move_sig(m):
     if 'sig' not in m:
-        m['sig'] = hashlib.blake2b(json.dumps(m['patch']).encode('latin1', 'replace'), digest_size=8).hexdigest()
+        m['sig'] = hashlib.blake2b(json.dumps(m.get('seq') or m['patch']).encode('latin1', 'replace'), digest_size=8).hexdigest()
     return m['sig']
 
 
@@ -202,7 +227,7 @@ def legacy_moves(origin, toks):
     # contexts that overlap an earlier hunk would not be found: such a list is one move
     t = origin
     for m in out:
-        t = apply_patch(t, m['patch'])
+        t = apply_move(t, m)
         if t is None:
             return [{'rule': 'legacy', 'desc': 'whole difference', 'patch': make_patch(origin, [(0, len(origin), toks)])}]
     return out
@@ -210,7 +235,7 @@ def legacy_moves(origin, toks):
 
 def apply_all(toks, moves):
     for m in moves:
-        toks = apply_patch(toks, m['patch'])
+        toks = apply_move(toks, m)
         if toks is None: return None
     return toks
 
@@ -462,9 +487,10 @@ class Search:
         o = self.rng.choice(others)
         have = {move_sig(m) for m in isl.moves}
         toks, used = isl.toks, []
-        for m in o.moves:
+        theirs = [m for m in o.moves if move_sig(m) not in have][-20:]      # each replay costs a scan
+        for m in theirs:
             if move_sig(m) in have: continue
-            nt = apply_patch(toks, m['patch'])
+            nt = apply_move(toks, m)
             if nt is not None: toks = nt; used.append(m)
         if not used: return None
         return toks, [('cross', f'{len(used)} moves of island {o.k}', 'same')], used
@@ -495,7 +521,7 @@ class Search:
                 if self.noop[(r.id, ed.desc)] >= self.tabu_after:      # tabu: a move that already
                     self.stats[r.id]['tabu'] += 1; continue           # left the code unchanged
                 trail.append((r.id + ('*' if every else ''), ed.desc, ed.meaning))
-                moves.append({'rule': r.id, 'desc': ed.desc, 'patch': make_patch(toks, ed.spans)})
+                moves.append(make_move(r.id, ed.desc, toks, ed))
                 toks = nt
                 break
             else:
@@ -550,7 +576,8 @@ class Search:
                         gen_time += time.perf_counter() - g0
                         nid += 1; continue
                     toks, trail, moves = m
-                    text = self.job_text(toks)
+                    moves = list(isl.moves) + list(moves)       # the variant's whole move list: the island
+                    text = self.job_text(toks)                  # may move on before the result comes back
                     gen_time += time.perf_counter() - g0
                     pending[nid] = (isl.k, toks, trail, moves)
                     for rid, _, _ in trail: self.stats[rid.rstrip('*')]['tried'] += 1
@@ -651,7 +678,7 @@ class Search:
             ctx = cctx or self.make_ctx(toks)
             self.best = Island(-1, text, toks, ctx, r, isl.trail + [(rules, desc)])
             self.best.key, self.best.ohash = k, ohash
-            self.best.moves = list(isl.moves) + list(moves)
+            self.best.moves = list(moves)
             if '--no-reduce' not in self.a: self.reduce_moves()
             self.write_best()
             print(f'  new best {r.text()}  [{rules}] {desc[:150]}', flush=True)
@@ -665,7 +692,7 @@ class Search:
             isl.text, isl.toks, isl.ctx, isl.result = None, toks, ctx, r
             isl.ohash, isl.key = ohash, k
             isl.trail = isl.trail + [(rules, desc)]
-            isl.moves = list(isl.moves) + list(moves)
+            isl.moves = list(moves)
             if force:
                 h = Island(-3, None, toks, ctx, r, list(isl.trail))
                 h.key, h.ohash, h.moves = k, ohash, list(isl.moves)
@@ -803,7 +830,7 @@ class Search:
                 if h in seen: continue
                 seen.add(h); self.seen.add(h)
                 text = self.job_text(toks)
-                moves = [{'rule': 'normalise', 'desc': ed.desc, 'patch': make_patch(self.origin.toks, ed.spans)}]
+                moves = [make_move('normalise', ed.desc, self.origin.toks, ed)]
                 pending[nid] = (isl.k, toks, [('normalise', ed.desc, 'probe')], moves)
                 self.force.add(nid)
                 pool.pool.apply_async(permrun._worker_job, ((nid, text),), callback=results.put,
@@ -830,12 +857,15 @@ class Search:
             t = base
             for m, k in zip(moves, keep):
                 if not k: continue
-                t = apply_patch(t, m['patch'])
+                t = apply_move(t, m)
                 if t is None: return None
             return t
 
         full = build([True] * len(moves))
-        if full is None or norm_hash(full) != norm_hash(b.toks): return     # the list does not replay
+        if full is None or norm_hash(full) != norm_hash(b.toks):        # the list does not replay
+            self.counts['no_replay'] += 1
+            if self.counts['no_replay'] <= 3: print('  (the new best\'s moves do not replay from the original: not reduced)', flush=True)
+            return
 
         def score(cands):
             jobs = [self.pool.pool.apply_async(permrun._worker_job, ((-1, self.job_text(c)),)) if c is not None else None

@@ -256,6 +256,15 @@ class MovesTest(unittest.TestCase):
         only2 = A.apply_all(t0, [m2])                # the second move without the first
         self.assertIsNotNone(only2)
         self.assertNotEqual(A.norm_hash(only2), A.norm_hash(t2))
+        # a compound move is kept as one patch per step and replays to the same text
+        body = STRUCT + ('void f(void) { uchar x, y, z; uchar *p; x = recs[0].a; p = &recs[0].b; y = p[0]; z = p[1]; '
+                         'if (x != 0) goto L; if (y != 0) goto L; if (z != 0) { L: status = 1; } else status = 0; phase = x; }')
+        c8, _ = ctx_for(body)
+        c8.layouts = REC_LAYOUT
+        ed = R.r_normalise(c8, random.Random(2), full=True)
+        mv = A.make_move('normalise', ed.desc, c8.toks, ed)
+        self.assertIn('seq', mv)
+        self.assertEqual(A.norm_hash(A.apply_move(c8.toks, mv)), A.norm_hash(R.apply(c8.toks, ed.spans)))
         lm = A.legacy_moves(t0, t2)
         self.assertEqual(A.norm_hash(A.apply_all(t0, lm)), A.norm_hash(t2))
 

@@ -40,6 +40,7 @@ class Edit:
     desc: str
     rule: str = ''
     meaning: str = 'same'       # same | probe | type
+    parts: list = None          # a compound move's steps [(toks before, spans)], kept as separate patches
 
 
 def apply(toks, spans):
@@ -71,13 +72,14 @@ class Ctx:
     def __init__(self, toks, tail, func, types, pair=None):
         self.toks, self.tail, self.func, self.types = toks, tail, func, types
         self.pair = pair or permc.match_brackets(toks)
-        self.start, self.lb, self.rb = permc.find_function(toks, func)
+        self.start, self.lb, self.rb = permc.find_function(toks, func, self.pair)
         self.root = permc.parse_body(toks, self.lb, self.pair)
         self.nodes = list(permc.walk(self.root))
         self.P = permc.ExprParser(toks, self.pair, types)
         self._expr = {}
         self.locals = {}
-        self.params = {}
+        self.dup_names = set()      # names declared more than once (block locals of probes): not
+        self.params = {}            # one object, so the local rules leave them alone
         self._params()
         self._locals()
         self.ids = {}           # identifier -> [token indexes in the body]
@@ -167,6 +169,7 @@ class Ctx:
                 dims = self.src(b, head[-1] + 1)
             init = (eq + 1, d[-1] + 1) if eq is not None else None
             ty_text = ' '.join(w for w in ty if w not in ('static', 'register', 'const', 'volatile'))
+            if t[names[0]][1] in self.locals: self.dup_names.add(t[names[0]][1])
             self.locals[t[names[0]][1]] = Local(t[names[0]][1], ty_text, stars, dims, n, blk, init, single)
 
     # scope
@@ -573,7 +576,7 @@ def r_local_inline(ctx, rng, everywhere=False):
     t = ctx.toks
     cands = []
     for name, loc in ctx.locals.items():
-        if loc.dims or loc.stars: continue
+        if loc.dims or loc.stars or name in ctx.dup_names: continue
         sites = []
         for n in ctx.nodes:
             e = ctx.stmt_expr(n)
@@ -854,7 +857,7 @@ def r_scope(ctx, rng, everywhere=False):
     """B3: a function-scope local used in one block only moves into that block; or a block's
     local moves to function scope."""
     t = ctx.toks
-    ls = [l for l in ctx.locals.values() if l.single and not l.init]
+    ls = [l for l in ctx.locals.values() if l.single and not l.init and l.name not in ctx.dup_names]
     if not ls: return None
     l = rng.choice(ls)
     uses = [j for j in ctx.ids.get(l.name, []) if not (l.node.start <= j < l.node.end)]
@@ -991,7 +994,7 @@ def r_init_decl(ctx, rng, everywhere=False):
         # unwritten reads, with no read of x before it
         cands = []
         for l in ctx.locals.values():
-            if l.init or not l.single or l.dims: continue
+            if l.init or not l.single or l.dims or l.name in ctx.dup_names: continue
             blk = l.block
             for c in blk.children:
                 if c.start < l.node.end: continue
@@ -1899,27 +1902,21 @@ def diff_spans(old, new):
     while p < n and old[p] == new[p]: p += 1
     s = 0
     while s < n - p and old[len(old) - 1 - s] == new[len(new) - 1 - s]: s += 1
-    a1, b1 = p, len(old) - s
-    a2, b2 = p, len(new) - s
-    if b1 - a1 < 200:
-        return [(a1, b1, list(new[a2:b2]))]
-    import difflib
-    sm = difflib.SequenceMatcher(None, [t[1] for t in old[a1:b1]], [t[1] for t in new[a2:b2]], autojunk=False)
-    out = []
-    for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op != 'equal': out.append((a1 + i1, a1 + i2, list(new[a2 + j1:a2 + j2])))
-    # equal texts with other whitespace are not edits worth keeping
-    return out or [(a1, b1, list(new[a2:b2]))]
+    return [(p, len(old) - s, list(new[p:len(new) - s]))]
 
 
-def _edit_of(ctx, new, desc, meaning='same'):
+def _edit_of(ctx, new, desc, meaning='same', parts=None):
+    """One edit from ctx's tokens to new (the changed middle); a compound move's steps go in
+    parts, so the move is kept as small patches rather than one span over the file."""
     sp = diff_spans(ctx.toks, new)
-    return Edit(sp, desc, meaning=meaning) if sp else None
+    return Edit(sp, desc, meaning=meaning, parts=parts) if sp else None
 
 
 def _chain(ctx, rng, fns, stop_on_none=False):
-    """Apply fns in turn, each on a fresh parse of the result of the last; (toks, descs, meaning)."""
+    """Apply fns in turn, each on a fresh parse of the result of the last; (toks, descs, meaning).
+    The steps (tokens before, spans) are collected in ctx._parts for _edit_of."""
     toks, descs, c, meaning = ctx.toks, [], ctx, 'same'
+    parts = []
     for fn in fns:
         try:
             ed = fn(c, rng)
@@ -1934,9 +1931,11 @@ def _chain(ctx, rng, fns, stop_on_none=False):
         except Exception:
             if stop_on_none: break
             continue
+        parts += ed.parts if ed.parts else [(toks, ed.spans)]
         toks, c = nt, c2
         descs.append(ed.desc)
         if ed.meaning != 'same': meaning = ed.meaning
+    ctx._parts = parts
     return toks, descs, meaning
 
 
@@ -1945,7 +1944,7 @@ def _fix(fn, limit=24):
     def g(ctx, rng):
         toks, descs, meaning = _chain(ctx, rng, [fn] * limit, stop_on_none=True)
         if not descs: return None
-        return _edit_of(ctx, toks, '; '.join(descs)[:300], meaning)
+        return _edit_of(ctx, toks, '; '.join(descs)[:300], meaning, parts=getattr(ctx, '_parts', None))
     return g
 
 
@@ -2025,7 +2024,7 @@ def dead_stores(ctx):
     t = ctx.toks
     out = []
     has_goto = any(t[i][1] == 'goto' for i in range(ctx.lb, ctx.rb))
-    names = [nm for nm, l in ctx.locals.items() if not l.dims] + [p for p in ctx.params if p not in ctx.locals]
+    names = [nm for nm, l in ctx.locals.items() if not l.dims and nm not in ctx.dup_names] + [p for p in ctx.params if p not in ctx.locals]
     probe_blocks = {n for kind, n, _ in find_probes(ctx) if kind == 'block'}
     for name in names:
         occ = [j for j in ctx.ids.get(name, []) if t[j - 1][1] not in ('.', '->')]
@@ -2081,6 +2080,7 @@ def unused_locals(ctx):
     t = ctx.toks
     out = {}
     for name, l in ctx.locals.items():
+        if name in ctx.dup_names: continue
         uses = [j for j in ctx.ids.get(name, []) if not (l.node.start <= j < l.node.end)]
         if uses: continue
         if l.init and permc.has_side_effects(ctx.expr(*l.init) or permc.E('atom', 0, 0), t): continue
@@ -2193,7 +2193,7 @@ def r_remove_dead(ctx, rng, everywhere=False):
         steps = [rng.choice(steps)] + ([_fix(_rm_unused)] if rng.random() < 0.5 else [])
     toks, descs, meaning = _chain(ctx, rng, steps)
     if not descs: return None
-    return _edit_of(ctx, toks, 'remove dead: ' + '; '.join(descs)[:250], 'probe')
+    return _edit_of(ctx, toks, 'remove dead: ' + '; '.join(descs)[:250], 'probe', parts=getattr(ctx, '_parts', None))
 
 
 # ---- common value temporary (B1 add with B5) and its inverse
@@ -2333,13 +2333,14 @@ def _local_runs(ctx):
             if e is not None and e.kind == 'assign' and e.op == '=' and e.kids[0].kind == 'atom':
                 nm = t[e.kids[0].start][1]
                 l = ctx.locals.get(nm)
-                if l is None or l.stars or l.dims or nm in [x for x in cur]: nm = None
+                if l is None or l.stars or l.dims or nm in cur or nm in ctx.dup_names: nm = None
             if nm: cur.append(nm)
             else:
                 if len(cur) >= 2: runs.append(cur)
                 cur = [nm] if nm else []
         # declarations with initialisers in a row count too
-        inits = [l.name for l in ctx.locals.values() if l.block is blk and l.init and not l.stars and not l.dims]
+        inits = [l.name for l in ctx.locals.values() if l.block is blk and l.init and not l.stars and not l.dims
+                 and l.name not in ctx.dup_names]
         if len(inits) >= 2: runs.append(inits)
     return runs
 
@@ -2347,8 +2348,9 @@ def _local_runs(ctx):
 def _inline_name(name, single=None):
     def g(ctx, rng):
         loc = ctx.locals.get(name)
-        if loc is None or loc.dims or loc.stars: return None
+        if loc is None or loc.dims or loc.stars or name in ctx.dup_names: return None
         t = ctx.toks
+        if not loc.init and not any(t[j + 1][1] == '=' for j in ctx.ids.get(name, [])): return None
         sites = []
         for n in ctx.nodes:
             e = ctx.stmt_expr(n)
@@ -2381,11 +2383,11 @@ def r_inline_group(ctx, rng, everywhere=False):
         names = [nm for nm in ctx.locals]; what = 'every local read once'
         toks, descs, meaning = _chain(ctx, rng, [_inline_name(nm, True) for nm in names] + [_fix(_rm_unused)])
         if not descs: return None
-        return _edit_of(ctx, toks, 'inline group (' + what + '): ' + '; '.join(descs)[:240])
+        return _edit_of(ctx, toks, 'inline group (' + what + '): ' + '; '.join(descs)[:240], parts=getattr(ctx, '_parts', None))
     if not names: return None
     toks, descs, meaning = _chain(ctx, rng, [_inline_name(nm, False) for nm in names] + [_fix(_rm_unused)])
     if len(descs) < 1: return None
-    return _edit_of(ctx, toks, f'inline group ({what}): ' + '; '.join(descs)[:240])
+    return _edit_of(ctx, toks, f'inline group ({what}): ' + '; '.join(descs)[:240], parts=getattr(ctx, '_parts', None))
 
 
 # ---- else { if } against else if
@@ -2865,7 +2867,7 @@ def _inline_mode(mode):
         else: names = list(ctx.locals)
         if not names: return None
         toks, descs, _ = _chain(ctx, rng, [_inline_name(nm, mode == 'single') for nm in names] + [_fix(_rm_unused)])
-        return _edit_of(ctx, toks, f'inline {mode}: ' + '; '.join(descs)[:200]) if descs else None
+        return _edit_of(ctx, toks, f'inline {mode}: ' + '; '.join(descs)[:200], parts=getattr(ctx, '_parts', None)) if descs else None
     return g
 
 
@@ -2891,7 +2893,7 @@ def r_normalise(ctx, rng, everywhere=False, full=False, imode=None):
     steps = normalise_steps(rng, full, imode)
     toks, descs, meaning = _chain(ctx, rng, [fn for _, fn in steps])
     if not descs: return None
-    return _edit_of(ctx, toks, 'normalise: ' + ' / '.join(d[:60] for d in descs)[:300], 'probe')
+    return _edit_of(ctx, toks, 'normalise: ' + ' / '.join(d[:60] for d in descs)[:300], 'probe', parts=getattr(ctx, '_parts', None))
 
 
 def r_size_and(ctx, rng, everywhere=False):
@@ -2905,7 +2907,7 @@ def r_size_and(ctx, rng, everywhere=False):
                          lambda c, r: r_normalise(c, r)])
     toks, descs, meaning = _chain(ctx, rng, [_size_all, second])
     if len(descs) < 2: return None
-    return _edit_of(ctx, toks, 'size and: ' + ' / '.join(d[:80] for d in descs)[:300], meaning)
+    return _edit_of(ctx, toks, 'size and: ' + ' / '.join(d[:80] for d in descs)[:300], meaning, parts=getattr(ctx, '_parts', None))
 
 
 # ---------------------------------------------------------------- registry
@@ -2966,7 +2968,7 @@ RULES = [
     Rule('inequality', 'generic', 0.5, r_inequality),
     Rule('ins_block', 'generic', 0.5, r_ins_block),
     Rule('common_temp', 'B1 add, B5', 6, r_common_temp),
-    Rule('inline_group', 'B1 remove', 8, r_inline_group, True),
+    Rule('inline_group', 'B1 remove', 3, r_inline_group, True),
     Rule('remove_dead', 'D1-D4 inverse', 4, r_remove_dead, True),
     Rule('flatten_else', 'D7', 2, r_flatten_else, True),
     Rule('ptr_index', 'B2', 5, r_ptr_index, True),
@@ -2976,8 +2978,8 @@ RULES = [
     Rule('flag_else', 'D7', 3, r_flag_else),
     Rule('index_helper', 'B6', 5, r_index_helper),
     Rule('helper_inline', 'B6 inverse', 2, r_helper_inline),
-    Rule('normalise', 'compound', 4, r_normalise),
-    Rule('size_and', 'A6 + compound', 3, r_size_and),
+    Rule('normalise', 'compound', 1.5, r_normalise),
+    Rule('size_and', 'A6 + compound', 1.5, r_size_and),
 ]
 BY_ID = {r.id: r for r in RULES}
 MEANING = {'retype': 'type', 'volatile_read': 'same'}
