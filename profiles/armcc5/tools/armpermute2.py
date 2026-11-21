@@ -22,7 +22,14 @@ A new best is screened before it is kept (permscreen: clang, no new unsequenced 
 uninitialised warnings) and written to OUT/best.c with its edit trail; a score of 0 stops the
 run. Every attempt is logged to OUT/attempts.tsv (island, rules, sites, result, size); the end
 of a run prints per-rule statistics (tried, compiled, improved, accepted) and the throughput.
-State (island bases, best, seen hashes, rule statistics) is kept in OUT/state.json for --resume.
+State (island bases, best, seen hashes, rule statistics) is kept in OUT/state.json for --resume;
+every new best also goes to OUT/best/<time>_<score>.c with its edit list. Long runs escalate by
+themselves when most generated texts are duplicates (deeper compound moves, a new seed and rule
+mix, half the islands back to the original). --dead-penalty N counts each dead-code construct
+added (stored comparison, unused local, pointer store) as N more differing instructions, and
+the end of a run prints the Pareto front of score against dead constructs; --tabu N skips a
+(rule, site) move after it has left the code unchanged N times, and rule weights are scaled by
+how often each rule changes the code at all.
 
 Cut mode (--cut auto): compile less than the whole unit when a start-up check shows FUNC's
 code is the same. Forms tried: 'prefix' (the file up to the end of FUNC; armcc parses the whole file
@@ -191,6 +198,7 @@ class Search:
         self.weights = {r.id: r.weight for r in self.rules}
         if w:
             with open(w) as f: self.weights.update({k: v for k, v in json.load(f).items() if k in self.weights})
+        self.base_weights = dict(self.weights)
         self.stats = collections.defaultdict(collections.Counter)
         self.counts = collections.Counter()
         self.seen = set()
@@ -297,6 +305,8 @@ class Search:
     def mutate(self, isl):
         """(toks, [(rule, desc, meaning)]) or None."""
         steps = 2 if self.rng.random() < self.p_pair else 1
+        if self.depth and self.rng.random() < 0.6:          # escalated: deeper compound moves
+            steps = self.rng.randint(2, 2 + self.depth)
         toks, ctx, trail = isl.toks, isl.ctx, []
         for s in range(steps):
             for attempt in range(12):
@@ -356,6 +366,7 @@ class Search:
                     for _ in range(20):
                         m = self.mutate(isl)
                         self.counts['generated'] += 1
+                        self.escalate()
                         if m is None: continue
                         h = norm_hash(m[0])
                         if h in self.seen:
@@ -512,7 +523,43 @@ class Search:
             print('  -', '\n    '.join(x.strip() for x in a[i1:i2]) or '(nothing)')
             print('  +', '\n    '.join(x.strip() for x in b[j1:j2]) or '(nothing)')
 
+    def escalate(self):
+        """For long unattended runs: every 3000 generated variants, look at the share that were
+        duplicate texts. Above 60% the neighbourhood is exhausted: go one level deeper (moves of
+        up to 3-6 edits), take a fresh seed, shake the rule weights, and send half the islands
+        back to the original source. Below 25%, step back a level."""
+        g = self.counts['generated']
+        if g - self.win[0] < 3000: return
+        dup = (self.counts['dup_text'] - self.win[1]) / max(1, g - self.win[0])
+        self.win = (g, self.counts['dup_text'])
+        if dup > 0.6 and self.depth < 4:
+            self.depth += 1
+            self.rng = random.Random(self.rng.random())
+            self.weights = {k: v * math.exp(self.rng.gauss(0, 0.6)) for k, v in self.base_weights.items()}
+            for isl in self.islands[::2]:
+                src = self.origin
+                isl.toks, isl.ctx, isl.result, isl.trail = src.toks, src.ctx, src.result, []
+                isl.key, isl.ohash = None, src.ohash
+            self.counts['escalations'] += 1
+            print(f'  escalate: duplicate texts {dup:.0%}, depth {self.depth}, new seed and rule mix', flush=True)
+        elif dup > 0.6:
+            self.weights = {k: v * math.exp(self.rng.gauss(0, 0.6)) for k, v in self.base_weights.items()}
+            self.depth = 1                     # cycle: back to shallow with yet another mix
+            print(f'  escalate: duplicate texts {dup:.0%}, depth reset with a new rule mix', flush=True)
+        elif dup < 0.25 and self.depth:
+            self.depth -= 1
+
+    depth = 0
+    win = (0, 0)
+
     def write_best(self):
+        os.makedirs(os.path.join(self.out, 'best'), exist_ok=True)
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        tag = 'exact' if self.best.result.exact else f'{self.best.result.diff}'
+        with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.c'), 'w', encoding='latin1') as f: f.write(self.best.text)
+        with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.txt'), 'w') as f:
+            f.write(f'{self.func}: {self.best.result.text()}\n')
+            for rules, desc in self.best.trail: f.write(f'{rules}\t{desc}\n')
         with open(os.path.join(self.out, 'best.c'), 'w', encoding='latin1') as f: f.write(self.best.text)
         with open(os.path.join(self.out, 'best.txt'), 'w') as f:
             f.write(f'{self.func}: {self.best.result.text()}\n')

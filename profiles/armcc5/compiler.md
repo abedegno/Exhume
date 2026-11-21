@@ -1266,10 +1266,16 @@ code at all) and a tabu list of (rule, site) moves that twice left the code unch
 across stores to other named objects (two named objects cannot alias; only a store through a
 pointer, or to an object the value reads, blocks it) plus an "every local at once" move; and a
 dead-code penalty (`--dead-penalty N`: each dead construct added costs N instructions in the
-ordering). The misses stayed misses. On a 5.6 KB function stuck at 60 by hand, a two-hour search
-reached 47 at the right size, but only with eight dead constructs (stored comparisons, an
-address comparison, an unused local, a pointer store): a fit, not the source. With half the
-submissions duplicate text after 15 minutes the neighbourhood was exhausted.
+ordering). The misses stayed misses. On a 5.6 KB function stuck at 60 by hand, 40 minutes of search
+reached 47 at the right size, but only with seven dead constructs added (stored comparisons, an
+address comparison, an unused local, a pointer store): a fit, not the source; by then 82% of
+submissions were duplicate texts. With the dead-code penalty at 3 the search reached 49 with
+no dead code added (inline getters for two call arguments, two reads through locals): the
+penalty turns the search from fitting probes towards the natural forms. For runs of many hours
+the search escalates by itself: when more than 60% of 3,000 generated variants are duplicate
+texts it goes one level deeper (moves of up to six edits), takes a new seed and a new random mix
+of rule weights, and sends half the islands back to the original; every new best is kept with
+its edit list in OUT/best/, time-stamped.
 
 Cut files did not help on this unit: the file cut after the function, and the file with the
 other bodies stubbed (callees kept), both gave other code for the function (sizes differ), so
