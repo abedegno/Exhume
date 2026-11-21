@@ -427,8 +427,15 @@ def _probe_text(expr):
 
 
 def _point_near(ctx, rng):
+    """An insertion point; half the time the top of a block or case (where the recorded probes
+    that decided matches sat), else any statement boundary."""
     pts = ctx.points()
-    return rng.choice(pts) if pts else None
+    if not pts: return None
+    if rng.random() < 0.5:
+        tops = [p for p in pts if p[2] == 0 or (p[2] < len(p[1].children) and p[2] > 0 and p[1].children[p[2] - 1].kind in ('label',))
+                or (p[2] > 0 and ctx.is_decl(p[1].children[p[2] - 1]))]
+        if tops: return rng.choice(tops)
+    return rng.choice(pts)
 
 
 def _operands_near(ctx, i, rng, want_local=False):
@@ -460,7 +467,12 @@ def _int_name(ctx, name):
     return g is not None and not g[1] and is_int_type(ctx, g[0])
 
 
-def _const(ctx, rng, nonzero=False):
+def _const(ctx, rng, nonzero=False, at=None):
+    """A constant of the function; usually one used near token at."""
+    if at is not None and rng.random() < 0.7:
+        near = [ctx.toks[k][1] for k in range(max(ctx.lb, at - 80), min(ctx.rb, at + 80))
+                if ctx.toks[k][0] in ('num', 'chr') and ctx.toks[k][1] in ctx.consts and not (nonzero and ctx.toks[k][1] in ('0', '1'))]
+        if near: return rng.choice(near)
     cs = [c for c in ctx.consts if not (nonzero and c in ('0', '1'))]
     if not nonzero: cs += ['0', '1']
     return rng.choice(cs) if cs else '0'
@@ -474,7 +486,7 @@ def r_probe_cmp(ctx, rng, everywhere=False):
     if not ops: return None
     x = rng.choice(ops)
     r = rng.random()
-    if r < 0.6: e = f'{x} == {_const(ctx, rng)}'
+    if r < 0.6: e = f'{x} == {_const(ctx, rng, at=i)}'
     elif r < 0.8 and len(set(ops)) > 1:
         y = rng.choice([o for o in ops if o != x] or ops); e = f'{x} - {y} == 0'
     else:
@@ -488,7 +500,7 @@ def r_probe_shift(ctx, rng, everywhere=False):
     i = p[0]
     ops = _operands_near(ctx, i, rng, want_local=True)
     if not ops: return None
-    x = rng.choice(ops); k = _const(ctx, rng, nonzero=True)
+    x = rng.choice(ops); k = _const(ctx, rng, nonzero=True, at=i)
     e = f'({k} << {x}) == 0'
     return Edit([ctx.insert_at(i, _probe_text(e))], f'probe {e} @{_line(ctx, i)}', meaning='probe')
 
@@ -576,7 +588,8 @@ def r_local_inline(ctx, rng, everywhere=False):
     if not cands: return None
     name, loc, sites = rng.choice(cands)
     chosen = sites if everywhere else [rng.choice(sites)]
-    spans, done = [], 0
+    single_use_only = everywhere and rng.random() < 0.5    # 'everywhere' over the sites of one
+    spans, done = [], 0                                     # shape: those read exactly once
     for n, rhs in chosen:
         blk = n.parent if n is not loc.node else loc.block
         if blk is None or blk.kind != 'block': continue
@@ -591,6 +604,7 @@ def r_local_inline(ctx, rng, everywhere=False):
             uses.append(j)
         uses = [j for j in uses if j < b]
         if not uses: continue
+        if single_use_only and len(uses) != 1: continue
         last = uses[-1]
         deps = permc.idents(rhs, t)
         if written_in(ctx, a, b, deps): continue
@@ -608,7 +622,11 @@ def r_local_inline(ctx, rng, everywhere=False):
             rep = f'({val})'
         spans.append((n.start, n.end, []))
         for j in uses:
-            spans.append((j, j + 1, permc.new(rep, t[j][2])))
+            r_j = rep
+            if t[j - 1][1] == '=' and t[j + 1][1] == ';' and ty in ('int', 'unsigned int', 'uint', 'unsigned') \
+                    and rhs.kind in ('bin', 'unary', 'paren', 'cast'):
+                r_j = val                      # the whole value of a store: the int local adds nothing
+            spans.append((j, j + 1, permc.new(r_j, t[j][2])))
         done += 1
     if not done: return None
     # the declaration goes too if nothing else reads it
@@ -729,6 +747,29 @@ def _decl_point(ctx, blk):
     for c in blk.children:
         if not ctx.is_decl(c) and c.kind != 'pp': return c.start
     return blk.end - 1
+
+
+def r_temp_expr(ctx, rng, everywhere=False):
+    """decomp-permuter's temp_for_expr, typed: the value of a store `L = E;` (E an arithmetic
+    expression with no side effects) computed first into a block local of L's type, int or
+    unsigned int: `{ T t = E; L = t; }`."""
+    t = ctx.toks
+    cands = []
+    for n in ctx.nodes:
+        e = ctx.stmt_expr(n)
+        if e is None or e.kind != 'assign' or e.op != '=' or n.parent is None or n.parent.kind != 'block': continue
+        rhs = e.kids[1]
+        if rhs.kind not in ('bin', 'cast', 'unary', 'cond') or permc.has_side_effects(rhs, t): continue
+        cands.append((n, e, rhs))
+    if not cands: return None
+    n, e, rhs = rng.choice(cands)
+    lt = resolve_type(ctx, ctx.type_of(e.kids[0]))
+    types = ['int', 'unsigned int'] + ([lt] if lt and is_int_type(ctx, lt) else [])
+    ty = rng.choice(types)
+    if not (is_int_type(ctx, lt) or lt is None): return None
+    nm = ctx.fresh('pmt_t')
+    new = '{ ' + f'{ty} {nm} = {ctx.src(rhs.start, rhs.end)}; {ctx.src(e.kids[0].start, e.kids[0].end)} = {nm};' + ' }'
+    return Edit([(n.start, n.end, permc.new(new, t[n.start][2]))], f'value of line {_line(ctx, n.start)} through a {ty} local')
 
 
 # ---------------------------------------------------------------- B5, B4, B3: locals' declarations
@@ -1051,18 +1092,25 @@ def r_dup_store(ctx, rng, everywhere=False):
     if not regions: return None
     var, val, blk, k = rng.choice(regions)
     if var.split('[')[0].split('.')[0].split('->')[0] in ctx.locals and rng.random() < 0.5: return None
-    # points in the region before any write of var or call
-    pts = []
+    # points anywhere in the region (nested blocks too) before any write of var, call or jump
+    base = var.split('[')[0].split('.')[0].split('->')[0]
     kids = blk.children
-    rng_k = range(k + 1, len(kids)) if k is not None else range(len(kids))
-    for j in rng_k:
-        c = kids[j]
-        if c.kind == 'label' and k is not None: break
-        if c.kind != 'label' and not ctx.is_decl(c): pts.append(c.start)
-        if has_call(ctx, c.start, c.end) or written_in(ctx, c.start, c.end, {var.split('[')[0].split('.')[0].split('->')[0]}): break
-        if c.kind in ('stmt',) and t[c.start][1] in ('break', 'return', 'goto', 'continue'): break
+    if k is None:
+        r0, r1 = blk.start + 1, blk.end - 1
     else:
-        if k is None: pts.append(blk.end - 1)
+        r0 = kids[k].end
+        j = k + 1
+        while j < len(kids) and kids[j].kind == 'label': j += 1
+        while j < len(kids) and kids[j].kind != 'label': j += 1
+        r1 = kids[j].start if j < len(kids) else blk.end - 1
+    stop = r1
+    for i in range(r0, r1):
+        w = t[i][1]
+        if w in ('break', 'return', 'goto', 'continue') or (t[i][0] == 'id' and i + 1 < len(t) and t[i + 1][1] == '(' and w not in permc.KEYWORDS):
+            stop = i; break
+        if t[i][0] == 'id' and w == base and written_in(ctx, i, i + 1, {base}):
+            stop = i; break
+    pts = [q for q, _, _ in ctx.points() if r0 <= q <= stop]
     if not pts: return None
     p = rng.choice(pts)
     if rng.random() < 0.2:
@@ -1321,6 +1369,7 @@ def r_chain_store(ctx, rng, everywhere=False):
                 v1, v2 = permc.const_value(e.kids[1], t), permc.const_value(f.kids[1], t)
                 if v1 is None or v1 != v2 or not 0 <= v1 < 128: continue
                 if not (permc.is_lvalue_simple(e.kids[0], t) and permc.is_lvalue_simple(f.kids[0], t)): continue
+                if ctx.src(e.kids[0].start, e.kids[0].end) == ctx.src(f.kids[0].start, f.kids[0].end): continue
                 fwd.append((kids[k], kids[k + 1], e, f))
     if not fwd and not inv: return None
     if fwd and (not inv or rng.random() < 0.6):
@@ -1814,6 +1863,7 @@ RULES = [
     Rule('retype', 'B5', 4, r_retype),
     Rule('init_decl', 'C1', 7, r_init_decl),
     Rule('const_local', 'C2', 5, r_const_local),
+    Rule('temp_expr', 'B1 add, B5', 5, r_temp_expr),
     Rule('dead_local', 'C3', 3, r_dead_local),
     Rule('ptr_store', 'C5', 2, r_ptr_store),
     Rule('dup_store', 'D4', 6, r_dup_store),

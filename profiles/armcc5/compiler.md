@@ -1155,3 +1155,107 @@ the end with no edit at all, because the vendor had built the same source earlie
 - **Make byte checks strict.** A checker that learns which symbol each address is must allow one
   address per symbol and no address shared by two symbols. One checker let `__aeabi_ui2f` take
   both its own address and `__aeabi_i2f`'s, and so passed a function with the wrong signedness.
+
+## The fast permuter (armpermute2.py)
+
+`armpermute2.py` is a second, faster permuter, written after the hand sweeps and `armpermute.py`
+stopped finding the last functions of a firmware. It searches the same way the Nintendo
+decompilation projects do: many islands of random source edits, real compiles, keep what scores
+no worse. What makes it worth running for hours is the cost per variant and the rules.
+
+Measured on a 32-core x86 host with the Linux build of the same compiler (ARM Compiler 5.06u3
+for Linux, run with `ARM_TOOL_VARIANT=mdk_lite` and `ARM_PRODUCT_PATH` set to an MDK mappings
+folder), one 12 KB source unit:
+
+- process start 7 ms, whole unit 250 ms, the unit cut after the function 180 ms, one function
+  alone 140 ms; 100 copies of a function in one file cost 157 ms each, so batching gains nothing
+  natively (under Wine it did, because Wine's start-up was the cost). Code generation is the
+  cost: one compiler process per variant per core, work files in /dev/shm.
+- armcc reads the source in 4 KB pieces while it parses, but it parses the whole file before it
+  generates any code (the last source read comes about 45 ms into a 250 ms compile). So a
+  compile paused at the function's first line and forked per variant (the Borland permuter's
+  snapshot) would save only the parse of what comes before, not the code generation; it was not
+  built. What does save time is ending the file right after the function ('prefix' cut), since
+  the code generation of the functions after it is skipped; the start-up check decides.
+- fromelf costs 12 ms. The permuter does not run it: `orcobj.py` reads the object in-process.
+  MDK-Lite's objects are ELF with the section headers and the global symbols shuffled (the file
+  starts `\xf7ORC`); each record's byte permutation comes from a SHA-1 of a key built from the
+  section header offset or the symbol count (the module docstring has the details). On 257
+  objects it gives the same sections, symbols and relocations as `fromelf --text -v -r -s`,
+  except for assembler objects' unnamed section symbol.
+- Scoring (`permscore.py`) is in the worker: the function's bytes are placed at its map address
+  with every relocation applied (calls and literals that name a mapped function go to its map
+  address), and compared with the image. 0 means equal bytes. Otherwise the count is
+  instruction-aligned like fnscore's, with branch targets as indexes, but bl targets and literal
+  values are compared, not masked, and pc-relative displacements are dropped. On one tree's 967
+  functions it agreed with fnscore wherever fnscore was right; where they differed, fnscore had
+  masked a literal or call that really differed, or miscounted a one-instruction loop. The
+  first version took a renamed row's placeholder alias in place of the source's own at: pin for
+  the same name; the link prefers the pin, and so must a scorer. Cost: 0.5 ms when the bytes are
+  equal, 1-13 ms otherwise (2,800 instructions), results cached by object hash.
+- Mutation is a tokenizer, a statement tree and a small expression parser (`permc.py`), no C
+  parser library: 0.1-0.5 ms per rule, 4-5 ms per variant in the parent including the second
+  parse of a two-edit move, the rendering and the duplicate check.
+- Throughput: 60 variants a second with 16 workers on the 12 KB unit (3.7 per worker), 130 a
+  second on a smaller unit. Between a third and a half of the compiled variants give an object
+  already seen: most single edits do not change the code.
+
+The rules (`permrules.py`) are the kinds of edit that produced matches, taken from the history of
+several trees rather than generic defaults, each usable both ways: dead uses in the forms that
+survive to allocation (a comparison stored in a block local, a shift of a constant compared with
+0, two addresses compared) and their removal or move; a local caching a global, member or
+element and its inverse (reading it at each use, at one site or at every site read once); value
+getters as `static __forceinline`; record pointer to direct access; statement order; arm swap,
+nesting and test order; initialiser at declaration; a constant through a narrow local; redundant
+stores (repeated, dead before another, or the value a test or case label just established);
+if-chain to switch; goto chain against `||`; chained stores; `x[n++]`; `++n` in the test; range
+tests; bit tests; select forms; shift against multiply; a cast to the target's own type; case-
+label edits; scope and declaration order (weighted low: they decided small functions only);
+sized extern arrays from the map (sizeof read from one probe compile); unprototyped definitions;
+plus a few generic decomp-permuter passes. Weights follow how often each kind decided a match.
+
+Lessons from proving it on solved cases:
+
+- Keep some islands strict (they accept only improvements) and send restarts back to the
+  original source every other time. Islands that accept equal scores collect neutral edits, and
+  a one-edit answer from the original was tried more than once on top of such edits without
+  scoring 0.
+- Neighbours must be judged against the image, not against the base build: when the function's
+  size changes, every later function's raw bytes change too (armcc resolves calls within a
+  section without relocations).
+- The search often finds a different exact source than the one a person found: a cached
+  local in place of a dead comparison, a chained store in place of a dead shift. Reduce each hit
+  (it does this itself, with armreduce's hunk reduction) and check it with match.py; prefer the
+  form that also fits the vendor's style elsewhere.
+
+Regression on solved cases (one firmware, functions matched by hand earlier; the source before
+each match recovered from history; budget 10-15 minutes on 15 workers; "exact" means equal bytes
+at the map address by the scorer, the same comparison objplace makes; every recorded answer was
+itself checked to score exact under the scorer first, and two did not, because a data address
+pinned later in the history differed):
+
+| function kind | start | result | variants | seconds | what the search used | the recorded answer |
+|---|---|---|---|---|---|---|
+| CAN sender | 2 | exact | 66 | 1 | chained store | dead shift probe |
+| byte receiver A | 8 | exact | 200 | 3 | stored comparison of two locals | dead shift probe |
+| byte receiver B | 8 | exact | 531 | 9 | getter, `++` out of a test, dead shift probe | dead shift probe |
+| current measurement | 7 | exact | 480 | 16 | two getters, stored comparison, block-local cache | stored comparison |
+| update check (size +6) | 36 | exact | 809 | 10 | comma probe removed, dead shift, dead store, int temporary | comma probe removed, dead shift |
+| receive task (size -4) | 3 | exact | 663 | 5 | cached selector, arm swap, dead shift | redundant store of the state |
+| CAN receiver | 20 | exact | 131 | 2 | if chain to switch | if chain to switch |
+| charge limit | 11 | exact | 35 | 1 | block-local cache | cache both operands |
+| discharge limit (size +2) | 21 | exact | 338 | 11 | dead shift probe | stored comparison |
+| protocol task | 29 | exact | 403 | 7 | range tests, arm swap, getter | arm swap, range tests |
+| CAN receiver 2 | 8 | 1 (= the answer's floor) | 59,000 | 900 | stored comparison | local inlined at four sites (also 1) |
+| register write | 2 | 2 (answer: 1) | 100,000 | 900 | none | int temporary used for the store and the call |
+| holding registers | 2 | 2 | 91,000 | 900 | none | sized arrays, locals removed across blocks, else-if |
+| summary update | 4 | 2 | 55,000 | 900 | stored comparison | sized array, goto chains to `||`, locals removed |
+
+Ten of the fourteen found an exact source, most in seconds; three of the first runs failed until
+the search was changed (strict islands, restarts to the original, redundant stores in nested
+blocks, probes at block tops and with nearby constants), and then found them in 5-10 seconds. The
+misses are the multi-edit structural rewrites (sizes plus restructuring plus locals removed across
+blocks). The search found a different source from the recorded one in seven of ten cases, and
+often a dead-code one: the permuter will fit probes where a person found a natural form, so its
+results are evidence of where the tie is, not the vendor's source. `armpermute2.py` keeps a
+Pareto front of score against the number of dead-code constructs added (best_dead+N.c).

@@ -24,11 +24,14 @@ run. Every attempt is logged to OUT/attempts.tsv (island, rules, sites, result, 
 of a run prints per-rule statistics (tried, compiled, improved, accepted) and the throughput.
 State (island bases, best, seen hashes, rule statistics) is kept in OUT/state.json for --resume.
 
-Cut mode (--cut): compile a file holding only FUNC's definition plus the file's declarations
-(other function bodies replaced by prototypes, static and inline ones kept) instead of the
-whole unit. Used only when a start-up check shows FUNC's code from the cut file equals the
-whole-unit build: 'exact' when the bytes are equal; 'masked' when only pc-relative
-displacements differ (scores then mask them, and a 0 is confirmed by a whole-unit compile).
+Cut mode (--cut auto): compile less than the whole unit when a start-up check shows FUNC's
+code is the same. Forms tried: 'prefix' (the file up to the end of FUNC; armcc parses the whole file
+before it generates any code, so code generation for the later functions is saved; invalid
+when FUNC calls a function defined later, because armcc uses a same-file callee's register
+usage), 'stub' (other function bodies replaced by prototypes, except static and inline ones and
+the functions FUNC calls, transitively), and both. A form is used when FUNC's placed bytes equal the whole build's
+('cut') or differ only in pc-relative displacements ('cut-masked'), and it is at least 8%
+faster; a 0 from a cut file is always confirmed by a whole-unit compile.
 
 OUT defaults to <build>/permute2/FUNC. SRC is never modified. Rerun match.py on any result."""
 import collections, hashlib, json, math, os, queue, random, re, sys, time
@@ -75,10 +78,41 @@ def array_sizes(runner, cfg, src, text, toks, types, target_map, work):
     return out
 
 
-def cut_text(toks, tail, func, types):
+def prefix_text(toks, tail, func):
+    """The file up to the end of FUNC's definition. Only valid when FUNC calls nothing defined
+    after it: armcc uses a same-file callee's register usage (checked at start-up)."""
+    s, lb, rb = permc.find_function(toks, func)
+    return permc.render(toks[:rb + 1], '\n')
+
+
+def callees(toks, func, pair=None):
+    """Names FUNC calls, directly or through functions of the file it calls (transitively):
+    armcc uses a callee's register usage when the callee is defined in the same file, so their
+    bodies must stay in a cut file."""
+    pair = pair or permc.match_brackets(toks)
+    bodies = {}
+    for i in range(len(toks) - 1):
+        if toks[i][0] == 'id' and toks[i + 1][1] == '(':
+            try:
+                s, lb, rb = permc.find_function(toks, toks[i][1])
+                bodies.setdefault(toks[i][1], (lb, rb))
+            except LookupError:
+                pass
+    keep, todo = set(), [func]
+    while todo:
+        f = todo.pop()
+        if f in keep or f not in bodies: continue
+        keep.add(f)
+        lb, rb = bodies[f]
+        todo += [toks[j][1] for j in range(lb, rb) if toks[j][0] == 'id' and toks[j + 1][1] == '(']
+    return keep
+
+
+def cut_text(toks, tail, func, types, keep=None):
     """FUNC plus the file's declarations: other function definitions become prototypes,
-    except static and inline ones (FUNC may call them and armcc may inline them)."""
+    except static and inline ones and the functions FUNC calls (see callees)."""
     pair = permc.match_brackets(toks)
+    keep = callees(toks, func, pair) if keep is None else keep
     spans = []
     depth = 0
     i = 0
@@ -95,11 +129,24 @@ def cut_text(toks, tail, func, types):
                 words = {x[1] for x in toks[s:i]}
                 lp = pair[j]
                 name = toks[lp - 1][1]
-                if name != func and not ({'static', '__inline', '__forceinline', 'inline'} & words):
+                if name != func and name not in keep and not ({'static', '__inline', '__forceinline', 'inline'} & words):
                     spans.append((i, pair[i] + 1, [permc.Tok('op', ';', '')]))
             i = pair[i] + 1; continue
         i += 1
     return permc.render(R.apply(toks, spans), tail)
+
+
+DEAD = re.compile(r'\{\s*(?:unsigned\s+int|uint)\s+z\s*;\s*z\s*=|\{\s*unsigned\s+int\s+z\s*=|\bpmt_u\d+\s*=|\*pmt_p\d+\s*=')
+
+
+def dead_count(toks, func):
+    """Dead-code constructs in FUNC (stored comparisons, unused locals, pointer stores): the
+    edits a hand sweep already tries, and the ones most likely to be fits."""
+    try:
+        s, lb, rb = permc.find_function(toks, func)
+    except LookupError:
+        return 0
+    return len(DEAD.findall(' '.join(t[1] for t in toks[lb:rb + 1])))
 
 
 # ---------------------------------------------------------------- the search
@@ -173,7 +220,10 @@ class Search:
         self.screen = permscreen.Screen(self.src, self.opts, self.text, self.armcc_include()) if self.screen_on else None
         self.islands = [Island(k, self.text, toks, ctx, r0, []) for k in range(self.nisl)]
         self.best = Island(-1, self.text, toks, ctx, r0, [])
+        self.origin = Island(-2, self.text, toks, ctx, r0, [])
         self.seen.add(norm_hash(toks))
+        self.dead0 = dead_count(toks, self.func)
+        self.front = {}                     # dead-code edits added -> (key, text, result)
         if '--resume' in self.a: self.load_state()
 
     def armcc_include(self):
@@ -186,23 +236,41 @@ class Search:
         return ctx
 
     def check_cut(self, toks, tail, whole_raw, cut):
-        text = cut_text(toks, tail, self.func, self.types)
+        """The fastest cut form whose FUNC code equals the whole unit's ('prefix': the file up
+        to FUNC; 'stub': other bodies as prototypes; or both), else the whole unit."""
+        t0 = time.time()
+        permrun.compile_once(self.runner, self.cfg, self.src, self.text, os.path.join(self.work, 'cut'))
+        best = ('whole', time.time() - t0)
+        print(f'  whole unit: {best[1]:.2f} s per compile')
+        for form in ('prefix', 'stub', 'prefix+stub'):
+            m = self.check_cut1(toks, tail, whole_raw, form)
+            if m and m[1] < best[1] * 0.92: best = m
+        return best[0]
+
+    def cut_of(self, form, toks):
+        if form == 'prefix': return prefix_text(toks, self.tail, self.func)
+        if form == 'stub': return cut_text(toks, self.tail, self.func, self.types)
+        t, tail = permc.tokenize(prefix_text(toks, self.tail, self.func))
+        return cut_text(t, tail, self.func, self.types)
+
+    def check_cut1(self, toks, tail, whole_raw, form):
+        text = self.cut_of(form, toks)
         t0 = time.time()
         raw, log = permrun.compile_once(self.runner, self.cfg, self.src, text, os.path.join(self.work, 'cut'))
         dt = time.time() - t0
         if raw is None:
-            print('  cut file does not compile: whole unit'); return 'whole'
+            print(f'  cut {form}: does not compile'); return None
         try:
             a = self.target.place_function(orcobj.read(raw=raw)[0])[0]
             b = self.target.place_function(orcobj.read(raw=whole_raw)[0])[0]
         except Exception as e:
-            print(f'  cut file does not place ({e}): whole unit'); return 'whole'
+            print(f'  cut {form}: does not place ({e})'); return None
         if a == b:
-            print(f'  cut mode: exact (FUNC equal byte for byte; one cut compile {dt:.2f} s)'); return 'cut'
+            print(f'  cut {form}: exact (FUNC equal byte for byte), {dt:.2f} s per compile'); return ('cut:' + form, dt)
         ra, rb = self.target.score(raw), self.target.score(whole_raw)
         if ra.ok and rb.ok and ra.diff == rb.diff and len(a) == len(b):
-            print(f'  cut mode: masked (pc-relative displacements differ; zeros confirmed whole)'); return 'cut-masked'
-        print('  cut file gives other code: whole unit'); return 'whole'
+            print(f'  cut {form}: masked (pc-relative displacements differ), {dt:.2f} s per compile'); return ('cut-masked:' + form, dt)
+        print(f'  cut {form}: other code for FUNC'); return None
 
     # ---- variants
     def pick_rule(self):
@@ -244,10 +312,9 @@ class Search:
         return toks, trail
 
     def job_text(self, toks):
-        text = permc.render(toks, self.tail)
         if self.mode.startswith('cut'):
-            return cut_text(toks, self.tail, self.func, self.types)
-        return text
+            return self.cut_of(self.mode.split(':')[1], toks)
+        return permc.render(toks, self.tail)
 
     # ---- run
     def run(self):
@@ -319,6 +386,8 @@ class Search:
         isl = self.islands[isl_k]
         rules = '+'.join(t[0] for t in trail)
         desc = ' | '.join(t[1] for t in trail)
+        if r is not None and not r.ok:                 # compiled, but FUNC could not be scored
+            log, r = 'not scored: ' + r.error, None
         if r is None:
             self.counts['failed'] += 1
             for rid, _, _ in trail: self.stats[rid.rstrip('*')]['failed'] += 1
@@ -331,14 +400,20 @@ class Search:
         k = r.key()
         old = isl.result.key()
         accepted = False
-        if k <= old:
-            accepted = True
-        elif k[0] == old[0] and k[1] == old[1] and self.temp > 0:
+        strict = isl.k % 2 == 1          # odd islands keep only improvements: they stay near
+        if k < old or (k == old and not strict):   # their base, where a one- or two-edit answer is
+            accepted = True                        # found; drifting islands collect neutral edits
+        elif not strict and k[0] == old[0] and k[1] == old[1] and self.temp > 0:
             accepted = self.rng.random() < math.exp(-(k[2] - old[2]) / self.temp)
         better = k < old
         if better:
             for rid, _, _ in trail: self.stats[rid.rstrip('*')]['improved'] += 1
         self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\t{r.diff}\t{r.size:#x}\t{"acc" if accepted else ""}\t{desc}\t{ohash}\n')
+        d = dead_count(toks, self.func) - self.dead0
+        f = self.front.get(d)
+        if (f is None or k < f[0]) and (not self.screen or self.screen.check(permc.render(toks, self.tail))[0]):
+            self.front[d] = (k, permc.render(toks, self.tail), r)
+            with open(os.path.join(self.out, f'best_dead{d:+d}.c'), 'w', encoding='latin1') as fh: fh.write(self.front[d][1])
         newbest = k < self.best.result.key()
         if newbest:
             text = permc.render(toks, self.tail)
@@ -348,7 +423,7 @@ class Search:
                 for rid, _, _ in trail: self.stats[rid.rstrip('*')]['screened_out'] += 1
                 self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\tSCREENED\t\t\t{desc}\t{"; ".join(why)[:300]}\n')
                 return False
-            if r.exact and self.mode == 'cut-masked':
+            if r.exact and self.mode.startswith('cut'):
                 raw, lg = permrun.compile_once(self.runner, self.cfg, self.src, text, os.path.join(self.work, 'confirm'))
                 if raw is None or not self.target.score(raw).exact:
                     self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\tCUT-ZERO-NOT-WHOLE\n'); return False
@@ -370,12 +445,16 @@ class Search:
         if better or newbest: isl.stale = 0
         else: isl.stale += 1
         if isl.stale > self.restart:
-            isl.toks, isl.ctx, isl.result, isl.trail = self.best.toks, self.best.ctx, self.best.result, list(self.best.trail)
-            isl.stale = 0
+            # back to the best, or every other time to the original source (neutral edits the
+            # best carries can block an answer that is one edit from the original)
             self.counts['restarts'] += 1
+            src = self.best if self.counts['restarts'] % 2 or self.origin is None else self.origin
+            isl.toks, isl.ctx, isl.result, isl.trail = src.toks, src.ctx, src.result, list(src.trail)
+            isl.stale = 0
         return r.exact and not r.neighbours
 
     obj_seen = set()
+    origin = None
 
     def reduce(self, pool):
         """armreduce.py's reduction of the best source to the line hunks that matter: drop each
@@ -389,7 +468,7 @@ class Search:
             text = '\n'.join(lines)
             if self.mode.startswith('cut'):
                 toks, _ = permc.tokenize(text)
-                text = cut_text(toks, self.tail, self.func, self.types)
+                text = self.cut_of(self.mode.split(':')[1], toks)
             _, r, _, _, _, _ = pool.pool.apply(permrun._worker_job, ((-1, text),))
             n[0] += 1
             return r is not None and r.key() <= limit
@@ -430,6 +509,11 @@ class Search:
             s = self.stats[r.id]
             print(f'{r.id:16} {s["tried"]:7} {s["compiled"]:9} {s["failed"]:7} {s["improved"]:9} {s["accepted"]:9} '
                   f'{s["new_best"]:9} {s["nosite"]:7} {s["screened_out"]:9}')
+        print('\nPareto front (dead-code constructs added against the start, best score with that many):')
+        for d in sorted(self.front):
+            k, _, r = self.front[d]
+            if all(self.front[e][0] > k for e in self.front if e < d):
+                print(f'  {d:+d}: {r.text()}   (best_dead{d:+d}.c)')
         jobs = self.jobs
         print(f'\nthroughput: generated {c["generated"]} ({c["generated"] / el:.1f}/s), submitted {c["submitted"]}, '
               f'compiled {c["compiled"]} ({c["compiled"] / el:.1f}/s, {c["compiled"] / el / jobs:.2f}/s per worker), '

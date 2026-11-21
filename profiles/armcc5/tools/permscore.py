@@ -25,9 +25,10 @@ neighbour moved), any other symbol as objplace links it. Then:
 
 The hot path costs a byte compare when the bytes are equal; instructions are split with the
 Thumb-2 length rule and only branches, literal loads and adr are decoded (no capstone); results
-are cached by object hash. neighbours(): the other functions of the unit whose code (raw bytes
-and relocations) differs from the base object's, so a declaration edit that breaks a neighbour
-is seen."""
+are cached by object hash. Neighbours: a function of the unit that the base build placed exactly
+and whose code (raw bytes and relocations) differs in the variant is placed at its own map
+address and compared with the image; one that no longer matches is reported, so a declaration
+edit that breaks a neighbour is seen."""
 import difflib, hashlib, os, struct, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXHUME = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
@@ -207,9 +208,19 @@ class Target:
         if errors: raise SystemExit('base object does not place: ' + '; '.join(errors[:5]))
         bases, errs = objplace.bases_for(o, info, placements, unplaced)
         if errs: raise SystemExit('base object does not place: ' + '; '.join(errs[:5]))
+        # as the link resolves a name: a map row's own name, then the source's at: lines, then
+        # a renamed row's placeholder alias (so `g_XXXXXXXX` pinned by an at: line to another
+        # address takes the pin, not the alias)
         self.table = {}
-        for a, kind, n in m.symdef_entries(set(defined), extra):     # first entry wins (an
-            self.table.setdefault(n, (a | 1 if kind == 'T' else a, kind))   # old map's alias clash)
+        ents = m.symdef_entries(set(defined), extra)
+        for a, kind, n in ents:
+            if n in m.by_name: self.table.setdefault(n, (a | 1 if kind == 'T' else a, kind))
+        for n, a in extra.items():
+            if n not in defined and n not in m.by_name:
+                kind = 'D' if a >= 0x20000000 else 'T'
+                self.table.setdefault(n, (a | 1 if kind == 'T' else a, kind))
+        for a, kind, n in ents:
+            self.table.setdefault(n, (a | 1 if kind == 'T' else a, kind))
         self.defined = defined
         # data-section bases by label (name, k-th of the name), so a variant whose section
         # indexes shift still finds them
@@ -218,6 +229,15 @@ class Target:
             s = o.sections[i]
             if 'SHF_EXECINSTR' not in s.flags: self.data_bases[self._label(o, i)] = a
         self.base_code = self._code_signature(o)
+        # neighbours that are exact in the base build: a variant must keep them exact
+        self.base_exact = set()
+        for name in self.base_code:
+            if name in m.by_name:
+                try:
+                    code, _, _ = self.place_function(o, name=name)
+                    if code == img.bytes(m.by_name[name].addr, m.by_name[name].size): self.base_exact.add(name)
+                except Exception:
+                    pass
         self.cache = {}
 
     @staticmethod
@@ -246,13 +266,24 @@ class Target:
             out[name] = hash((bytes(o.sections[idx].data[off:end]), rel))
         return out
 
-    def place_function(self, o, funcs=None):
-        """(placed bytes of FUNC, data byte addresses) or raises."""
+    def _data_base(self, o, sec):
+        """A data section's address: from a symbol it defines that the base build placed (a
+        cut file may number or split its sections differently), else by its label."""
+        for x in o.symbols.values():
+            if x.sec == sec and x.type == 'Data' and x.name in self.defined:
+                return self.defined[x.name] - x.value
+        lab = self._label(o, sec)
+        if lab in self.data_bases: return self.data_bases[lab]
+        raise LookupError(f'section {lab} not placed')
+
+    def place_function(self, o, funcs=None, name=None):
+        """(placed bytes of FUNC (or of function name), data byte addresses, address) or raises."""
         funcs = funcs or self._functions(o)
-        if self.func not in funcs: raise LookupError(f'{self.func} not in the object')
-        idx, off, end = funcs[self.func]
+        name = name or self.func
+        if name not in funcs: raise LookupError(f'{name} not in the object')
+        idx, off, end = funcs[name]
         sec = o.sections[idx]
-        base = self.addr - off
+        base = (self.addr if name == self.func else self.m.by_name[name].addr) - off
         b = bytearray(sec.data)
         m = self.m
         states = objplace.mapping_states(o, idx)
@@ -266,9 +297,7 @@ class Target:
                 if s.sec == idx:
                     S, T = base + (s.value & ~1), (s.value & 1 if s.type == 'Code' else 0)
                 else:
-                    lab = self._label(o, s.sec)
-                    if lab not in self.data_bases: raise LookupError(f'section {lab} not placed')
-                    S, T = self.data_bases[lab] + s.value, 0
+                    S, T = self._data_base(o, s.sec) + s.value, 0
             elif s.sec == 'Abs':
                 S, T = s.value, 0
             else:
@@ -299,8 +328,16 @@ class Target:
             r = Result(error=f'{type(e).__name__}: {e}')
             self.cache[h] = r
             return r
-        neigh = tuple(sorted(n for n, sig in self._code_signature(o).items()
-                             if n in self.base_code and self.base_code[n] != sig))
+        neigh = []
+        for n, sig in self._code_signature(o).items():
+            if n in self.base_exact and self.base_code[n] != sig:
+                try:
+                    c2, _, _ = self.place_function(o, funcs, name=n)
+                    row = self.m.by_name[n]
+                    if c2 != self.img.bytes(row.addr, row.size): neigh.append(n)
+                except Exception:
+                    neigh.append(n)
+        neigh = tuple(sorted(neigh))
         if code == self.want:
             r = Result(True, True, 0, len(code), self.want_size, neigh, code=code)
         else:

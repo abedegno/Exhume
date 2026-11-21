@@ -82,6 +82,7 @@ CASES = {
     'test_order': ('void f(void) { if (status == 1 && phase == 2) counter = 0; }', 'phase == 2 && status == 1', 'test_order'),
     'retype': ('void f(void) { ushort v; v = status; send(1, v); }', 'v', 'retype'),
     'init_decl': ('void f(void) { uchar n; n = 0; send(n, 1); }', 'uchar n = 0;', 'init_decl'),
+    'temp_expr': ('void f(ushort v) { status = v * 10; }', 'status = pmt_t0;', 'local_inline'),
     'const_local': ('void f(void) { send(7, 1); }', 'pmt_k', None),
     'dead_local': ('void f(void) { send(status, 1); }', '= status;', None),
     'ptr_store': ('void f(void) { status = 1; }', '*pmt_p0 = 1', None),
