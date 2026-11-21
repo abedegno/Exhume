@@ -364,9 +364,11 @@ def written_in(ctx, a, b, names):
 
 
 def has_call(ctx, a, b):
+    """A function call in tokens a..b (a function-like macro of the file whose body calls
+    nothing is not one)."""
     t = ctx.toks
     for i in range(a, b - 1):
-        if t[i][0] == 'id' and t[i + 1][1] == '(' and t[i][1] not in permc.KEYWORDS: return True
+        if t[i][0] == 'id' and t[i + 1][1] == '(' and t[i][1] not in permc.KEYWORDS and not _pure_macro(ctx, t[i][1]): return True
     return False
 
 
@@ -674,6 +676,9 @@ def _stores_between(ctx, a, b, deps=None):
     Without deps, any store to anything but a plain local."""
     t = ctx.toks
     for i in range(a, b):
+        if deps and t[i][0] == 'id' and t[i + 1][1] == '(' and t[i][1] in _macros(ctx):
+            body = _macros(ctx)[t[i][1]]                # a macro's own stores
+            if any(re.search(r'\b' + re.escape(d) + r'\b[^;=]*?(?<![=!<>])=(?!=)', body) for d in deps): return True
         if t[i][1] in permc.ASSIGN or t[i][1] in ('++', '--'):
             # find the lvalue's base identifier
             j = i - 1
@@ -969,6 +974,10 @@ def r_pointer_direct(ctx, rng, everywhere=False):
         else:
             return None
     if not spans: return None
+    l = ctx.locals[name]
+    occ = [j for j in ctx.ids.get(name, []) if not (l.node.start <= j < l.node.end)]
+    if n is None and l.single and all(any(a <= j < b for a, b, _ in spans) for j in occ):
+        spans.append((l.node.start, l.node.end, []))       # the initialised pointer is not needed
     return Edit(spans, f'pointer {name} -> direct {tx[:40]} ({len(spans)} uses)')
 
 
@@ -1097,7 +1106,8 @@ def r_dup_store(ctx, rng, everywhere=False):
         for m in ctx.nodes:
             e = ctx.stmt_expr(m)
             if e is not None and e.kind == 'assign' and e.op == '=' and ctx.src(e.kids[0].start, e.kids[0].end) == lt \
-                    and lt.split('[')[0].split('.')[0] not in permc.idents(e.kids[1], t) and m.parent is not None and m.parent.kind == 'block':
+                    and lt.split('[')[0].split('.')[0] not in permc.idents(e.kids[1], t) and m.parent is not None and m.parent.kind == 'block' \
+                    and not permc.has_side_effects(e.kids[1], t):      # a call there could read the dead value
                 targets.append(m)
         if not targets: return None
         m = rng.choice(targets)
@@ -1139,6 +1149,8 @@ def r_dup_store(ctx, rng, everywhere=False):
             stop = i; break
         if t[i][0] == 'id' and w == base and written_in(ctx, i, i + 1, {base}):
             stop = i; break
+        if (w in permc.ASSIGN or w in ('++', '--')) and _stores_between(ctx, i, i + 1, {base}):
+            stop = i; break                     # a store through a pointer may change var
     pts = [q for q, _, _ in ctx.points() if r0 <= q <= stop]
     if not pts: return None
     p = rng.choice(pts)
@@ -1861,6 +1873,1041 @@ def r_ins_block(ctx, rng, everywhere=False):
     return Edit([(n.start, n.end, permc.new('{ ' + ctx.src(n.start, n.end) + ' }', t[n.start][2]))], f'braces around line {_line(ctx, n.start)}')
 
 
+# ---------------------------------------------------------------- structural and compound moves
+#
+# The misses of the first regression were rewrites made of several edits that only pay off
+# together: a temporary used by a store and the call after it; a group of locals inlined at
+# every use plus a dead probe removed plus sized externs plus a flat else-if; a pointer local
+# with arithmetic replaced by the fields it reaches, goto chains turned into one boolean test,
+# and every local removed. The moves below are those kinds, each general, plus compound moves
+# that apply a whole normalising pass in one step (the edits a person makes when they rewrite a
+# fitted source plainly).
+
+def remake(ctx, toks):
+    """A Ctx of toks with the same file facts (types, array sizes, struct layouts)."""
+    c = Ctx(toks, ctx.tail, ctx.func, ctx.types)
+    for k in ('array_sizes', 'layouts'):
+        if hasattr(ctx, k): setattr(c, k, getattr(ctx, k))
+    return c
+
+
+def diff_spans(old, new):
+    """Span edits turning token list old into new: the changed middle, split into hunks with
+    difflib when it is long (a compound move that touches a declaration and the function)."""
+    if old == new: return []
+    p, n = 0, min(len(old), len(new))
+    while p < n and old[p] == new[p]: p += 1
+    s = 0
+    while s < n - p and old[len(old) - 1 - s] == new[len(new) - 1 - s]: s += 1
+    a1, b1 = p, len(old) - s
+    a2, b2 = p, len(new) - s
+    if b1 - a1 < 200:
+        return [(a1, b1, list(new[a2:b2]))]
+    import difflib
+    sm = difflib.SequenceMatcher(None, [t[1] for t in old[a1:b1]], [t[1] for t in new[a2:b2]], autojunk=False)
+    out = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op != 'equal': out.append((a1 + i1, a1 + i2, list(new[a2 + j1:a2 + j2])))
+    # equal texts with other whitespace are not edits worth keeping
+    return out or [(a1, b1, list(new[a2:b2]))]
+
+
+def _edit_of(ctx, new, desc, meaning='same'):
+    sp = diff_spans(ctx.toks, new)
+    return Edit(sp, desc, meaning=meaning) if sp else None
+
+
+def _chain(ctx, rng, fns, stop_on_none=False):
+    """Apply fns in turn, each on a fresh parse of the result of the last; (toks, descs, meaning)."""
+    toks, descs, c, meaning = ctx.toks, [], ctx, 'same'
+    for fn in fns:
+        try:
+            ed = fn(c, rng)
+        except Exception:
+            ed = None
+        if ed is None or not ed.spans:
+            if stop_on_none: break
+            continue
+        try:
+            nt = apply(toks, ed.spans)
+            c2 = remake(c, nt)
+        except Exception:
+            if stop_on_none: break
+            continue
+        toks, c = nt, c2
+        descs.append(ed.desc)
+        if ed.meaning != 'same': meaning = ed.meaning
+    return toks, descs, meaning
+
+
+def _fix(fn, limit=24):
+    """fn applied until it finds no site, as one edit."""
+    def g(ctx, rng):
+        toks, descs, meaning = _chain(ctx, rng, [fn] * limit, stop_on_none=True)
+        if not descs: return None
+        return _edit_of(ctx, toks, '; '.join(descs)[:300], meaning)
+    return g
+
+
+def _macros(ctx):
+    """{name: body} of the function-like macros defined in the file."""
+    m = getattr(ctx, '_macro_cache', None)
+    if m is None:
+        m = {}
+        for t in ctx.toks:
+            if t[0] == 'pp':
+                mm = re.match(r'#\s*define\s+(\w+)\(([^)]*)\)(.*)', t[1].replace('\\\n', ' '), re.S)
+                if mm: m[mm.group(1)] = mm.group(3)
+        ctx._macro_cache = m
+    return m
+
+
+def _pure_macro(ctx, name):
+    body = _macros(ctx).get(name)
+    if body is None: return False
+    return not any(w not in permc.KEYWORDS and w not in _macros(ctx) for w in re.findall(r'\b([A-Za-z_]\w*)\s*\(', body)
+                   if not ctx.types.is_type_word(w))
+
+
+# ---- dead constructs (counted for the penalty, removed by remove_dead)
+
+def _declarators(ctx, n):
+    """(index after the type words, [(a, b, name)]) of a declaration statement."""
+    t = ctx.toks
+    k = n.start
+    while k < n.end and (ctx.types.is_type_word(t[k][1]) or t[k][1] in ('struct', 'union', 'enum')):
+        if t[k][1] in ('struct', 'union', 'enum'): k += 1
+        k += 1
+    if k == n.start and t[k][0] == 'id': k += 1
+    out, a, depth = [], k, 0
+    for i in range(k, n.end):
+        w = t[i][1]
+        if w in '([{': depth += 1
+        elif w in ')]}': depth -= 1
+        if (w == ',' and depth == 0) or i == n.end - 1:
+            names = [j for j in range(a, i) if t[j][0] == 'id' and t[j][1] not in permc.QUALIFIERS]
+            eq = next((j for j in range(a, i) if t[j][1] == '='), i)
+            names = [j for j in names if j < eq]
+            if names: out.append((a, i, t[names[0]][1]))
+            a = i + 1
+    return k, out
+
+
+def _is_store(ctx, j):
+    """Token j (an identifier) is the whole left side of a plain `=` statement."""
+    t = ctx.toks
+    if t[j + 1][1] != '=' or t[j - 1][1] in ('.', '->', '*', '&'): return None
+    n = ctx.enclosing(j)
+    if n.kind != 'stmt' or n.start != j or ctx.is_decl(n): return None
+    return n
+
+
+def _addr_taken(ctx, name):
+    t = ctx.toks
+    for j in ctx.ids.get(name, []):
+        if t[j - 1][1] == '&' and (t[j - 2][0] not in ('id', 'num', 'chr') and t[j - 2][1] not in (')', ']')
+                                   or t[j - 2][1] in permc.KEYWORDS):
+            return True
+    return False
+
+
+def _loops_of(n):
+    out = []
+    while n is not None:
+        if n.kind in ('for', 'while', 'do'): out.append(n)
+        n = n.parent
+    return out
+
+
+def dead_stores(ctx):
+    """Statements `v = E;` (v a local or parameter, E without side effects) whose value is not
+    read before v's next store in the same block or the function's end."""
+    t = ctx.toks
+    out = []
+    has_goto = any(t[i][1] == 'goto' for i in range(ctx.lb, ctx.rb))
+    names = [nm for nm, l in ctx.locals.items() if not l.dims] + [p for p in ctx.params if p not in ctx.locals]
+    probe_blocks = {n for kind, n, _ in find_probes(ctx) if kind == 'block'}
+    for name in names:
+        occ = [j for j in ctx.ids.get(name, []) if t[j - 1][1] not in ('.', '->')]
+        if not occ or _addr_taken(ctx, name): continue
+        loc = ctx.locals.get(name)
+        if loc is not None:
+            occ = [j for j in occ if not (loc.node.start <= j < loc.node.end)]
+        for j in occ:
+            n = _is_store(ctx, j)
+            if n is None or n.parent in probe_blocks: continue
+            e = ctx.stmt_expr(n)
+            if e is None or e.kind != 'assign' or e.op != '=' or permc.has_side_effects(e.kids[1], t): continue
+            later = [k for k in occ if k >= n.end]
+            live = False
+            for k in later:
+                m = _is_store(ctx, k)
+                me = ctx.stmt_expr(m) if m is not None else None
+                if me is not None and me.kind == 'assign' and m.parent is n.parent and name not in permc.idents(me.kids[1], t) \
+                        and not any(c.kind == 'label' for c in n.parent.children
+                                    if n.end <= c.start < m.start):
+                    break                                   # overwritten first in straight line
+                live = True; break
+            if live: continue
+            # a read earlier in an enclosing loop, or anywhere before when the function jumps
+            earlier = [k for k in occ if k < n.start and _is_store(ctx, k) is None]
+            if any(lp.start <= k < lp.end for lp in _loops_of(n) for k in earlier): continue
+            if has_goto and earlier: continue
+            out.append(n)
+    return out
+
+
+def repeated_stores(ctx):
+    """The second of two equal sibling statements `L = E;` (E constant or a plain read that
+    the store does not change)."""
+    t = ctx.toks
+    out = []
+    for blk in permc.blocks(ctx.root):
+        kids = blk.children
+        for k in range(1, len(kids)):
+            a, b = kids[k - 1], kids[k]
+            if a.kind != 'stmt' or b.kind != 'stmt' or ctx.is_decl(b): continue
+            if texts(t, a.start, a.end) != texts(t, b.start, b.end): continue
+            e = ctx.stmt_expr(b)
+            if e is None or e.kind != 'assign' or e.op != '=': continue
+            if permc.has_side_effects(e.kids[1], t) or not permc.is_lvalue_simple(e.kids[0], t): continue
+            if permc.idents(e.kids[0], t) & permc.idents(e.kids[1], t): continue
+            out.append(b)
+    return out
+
+
+def unused_locals(ctx):
+    """[(declaration node, [names never used])], initialisers without side effects."""
+    t = ctx.toks
+    out = {}
+    for name, l in ctx.locals.items():
+        uses = [j for j in ctx.ids.get(name, []) if not (l.node.start <= j < l.node.end)]
+        if uses: continue
+        if l.init and permc.has_side_effects(ctx.expr(*l.init) or permc.E('atom', 0, 0), t): continue
+        out.setdefault(l.node, []).append(name)
+    return list(out.items())
+
+
+def noop_casts(ctx):
+    """Casts to the type their operand already has."""
+    out = []
+    for e in _all_exprs(ctx):
+        for x in permc.ewalk(e):
+            if x.kind == 'cast':
+                ty = ' '.join(ctx.src(x.op[0], x.op[1]).split())
+                ot = ctx.type_of(x.kids[0])
+                if ot and ' '.join(ot.split()) == ty: out.append(x)
+    return out
+
+
+def _all_exprs(ctx):
+    t = ctx.toks
+    out = []
+    for n in ctx.nodes:
+        e = ctx.stmt_expr(n) or ctx.cond_expr(n)
+        if e is None and n.kind == 'stmt' and t[n.start][1] == 'return' and n.end - n.start > 2:
+            e = ctx.expr(n.start + 1, n.end - 1)
+        if e is not None: out.append(e)
+    return out
+
+
+def single_read_helpers(ctx):
+    """Rule-made getters and locals (pmt_ names) read once: a helper for a single read."""
+    t = ctx.toks
+    n = 0
+    for name, occ in ctx.ids.items():
+        if not name.startswith('pmt_'): continue
+        if name.startswith(('pmt_get', 'pmt_at')):
+            if len(occ) == 1: n += 1
+            continue
+        l = ctx.locals.get(name)
+        if l is None: continue
+        reads_ = [j for j in occ if not (l.node.start <= j < l.node.end) and _is_store(ctx, j) is None]
+        if len(reads_) == 1: n += 1
+    return n
+
+
+DEAD_TEXT = re.compile(r'\*pmt_p\d+\s*=')
+
+
+def dead_score(ctx):
+    """Dead or redundant constructs in FUNC, weighted: stored comparisons and other probes, unused
+    locals and pointer stores count 1; casts to the operand's own type and rule-made helpers or
+    locals used for one read count 0.5; dead stores to locals and parameters and repeated stores
+    count 0.25 (a redundant store can be the vendor's own code: the light weight only breaks
+    ties towards the plainer source, and reduction of each new best decides)."""
+    s = len(find_probes(ctx)) + 0.25 * (len(dead_stores(ctx)) + len(repeated_stores(ctx)))
+    s += sum(len(v) for _, v in unused_locals(ctx))
+    s += len(DEAD_TEXT.findall(' '.join(t[1] for t in ctx.toks[ctx.lb:ctx.rb])))
+    s += 0.5 * (len(noop_casts(ctx)) + single_read_helpers(ctx))
+    return s
+
+
+def _remove_decls(ctx, groups):
+    t = ctx.toks
+    spans = []
+    for n, names in groups:
+        k, ds = _declarators(ctx, n)
+        keep = [(a, b) for a, b, nm in ds if nm not in names]
+        if not keep: spans.append((n.start, n.end, []))
+        else:
+            text = ctx.src(n.start, k) + ' ' + ', '.join(ctx.src(a, b) for a, b in keep) + ';'
+            spans.append((n.start, n.end, permc.new(text, t[n.start][2])))
+    return spans
+
+
+def _rm_probes(ctx, rng): return r_probe_remove(ctx, rng, everywhere=True)
+
+
+def _rm_dead_stores(ctx, rng):
+    ds = dead_stores(ctx)
+    return Edit([(n.start, n.end, []) for n in ds], f'remove {len(ds)} dead stores') if ds else None
+
+
+def _rm_repeats(ctx, rng):
+    rs = repeated_stores(ctx)
+    return Edit([(n.start, n.end, []) for n in rs], f'remove {len(rs)} repeated stores') if rs else None
+
+
+def _rm_unused(ctx, rng):
+    us = unused_locals(ctx)
+    return Edit(_remove_decls(ctx, us), 'remove unused ' + ', '.join(x for _, v in us for x in v)) if us else None
+
+
+def _rm_casts(ctx, rng):
+    cs = noop_casts(ctx)
+    spans, last = [], []
+    for x in sorted(cs, key=lambda x: x.start):
+        if any(a <= x.start < b for a, b in last): continue
+        inner = x.kids[0]
+        spans.append((x.start, x.end, permc.new(ctx.src(inner.start, inner.end), ctx.toks[x.start][2])))
+        last.append((x.start, x.end))
+    return Edit(spans, f'remove {len(spans)} casts to the same type') if spans else None
+
+
+def r_remove_dead(ctx, rng, everywhere=False):
+    """Every dead construct removed in one move (probes, dead and repeated stores, unused locals,
+    casts to the same type), or (not everywhere) one kind of them."""
+    steps = [_rm_probes, _fix(_rm_dead_stores), _rm_repeats, _rm_casts, _fix(_rm_unused)]
+    if not everywhere:
+        steps = [rng.choice(steps)] + ([_fix(_rm_unused)] if rng.random() < 0.5 else [])
+    toks, descs, meaning = _chain(ctx, rng, steps)
+    if not descs: return None
+    return _edit_of(ctx, toks, 'remove dead: ' + '; '.join(descs)[:250], 'probe')
+
+
+# ---- common value temporary (B1 add with B5) and its inverse
+
+def _underlying(ctx, lhs):
+    """The object a store names: X for X, and for `*(T *)&X`."""
+    if lhs.kind == 'unary' and lhs.op == '*':
+        x = lhs.kids[0]
+        while x.kind in ('cast', 'paren'): x = x.kids[0]
+        if x.kind == 'unary' and x.op == '&' and permc.is_lvalue_simple(x.kids[0], ctx.toks): return x.kids[0]
+        return None
+    return lhs if permc.is_lvalue_simple(lhs, ctx.toks) else None
+
+
+def r_common_temp(ctx, rng, everywhere=False):
+    """`L = E; ... f(L or E);` against `{ T t = E; L = t; ... f(t); }`: a block local of a chosen
+    type holds a value that a store and a later statement both use (the later statement read
+    the stored object back, or computed E again). Inverse: such a block local goes, the store
+    takes E and the later uses read the stored object."""
+    t = ctx.toks
+    fwd, inv = [], []
+    for blk in permc.blocks(ctx.root):
+        kids = blk.children
+        for k, n in enumerate(kids):
+            e = ctx.stmt_expr(n)
+            if e is None or e.kind != 'assign' or e.op != '=': continue
+            lhs, rhs = e.kids
+            obj = _underlying(ctx, lhs)
+            if obj is None or permc.has_side_effects(rhs, t) or rhs.kind == 'atom' and rhs.op in ('num', 'chr'): continue
+            otext = texts(t, obj.start, obj.end)
+            etext = texts(t, rhs.start, rhs.end)
+            deps = permc.idents(rhs, t) | {texts(t, obj.start, obj.start + 1)}
+            uses = []
+            for m in kids[k + 1:k + 5]:
+                if m.kind in ('label', 'pp') or ctx.is_decl(m): break
+                hits = []
+                for x in _node_exprs(ctx, m):
+                    for y in permc.ewalk(x):
+                        tx = texts(t, y.start, y.end)
+                        if (tx == otext or tx == etext) and not _is_lhs(ctx, y):
+                            hits.append(y)
+                hits = _outermost(hits)
+                if hits: uses.append((m, hits))
+                if written_in(ctx, m.start, m.end, deps) or _stores_between(ctx, m.start, m.end, deps): break
+                if has_call(ctx, m.start, m.end) and hits: break
+                if has_call(ctx, m.start, m.end): break
+            if uses: fwd.append((blk, k, n, lhs, rhs, obj, uses))
+        # inverse: { T t = E; X = t; ... }
+        if blk is not ctx.root and len(blk.children) >= 3 and ctx.is_decl(blk.children[0]):
+            d = blk.children[0]
+            ls = [l for l in ctx.locals.values() if l.node is d]
+            if len(ls) == 1 and ls[0].init and not ls[0].stars and not ls[0].dims:
+                l = ls[0]
+                s = ctx.stmt_expr(blk.children[1])
+                if s is not None and s.kind == 'assign' and s.op == '=' and s.kids[1].kind == 'atom' \
+                        and t[s.kids[1].start][1] == l.name and permc.is_lvalue_simple(s.kids[0], t):
+                    rest = blk.children[2:]
+                    if all(c.kind == 'stmt' or c.kind == 'if' for c in rest):
+                        inv.append((blk, l, s))
+    if not fwd and not inv: return None
+    if fwd and (not inv or rng.random() < 0.7):
+        blk, k, n, lhs, rhs, obj, uses = rng.choice(fwd)
+        lt = resolve_type(ctx, ctx.type_of(obj))
+        ty = rng.choice(['int', 'unsigned int'] + ([lt] if lt and is_int_type(ctx, lt) else [lt] if lt in ('float',) else []))
+        nm = ctx.fresh('pmt_v')
+        store_lhs = ctx.src(lhs.start, lhs.end)
+        if obj is not lhs and rng.random() < 0.6: store_lhs = ctx.src(obj.start, obj.end)   # the cast store, plainly
+        parts = [f'{ty} {nm} = {ctx.src(rhs.start, rhs.end)};', f'{store_lhs} = {nm};']
+        last = uses[-1][0]
+        between = [m for m in blk.children[k + 1:] if m.start <= last.start]
+        for m in between:
+            hits = next((h for mm, h in uses if mm is m), [])
+            parts.append(_replace_spans(ctx, m.start, m.end, [(y.start, y.end, nm) for y in hits]))
+        new = '{ ' + ' '.join(parts) + ' }'
+        meaning = 'same' if ty == lt else 'type'
+        return Edit([(n.start, last.end, permc.new(new, t[n.start][2]))],
+                    f'common {ty} temporary for {ctx.src(rhs.start, rhs.end)[:40]} @{_line(ctx, n.start)}', meaning=meaning)
+    blk, l, s = rng.choice(inv)
+    x = ctx.src(s.kids[0].start, s.kids[0].end)
+    val = ctx.src(*l.init)
+    rest = blk.children[2:]
+    uses = [j for j in ctx.ids.get(l.name, []) if j >= rest[0].start]
+    if not uses: return None
+    base = texts(t, s.kids[0].start, s.kids[0].start + 1)
+    if written_in(ctx, rest[0].start, blk.end - 1, {base, l.name}) or _stores_between(ctx, rest[0].start, ctx.enclosing(uses[-1]).start, {base}): return None
+    body = _replace_spans(ctx, rest[0].start, rest[-1].end, [(j, j + 1, x) for j in uses])
+    new = f'{x} = {val}; ' + body
+    lt = resolve_type(ctx, ctx.type_of(s.kids[0]))
+    return Edit([(blk.start, blk.end, permc.new('{ ' + new + ' }' if blk.parent is not None and blk.parent.kind != 'block' else new,
+                                                 t[blk.start][2]))],
+                f'temporary {l.name} -> the stored {x[:40]}', meaning='same' if lt == l.type else 'type')
+
+
+def _node_exprs(ctx, m):
+    t = ctx.toks
+    if m.kind == 'stmt':
+        e = ctx.stmt_expr(m)
+        if e is None and t[m.start][1] == 'return' and m.end - m.start > 2: e = ctx.expr(m.start + 1, m.end - 1)
+        return [e] if e is not None else []
+    if m.kind in ('if', 'switch', 'while'):
+        out = [ctx.cond_expr(m)] if ctx.cond_expr(m) is not None else []
+        for c in permc.walk(m):
+            if c is not m and c.kind == 'stmt':
+                e = ctx.stmt_expr(c)
+                if e is not None: out.append(e)
+        return out
+    return []
+
+
+def _is_lhs(ctx, y):
+    t = ctx.toks
+    j = y.end
+    return j < len(t) and (t[j][1] in permc.ASSIGN or t[j][1] in ('++', '--')) or t[y.start - 1][1] in ('&', '++', '--') \
+        and t[y.start - 2][1] in ('(', ',', '=', ';', '{', '}', 'return')
+
+
+def _outermost(xs):
+    xs = sorted(xs, key=lambda y: (y.start, -y.end))
+    out = []
+    for y in xs:
+        if out and out[-1].start <= y.start and y.end <= out[-1].end: continue
+        out.append(y)
+    return out
+
+
+# ---- a group of locals inlined at every use
+
+def _local_runs(ctx):
+    """Runs of two or more consecutive statements assigning distinct plain locals."""
+    t = ctx.toks
+    runs = []
+    for blk in permc.blocks(ctx.root):
+        cur = []
+        for c in blk.children + [None]:
+            e = ctx.stmt_expr(c) if c is not None else None
+            nm = None
+            if e is not None and e.kind == 'assign' and e.op == '=' and e.kids[0].kind == 'atom':
+                nm = t[e.kids[0].start][1]
+                l = ctx.locals.get(nm)
+                if l is None or l.stars or l.dims or nm in [x for x in cur]: nm = None
+            if nm: cur.append(nm)
+            else:
+                if len(cur) >= 2: runs.append(cur)
+                cur = [nm] if nm else []
+        # declarations with initialisers in a row count too
+        inits = [l.name for l in ctx.locals.values() if l.block is blk and l.init and not l.stars and not l.dims]
+        if len(inits) >= 2: runs.append(inits)
+    return runs
+
+
+def _inline_name(name, single=None):
+    def g(ctx, rng):
+        loc = ctx.locals.get(name)
+        if loc is None or loc.dims or loc.stars: return None
+        t = ctx.toks
+        sites = []
+        for n in ctx.nodes:
+            e = ctx.stmt_expr(n)
+            if e is None or e.kind != 'assign' or e.op != '=': continue
+            lhs, rhs = e.kids
+            if not (lhs.kind == 'atom' and t[lhs.start][1] == name): continue
+            if permc.has_side_effects(rhs, t) or name in permc.idents(rhs, t): continue
+            sites.append((n, rhs))
+        if loc.init and loc.single:
+            rhs = ctx.expr(*loc.init)
+            if rhs is not None and not permc.has_side_effects(rhs, t) and name not in permc.idents(rhs, t):
+                sites.append((loc.node, rhs))
+        if not sites: return None
+        return _inline_one(ctx, rng, name, loc, sites, True, single)
+    return g
+
+
+def r_inline_group(ctx, rng, everywhere=False):
+    """B1 remove for several locals at once: a run of locals assigned one after another (or
+    every such run, or every local read once) is inlined at all their uses, and the
+    declarations that are left unused go (a multi-name declaration loses those names)."""
+    runs = _local_runs(ctx)
+    mode = rng.random()
+    if everywhere and mode < 0.4:
+        names = [nm for r in runs for nm in r]
+        what = 'every run'
+    elif mode < 0.75 and runs:
+        names = rng.choice(runs); what = 'run'
+    else:
+        names = [nm for nm in ctx.locals]; what = 'every local read once'
+        toks, descs, meaning = _chain(ctx, rng, [_inline_name(nm, True) for nm in names] + [_fix(_rm_unused)])
+        if not descs: return None
+        return _edit_of(ctx, toks, 'inline group (' + what + '): ' + '; '.join(descs)[:240])
+    if not names: return None
+    toks, descs, meaning = _chain(ctx, rng, [_inline_name(nm, False) for nm in names] + [_fix(_rm_unused)])
+    if len(descs) < 1: return None
+    return _edit_of(ctx, toks, f'inline group ({what}): ' + '; '.join(descs)[:240])
+
+
+# ---- else { if } against else if
+
+def r_flatten_else(ctx, rng, everywhere=False):
+    """`else { if (c) S else T }` (the block holding only the if) against `else if (c) S else T`."""
+    t = ctx.toks
+    fwd = [n for n in ctx.nodes if n.kind == 'if' and n.els is not None and n.els.kind == 'block'
+           and len(n.els.children) == 1 and n.els.children[0].kind == 'if']
+    inv = [n for n in ctx.nodes if n.kind == 'if' and n.els is not None and n.els.kind == 'if']
+    if not fwd and not inv: return None
+    if fwd and (everywhere or not inv or rng.random() < 0.6):
+        chosen = fwd if everywhere else [rng.choice(fwd)]
+        spans = []
+        for n in sorted(chosen, key=lambda n: n.start):
+            if any(a <= n.els.start < b for a, b, _ in spans): continue
+            inner = n.els.children[0]
+            spans.append((n.els.start, n.els.end, permc.new(ctx.src(inner.start, inner.end), t[n.els.start][2])))
+        return Edit(spans, f'else {{ if }} -> else if ({len(spans)})')
+    n = rng.choice(inv)
+    return Edit([(n.els.start, n.els.end, permc.new('{ ' + ctx.src(n.els.start, n.els.end) + ' }', t[n.els.start][2]))],
+                f'else if -> else {{ if }} at line {_line(ctx, n.start)}')
+
+
+# ---- pointer local against the indexed object (needs ctx.layouts)
+
+SCALAR_SIZE = {'char': 1, 'unsigned char': 1, 'signed char': 1, 'uchar': 1, 'u8': 1, 'uint8_t': 1, 'int8_t': 1, 's8': 1,
+               'byte': 1, 'BYTE': 1, 'bool': 1, 'short': 2, 'unsigned short': 2, 'ushort': 2, 'u16': 2, 'uint16_t': 2,
+               'int16_t': 2, 's16': 2, 'word': 2, 'WORD': 2, 'int': 4, 'unsigned int': 4, 'unsigned': 4, 'uint': 4,
+               'u32': 4, 'uint32_t': 4, 'int32_t': 4, 's32': 4, 'long': 4, 'unsigned long': 4, 'float': 4, 'DWORD': 4}
+
+
+def _scalar_size(ctx, ty):
+    ty = (ty or '').replace('const ', '').replace('volatile ', '').strip()
+    if ty in SCALAR_SIZE: return SCALAR_SIZE[ty]
+    td = ctx.types.typedefs.get(ty)
+    return SCALAR_SIZE.get(td) if td else None
+
+
+def _obj_struct(ctx, x):
+    """(object source, struct type name) for G, G[k] (k constant) naming a struct global."""
+    t = ctx.toks
+    if x.kind == 'paren': return _obj_struct(ctx, x.kids[0])
+    base = x
+    if x.kind == 'index':
+        if permc.const_value(x.kids[1], t) is None: return None
+        base = x.kids[0]
+    if base.kind != 'atom' or base.op != 'id': return None
+    g = ctx.types.globals.get(t[base.start][1])
+    if g is None: return None
+    ty = g[0].replace('struct ', '').strip()
+    if ty not in (getattr(ctx, 'layouts', None) or {}): return None
+    if x.kind == 'atom' and g[1]: return None
+    return ctx.src(x.start, x.end), ty
+
+
+def _field_at(ctx, ty, off, size):
+    for f, o, sz, esz, cnt in ctx.layouts[ty]:
+        if cnt is None and o == off and sz == size: return f
+        if cnt is not None and esz == size and o <= off < o + sz and (off - o) % esz == 0:
+            return f'{f}[{(off - o) // esz}]'
+    return None
+
+
+def r_ptr_index(ctx, rng, everywhere=False):
+    """B2 for pointer arithmetic: a pointer local set to the address of a struct object or of
+    one of its fields (`p = &G[0].f;`, `p = (T *)&G[0]; p += K;`) and read as p[k] or *p is
+    replaced at each read by the field at that offset (`G[0].g`), and its assignments and
+    declaration go. Needs the struct layouts (ctx.layouts: offsets from one probe compile)."""
+    t = ctx.toks
+    if not getattr(ctx, 'layouts', None): return None
+    cands = []
+    for name, l in ctx.locals.items():
+        if l.stars != '*' or l.dims: continue
+        es = _scalar_size(ctx, l.type)
+        if not es: continue
+        occ = [j for j in ctx.ids.get(name, []) if not (l.node.start <= j < l.node.end)]
+        state = None
+        spans = []
+        ok = True
+        if l.init:
+            r = _ptr_base(ctx, ctx.expr(*l.init))
+            if r is None: continue
+            state = (r[0], r[1], r[2], l.block)
+        for j in occ:
+            n = _is_store(ctx, j)
+            if n is not None:
+                e = ctx.stmt_expr(n)
+                rhs = e.kids[1]
+                if rhs.kind == 'bin' and rhs.op == '+' and rhs.kids[0].kind == 'atom' and t[rhs.kids[0].start][1] == name \
+                        and state is not None and permc.const_value(rhs.kids[1], t) is not None:
+                    state = (state[0], state[1], state[2] + es * permc.const_value(rhs.kids[1], t), state[3])
+                else:
+                    r = _ptr_base(ctx, rhs)
+                    if r is None: ok = False; break
+                    state = (r[0], r[1], r[2], n.parent)
+                spans.append((n.start, n.end, []))
+                continue
+            if t[j + 1][1] in ('+=', '-=') and state is not None:
+                n = ctx.enclosing(j)
+                e = ctx.stmt_expr(n)
+                k = permc.const_value(e.kids[1], t) if e is not None and n.start == j else None
+                if k is None: ok = False; break
+                state = (state[0], state[1], state[2] + es * (k if t[j + 1][1] == '+=' else -k), state[3])
+                spans.append((n.start, n.end, []))
+                continue
+            if state is None or not (state[3].start <= j < state[3].end): ok = False; break
+            if any(lp.start <= j < lp.end and not (lp.start <= state[3].start < lp.end) for lp in _loops_of(ctx.enclosing(j))):
+                ok = False; break
+            obj, ty, off = state[0], state[1], state[2]
+            if t[j + 1][1] == '[':
+                rb = ctx.pair[j + 1]
+                ie = ctx.expr(j + 2, rb)
+                k = permc.const_value(ie, t) if ie is not None else None
+                if k is None: ok = False; break
+                f = _field_at(ctx, ty, off + k * es, es)
+                if f is None: ok = False; break
+                spans.append((j, rb + 1, permc.new(f'{obj}.{f}', t[j][2])))
+            elif t[j - 1][1] == '*' and (t[j - 2][0] == 'op' and t[j - 2][1] not in (')', ']') or t[j - 2][1] in ('return',)):
+                f = _field_at(ctx, ty, off, es)
+                if f is None: ok = False; break
+                spans.append((j - 1, j + 1, permc.new(f'{obj}.{f}', t[j - 1][2])))
+            else:
+                ok = False; break
+        if ok and spans and any(s[2] for s in spans):
+            if l.single: spans.append((l.node.start, l.node.end, []))
+            else: spans += _remove_decls(ctx, [(l.node, [name])])
+            cands.append((name, spans))
+    if not cands: return None
+    chosen = cands if everywhere else [rng.choice(cands)]
+    spans = []
+    for nm, sp in chosen:
+        if all(b <= a2 or a >= b2 for a, b, _ in sp for a2, b2, _ in spans): spans += sp
+    return Edit(spans, 'pointer arithmetic -> fields: ' + ', '.join(nm for nm, _ in chosen))
+
+
+def _ptr_base(ctx, e):
+    """(object, struct type, byte offset) of `&G[k]`, `&G[k].f`, `(T *)&...`, or None."""
+    t = ctx.toks
+    if e is None: return None
+    while e.kind in ('cast', 'paren'): e = e.kids[0]
+    if e.kind != 'unary' or e.op != '&': return None
+    x = e.kids[0]
+    while x.kind == 'paren': x = x.kids[0]
+    if x.kind == 'member' and x.op == '.':
+        os_ = _obj_struct(ctx, x.kids[0])
+        if os_ is None: return None
+        f = t[x.end - 1][1]
+        for name, o, sz, esz, cnt in ctx.layouts[os_[1]]:
+            if name == f: return os_[0], os_[1], o
+        return None
+    os_ = _obj_struct(ctx, x)
+    return (os_[0], os_[1], 0) if os_ else None
+
+
+def r_obj_ptr(ctx, rng, everywhere=False):
+    """B2 inverse: the fields of one struct object (`G[k].f`) read through a pointer local
+    initialised to its address (`T *p = &G[k]; ... p->f`) at every use."""
+    t = ctx.toks
+    groups = {}
+    for e in _all_exprs(ctx):
+        for x in permc.ewalk(e):
+            if x.kind == 'member' and x.op == '.':
+                os_ = _obj_struct(ctx, x.kids[0]) if getattr(ctx, 'layouts', None) else None
+                if os_ is None:
+                    b = x.kids[0]
+                    if b.kind == 'index' and b.kids[0].kind == 'atom' and permc.const_value(b.kids[1], t) is not None:
+                        g = ctx.types.globals.get(t[b.kids[0].start][1])
+                        if g and g[1] and g[0] in ctx.types.struct_fields: os_ = (ctx.src(b.start, b.end), g[0])
+                    elif b.kind == 'atom' and b.op == 'id':
+                        g = ctx.types.globals.get(t[b.start][1])
+                        if g and not g[1] and g[0] in ctx.types.struct_fields: os_ = (ctx.src(b.start, b.end), g[0])
+                if os_: groups.setdefault(os_, []).append(x)
+    groups = {k: _outermost_members(v) for k, v in groups.items() if len(v) >= 2}
+    if not groups: return None
+    (obj, ty), xs = rng.choice(sorted(groups.items()))
+    nm = ctx.fresh('pmt_r')
+    spans = [(x.kids[0].start, x.kids[0].end + 1, permc.new(f'{nm}->', t[x.kids[0].start][2])) for x in xs]
+    top = _decl_point(ctx, ctx.root)
+    spans.append(ctx.insert_at(top, f'{ty} *{nm} = &{obj};'))
+    return Edit(spans, f'{obj} through a pointer local ({len(xs)} uses)')
+
+
+def _outermost_members(xs):
+    seen, out = set(), []
+    for x in sorted(xs, key=lambda x: x.start):
+        if (x.start, x.end) in seen: continue
+        seen.add((x.start, x.end)); out.append(x)
+    return out
+
+
+# ---- goto chain to the else arm against && ; boolean tests
+
+def _not(ctx, e):
+    """Source of the negation of e, as a person writes it: a flipped comparison, x == 0 for a
+    value, or the operand of a !."""
+    if e.kind == 'paren': return _not(ctx, e.kids[0])
+    if e.kind == 'bin' and e.op in NEG:
+        return f'{optext(ctx, e.kids[0], NEG[e.op])} {NEG[e.op]} {optext(ctx, e.kids[1], NEG[e.op])}'
+    if e.kind == 'unary' and e.op == '!': return _strip(ctx, e.kids[0])
+    if e.kind in ('bin',) and e.op in ('&&', '||'): return f'!({ctx.src(e.start, e.end)})'
+    return f'{paren(ctx, e)} == 0'
+
+
+def _goto_chain_to_and(ctx, rng):
+    """`if (a) goto L; if (b) S else { L: T }` -> `if (!a && b) S else T`."""
+    t = ctx.toks
+    for blk in rng.sample(permc.blocks(ctx.root), len(permc.blocks(ctx.root))):
+        kids = blk.children
+        for k, c in enumerate(kids):
+            if c.kind != 'if' or c.els is None or c.els.kind != 'block' or not c.els.children: continue
+            lab = c.els.children[0]
+            if lab.kind != 'label' or lab.extra != 'goto': continue
+            L = t[lab.start][1]
+            conds = []
+            j = k - 1
+            while j >= 0 and kids[j].kind == 'if' and kids[j].els is None:
+                th = kids[j].then
+                s = th if th.kind == 'stmt' else (th.children[0] if th.kind == 'block' and len(th.children) == 1 else None)
+                if s is None or s.kind != 'stmt' or t[s.start][1] != 'goto' or t[s.start + 1][1] != L: break
+                ce = ctx.cond_expr(kids[j])
+                if ce is None: break
+                conds.insert(0, _not(ctx, ce)); j -= 1
+            if not conds: continue
+            if sum(1 for i in range(ctx.lb, ctx.rb) if t[i][1] == L) != len(conds) + 1: continue
+            ce = ctx.cond_expr(c)
+            if ce is None: continue
+            allc = [c_ if not re.search(r'\|\||\?', c_) else f'({c_})' for c_ in conds] + [optext(ctx, ce, '&&')]
+            body = c.els.children[1:]
+            if len(body) == 1 and body[0].kind == 'stmt':
+                els = ctx.src(body[0].start, body[0].end)
+            else:
+                els = '{' + ''.join(x[2] + x[1] for x in t[lab.end:c.els.end - 1]) + ' }'
+            new = 'if (' + ' && '.join(allc) + ') ' + _arm(ctx, c.then, True) + ' else ' + els
+            return Edit([(kids[j + 1].start, c.end, permc.new(new, t[kids[j + 1].start][2]))], f'goto chain to {L} (else arm) -> &&')
+    return None
+
+
+def r_goto_and(ctx, rng, everywhere=False):
+    """D9 for the else arm: `if (a) goto L; if (b) S else { L: T }` against `if (!a && b) S else T`."""
+    t = ctx.toks
+    ed = _goto_chain_to_and(ctx, rng)
+    if ed is not None and (rng.random() < 0.7 or everywhere): return ed
+    cands = [n for n in ctx.nodes if n.kind == 'if' and n.els is not None and ctx.cond_expr(n) is not None
+             and ctx.cond_expr(n).kind == 'bin' and ctx.cond_expr(n).op == '&&' and n.parent is not None and n.parent.kind == 'block']
+    if not cands: return ed
+    n = rng.choice(cands)
+    ops = []
+
+    def flat(e):
+        if e.kind == 'bin' and e.op == '&&': flat(e.kids[0]); flat(e.kids[1])
+        else: ops.append(e)
+    flat(ctx.cond_expr(n))
+    L = ctx.fresh('pmt_L')
+    head = ' '.join(f'if ({_not(ctx, o)}) goto {L};' for o in ops[:-1])
+    els = ctx.src(n.els.start, n.els.end)
+    els_in = els[1:-1] if n.els.kind == 'block' else els
+    new = f'{head} if ({_strip(ctx, ops[-1])}) {_arm(ctx, n.then, True)} else {{ {L}: {els_in} }}'
+    return Edit([(n.start, n.end, permc.new(new, t[n.start][2]))], f'&& -> goto chain to the else arm at line {_line(ctx, n.start)}')
+
+
+def _goto_chain_to_or(ctx, rng):
+    """r_goto_or's backward direction only."""
+    ed = r_goto_or(ctx, rng)
+    return ed if ed is not None and ed.desc.startswith('goto chain') else None
+
+
+def _idempotent_store(ctx, s):
+    """The target base name of a statement that can run twice with the effect of once."""
+    t = ctx.toks
+    if s.kind == 'block' and len(s.children) == 1: s = s.children[0]
+    if s.kind != 'stmt': return None
+    e = ctx.stmt_expr(s)
+    if e is None or e.kind != 'assign' or e.op not in ('=', '|=', '&='): return None
+    if not permc.is_lvalue_simple(e.kids[0], t) or permc.has_side_effects(e.kids[1], t): return None
+    if permc.idents(e.kids[0], t) & permc.idents(e.kids[1], t): return None
+    if e.op != '=' and permc.const_value(e.kids[1], t) is None: return None
+    return permc.idents(e.kids[0], t)
+
+
+def r_merge_ifs(ctx, rng, everywhere=False):
+    """`if (a) S if (b) S` (S a store that can run twice, b not reading what S writes) against
+    `if (a || b) S`."""
+    t = ctx.toks
+    fwd, inv = [], []
+    for blk in permc.blocks(ctx.root):
+        kids = blk.children
+        for k in range(len(kids)):
+            a = kids[k]
+            if a.kind != 'if' or a.els is not None: continue
+            w = _idempotent_store(ctx, a.then)
+            ce = ctx.cond_expr(a)
+            if w is None or ce is None: continue
+            if ce.kind == 'bin' and ce.op == '||' and not permc.has_side_effects(ce, t) and not (permc.idents(ce, t) & w) \
+                    and not has_call(ctx, a.cond[0], a.cond[1]):
+                inv.append(a)
+            run = [a]
+            for b in kids[k + 1:]:
+                if b.kind != 'if' or b.els is not None or texts(t, b.then.start, b.then.end) != texts(t, a.then.start, a.then.end): break
+                cb = ctx.cond_expr(b)
+                if cb is None or permc.has_side_effects(cb, t) or permc.idents(cb, t) & w or has_call(ctx, b.cond[0], b.cond[1]): break
+                run.append(b)
+            if len(run) >= 2 and (k == 0 or not (kids[k - 1] in [x for r in fwd for x in r[1:]])):
+                fwd.append(run)
+    if not fwd and not inv: return None
+    if fwd and (not inv or rng.random() < 0.6):
+        run = rng.choice(fwd)
+        conds = [optext(ctx, ctx.cond_expr(x), '||') for x in run]
+        new = 'if (' + ' || '.join(conds) + ') ' + ctx.src(run[0].then.start, run[0].then.end)
+        return Edit([(run[0].start, run[-1].end, permc.new(new, t[run[0].start][2]))], f'{len(run)} ifs with one body -> || at line {_line(ctx, run[0].start)}')
+    n = rng.choice(inv)
+    ops = []
+
+    def flat(e):
+        if e.kind == 'bin' and e.op == '||': flat(e.kids[0]); flat(e.kids[1])
+        else: ops.append(_strip(ctx, e))
+    flat(ctx.cond_expr(n))
+    body = ctx.src(n.then.start, n.then.end)
+    new = ' '.join(f'if ({o}) {body}' for o in ops)
+    return Edit([(n.start, n.end, permc.new(new, t[n.start][2]))], f'|| -> {len(ops)} ifs with one body at line {_line(ctx, n.start)}')
+
+
+def r_flag_else(ctx, rng, everywhere=False):
+    """`X = J; if (c) X = K;` against `if (c) X = K; else X = J;` (c not reading X, no calls)."""
+    t = ctx.toks
+    fwd, inv = [], []
+    for blk in permc.blocks(ctx.root):
+        kids = blk.children
+        for k in range(len(kids)):
+            b = kids[k]
+            if b.kind != 'if': continue
+            ce = ctx.cond_expr(b)
+            if ce is None or permc.has_side_effects(ce, t) or has_call(ctx, b.cond[0], b.cond[1]): continue
+            th = b.then.children[0] if b.then.kind == 'block' and len(b.then.children) == 1 else b.then
+            e2 = ctx.stmt_expr(th) if th.kind == 'stmt' else None
+            if e2 is None or e2.kind != 'assign' or e2.op != '=' or not permc.is_lvalue_simple(e2.kids[0], t): continue
+            x = texts(t, e2.kids[0].start, e2.kids[0].end)
+            base = permc.idents(e2.kids[0], t)
+            if permc.idents(ce, t) & base: continue
+            if b.els is None and k > 0:
+                e1 = ctx.stmt_expr(kids[k - 1])
+                if e1 is not None and e1.kind == 'assign' and e1.op == '=' and texts(t, e1.kids[0].start, e1.kids[0].end) == x \
+                        and not permc.has_side_effects(e1.kids[1], t) and not (permc.idents(e1.kids[1], t) & base):
+                    fwd.append((kids[k - 1], b, th))
+            if b.els is not None:
+                el = b.els.children[0] if b.els.kind == 'block' and len(b.els.children) == 1 else b.els
+                e3 = ctx.stmt_expr(el) if el.kind == 'stmt' else None
+                if e3 is not None and e3.kind == 'assign' and e3.op == '=' and texts(t, e3.kids[0].start, e3.kids[0].end) == x \
+                        and not permc.has_side_effects(e3.kids[1], t) and not (permc.idents(e3.kids[1], t) & base):
+                    inv.append((b, th, el))
+    if not fwd and not inv: return None
+    if fwd and (not inv or rng.random() < 0.6):
+        a, b, th = rng.choice(fwd)
+        new = f'if ({_strip(ctx, ctx.cond_expr(b))}) {ctx.src(b.then.start, b.then.end)} else {ctx.src(a.start, a.end)}'
+        return Edit([(a.start, b.end, permc.new(new, t[a.start][2]))], f'store then conditional store -> if/else at line {_line(ctx, a.start)}')
+    b, th, el = rng.choice(inv)
+    new = f'{ctx.src(el.start, el.end)} if ({_strip(ctx, ctx.cond_expr(b))}) {ctx.src(b.then.start, b.then.end)}'
+    return Edit([(b.start, b.end, permc.new(new, t[b.start][2]))], f'if/else store -> store then conditional store at line {_line(ctx, b.start)}')
+
+
+# ---- one helper for every occurrence of an expression pattern (B6)
+
+def r_index_helper(ctx, rng, everywhere=False):
+    """B6 for a pattern: every read `A[K]` (K constant; or only those that are call arguments)
+    through `static __forceinline T get(unsigned int k) { return A[k]; }`, or every store
+    `A[K] = E;` through a `set(k, v)` helper."""
+    t = ctx.toks
+    reads_, stores = {}, {}
+    for e in _all_exprs(ctx):
+        for x in permc.ewalk(e):
+            if x.kind == 'index' and x.kids[0].kind == 'atom' and x.kids[0].op == 'id' and permc.const_value(x.kids[1], t) is not None:
+                nm = t[x.kids[0].start][1]
+                g = ctx.types.globals.get(nm)
+                if not g or not g[1] or nm in ctx.locals: continue
+                if _is_lhs(ctx, x):
+                    if e.kind == 'assign' and e.kids[0] is x and e.op == '=': stores.setdefault(nm, []).append(e)
+                    continue
+                reads_.setdefault(nm, []).append(x)
+    opts = [('get', k, v) for k, v in reads_.items() if len(v) >= 2] + [('set', k, v) for k, v in stores.items() if len(v) >= 2]
+    if not opts: return None
+    kind, nm, xs = rng.choice(opts)
+    ty = resolve_type(ctx, ctx.types.globals[nm][0])
+    kt = rng.choice(['unsigned int', 'int', 'unsigned char'])
+    s = ctx.start
+    if kind == 'get':
+        if rng.random() < 0.4:
+            xs = [x for x in xs if _in_call_args(ctx, x) and ctx.toks[x.start - 1][1] in ('(', ',')] or xs
+        fn = ctx.fresh('pmt_at')
+        seen, spans = set(), []
+        for x in xs:
+            if (x.start, x.end) in seen: continue
+            seen.add((x.start, x.end))
+            spans.append((x.start, x.end, permc.new(f'{fn}({ctx.src(x.kids[1].start, x.kids[1].end)})', t[x.start][2])))
+        defn = f'static __forceinline {ty} {fn}({kt} k) {{ return {nm}[k]; }}\n'
+    else:
+        fn = ctx.fresh('pmt_set')
+        spans = []
+        for e in xs:
+            x = e.kids[0]
+            spans.append((e.start, e.end, permc.new(f'{fn}({ctx.src(x.kids[1].start, x.kids[1].end)}, {ctx.src(e.kids[1].start, e.kids[1].end)})', t[e.start][2])))
+        defn = f'static __forceinline void {fn}({kt} k, {ty} v) {{ {nm}[k] = v; }}\n'
+    spans.append((s, s + 1, permc.new(defn, t[s][2]) + [Tok(t[s][0], t[s][1], '\n')]))
+    return Edit(spans, f'{kind} helper for {nm}[k] at {len(spans) - 1} sites')
+
+
+def r_helper_inline(ctx, rng, everywhere=False):
+    """B6 inverse: a `static __forceinline` helper of one statement (`return E;` or a store)
+    defined in the file is written out at every call in FUNC (arguments substituted), and its
+    definition goes when nothing else calls it."""
+    t = ctx.toks
+    helpers = []
+    i = 0
+    while i < ctx.start:
+        if t[i][1] == '__forceinline' and any(t[k][1] == 'static' for k in range(max(0, i - 2), i)):
+            j = i
+            while j < ctx.start and t[j][1] != '(': j += 1
+            if j >= ctx.start: break
+            name = t[j - 1][1]
+            rp = ctx.pair[j]
+            if rp + 1 < len(t) and t[rp + 1][1] == '{':
+                rb = ctx.pair[rp + 1]
+                params = []
+                for k in range(j + 1, rp):
+                    if t[k][0] == 'id' and t[k + 1][1] in (',', ')') and t[k][1] != 'void': params.append(t[k][1])
+                body = t[rp + 2:rb]
+                st = 0
+                while st < len(body) and body[st][1] != ';': st += 1
+                if st == len(body) - 1:
+                    a = i
+                    while a > 0 and t[a - 1][1] in ('static', '__inline', 'inline'): a -= 1
+                    helpers.append((name, params, body[:-1], a, rb + 1))
+                i = rb + 1; continue
+        i += 1
+    helpers = [h for h in helpers if h[0] in ctx.ids]
+    if not helpers: return None
+    name, params, body, a, b = rng.choice(helpers)
+    ret = body and body[0][1] == 'return'
+    btoks = body[1:] if ret else body
+    spans = []
+    for j in ctx.ids[name]:
+        if t[j + 1][1] != '(': return None
+        rp = ctx.pair[j + 1]
+        args, cur, depth = [], [], 0
+        for k in range(j + 2, rp):
+            w = t[k][1]
+            if w in '([': depth += 1
+            elif w in ')]': depth -= 1
+            if w == ',' and depth == 0: args.append(cur); cur = []
+            else: cur.append(k)
+        if cur: args.append(cur)
+        if len(args) != len(params): return None
+        sub = {p: '(' + ctx.src(ar[0], ar[-1] + 1) + ')' if len(ar) > 1 else ctx.src(ar[0], ar[-1] + 1) for p, ar in zip(params, args)}
+        text = ' '.join(sub.get(x[1], x[1]) if x[0] == 'id' else x[1] for x in btoks)
+        if ret and not (t[j - 1][1] in ('(', ',', '=', 'return') and t[rp + 1][1] in (')', ',', ';')): text = f'({text})'
+        spans.append((j, rp + 1, permc.new(text, t[j][2])))
+    others = sum(1 for k in range(0, len(t)) if t[k][1] == name) - len(ctx.ids[name]) - 1
+    if others == 0:
+        spans.append((a, b, []))
+    return Edit(spans, f'helper {name} written out at {len(ctx.ids[name])} calls')
+
+
+# ---- compound moves
+
+def _size_all(ctx, rng): return r_sized_extern(ctx, rng, everywhere=True)
+def _ptr_all(ctx, rng): return r_ptr_index(ctx, rng, everywhere=True)
+def _flatten_all(ctx, rng): return r_flatten_else(ctx, rng, everywhere=True) if any(
+    n.kind == 'if' and n.els is not None and n.els.kind == 'block' and len(n.els.children) == 1 and n.els.children[0].kind == 'if'
+    for n in ctx.nodes) else None
+def _dead_all(ctx, rng): return r_remove_dead(ctx, rng, everywhere=True)
+
+
+def _inline_mode(mode):
+    def g(ctx, rng):
+        runs = _local_runs(ctx)
+        if mode == 'runs': names = [nm for r in runs for nm in r]
+        elif mode == 'run': names = rng.choice(runs) if runs else []
+        else: names = list(ctx.locals)
+        if not names: return None
+        toks, descs, _ = _chain(ctx, rng, [_inline_name(nm, mode == 'single') for nm in names] + [_fix(_rm_unused)])
+        return _edit_of(ctx, toks, f'inline {mode}: ' + '; '.join(descs)[:200]) if descs else None
+    return g
+
+
+NORMALISE = [('dead', _dead_all), ('size', _size_all), ('ptr', _fix(_ptr_all, 6)), ('goto_or', _fix(_goto_chain_to_or, 12)),
+             ('goto_and', _fix(_goto_chain_to_and, 12)), ('inline', None), ('flatten', _fix(_flatten_all, 6)), ('dead2', _dead_all)]
+
+
+def normalise_steps(rng, full=False, imode=None):
+    steps = []
+    imode = imode or rng.choice(['runs', 'run', 'single', 'every'])
+    for name, fn in NORMALISE:
+        if name == 'inline': fn = _inline_mode(imode)
+        if full or rng.random() < 0.6: steps.append((name if name != 'inline' else 'inline ' + imode, fn))
+    return steps
+
+
+def r_normalise(ctx, rng, everywhere=False, full=False, imode=None):
+    """A plainer source in one move: a random selection (all, with full) of: every dead construct
+    removed, every sizeable extern sized, pointer arithmetic to fields, goto chains to one
+    boolean test, locals inlined (a run, every run, every local read once, or every local),
+    else { if } flattened. Each part alone often changes nothing or makes things worse; a fitted
+    source hides the plain one, and these only pay off together."""
+    steps = normalise_steps(rng, full, imode)
+    toks, descs, meaning = _chain(ctx, rng, [fn for _, fn in steps])
+    if not descs: return None
+    return _edit_of(ctx, toks, 'normalise: ' + ' / '.join(d[:60] for d in descs)[:300], 'probe')
+
+
+def r_size_and(ctx, rng, everywhere=False):
+    """A6 with a function-level move in one step: every sizeable extern sized, then one
+    structural move (locals inlined, a probe removed, pointers to fields, goto chains, a common
+    temporary, else-if) on the result: the size changes what the move does."""
+    if not getattr(ctx, 'array_sizes', None): return None
+    second = rng.choice([lambda c, r: r_inline_group(c, r, True), lambda c, r: r_remove_dead(c, r, rng.random() < 0.5),
+                         _fix(_ptr_all, 6), _fix(_goto_chain_to_or, 12), _fix(_goto_chain_to_and, 12),
+                         lambda c, r: r_common_temp(c, r), lambda c, r: r_local_inline(c, r, True), _fix(_flatten_all, 6),
+                         lambda c, r: r_normalise(c, r)])
+    toks, descs, meaning = _chain(ctx, rng, [_size_all, second])
+    if len(descs) < 2: return None
+    return _edit_of(ctx, toks, 'size and: ' + ' / '.join(d[:80] for d in descs)[:300], meaning)
+
+
 # ---------------------------------------------------------------- registry
 
 @dataclass
@@ -1918,6 +2965,19 @@ RULES = [
     Rule('cond_explicit', 'generic', 0.5, r_cond_explicit),
     Rule('inequality', 'generic', 0.5, r_inequality),
     Rule('ins_block', 'generic', 0.5, r_ins_block),
+    Rule('common_temp', 'B1 add, B5', 6, r_common_temp),
+    Rule('inline_group', 'B1 remove', 8, r_inline_group, True),
+    Rule('remove_dead', 'D1-D4 inverse', 4, r_remove_dead, True),
+    Rule('flatten_else', 'D7', 2, r_flatten_else, True),
+    Rule('ptr_index', 'B2', 5, r_ptr_index, True),
+    Rule('obj_ptr', 'B2 inverse', 2, r_obj_ptr),
+    Rule('goto_and', 'D9', 2, r_goto_and),
+    Rule('merge_ifs', 'D7', 3, r_merge_ifs),
+    Rule('flag_else', 'D7', 3, r_flag_else),
+    Rule('index_helper', 'B6', 5, r_index_helper),
+    Rule('helper_inline', 'B6 inverse', 2, r_helper_inline),
+    Rule('normalise', 'compound', 4, r_normalise),
+    Rule('size_and', 'A6 + compound', 3, r_size_and),
 ]
 BY_ID = {r.id: r for r in RULES}
 MEANING = {'retype': 'type', 'volatile_read': 'same'}

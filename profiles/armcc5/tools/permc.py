@@ -146,12 +146,16 @@ class TypeInfo:
                 fl = []
                 inner = body[br + 1:body.rfind('}')]
                 for decl in inner.split(';'):
-                    d = decl.strip()
-                    mm = re.match(r'^((?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*[A-Za-z_]\w*(?:\s+(?:int|char|short|long))*)\s*([*\s]*)(\w+)\s*((?:\[[^\]]*\])*)(?:\s*:\s*\d+)?$', d)
-                    if mm:
-                        ty = (mm.group(1) + ' ' + mm.group(2).strip()).strip()
-                        fl.append((mm.group(3), ty, mm.group(4) or None))
-                        self.fields.setdefault(mm.group(3), ty if not mm.group(4) else ty + '[]')
+                    d = ' '.join(decl.split())
+                    # one type, then one or more declarators (`uchar a, b[4], *c;`)
+                    mt = re.match(r'^((?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*[A-Za-z_]\w*(?:\s+(?:int|char|short|long)\b)*)\s*(.*)$', d)
+                    if not mt or not mt.group(2): continue
+                    for part in mt.group(2).split(','):
+                        mm = re.match(r'^\s*([*\s]*)(\w+)\s*((?:\[[^\]]*\])*)\s*(:\s*\d+)?\s*$', part)
+                        if not mm: continue
+                        ty = (mt.group(1) + ' ' + mm.group(1).strip()).strip()
+                        if not mm.group(4): fl.append((mm.group(2), ty, mm.group(3) or None))     # not a bit-field
+                        self.fields.setdefault(mm.group(2), ty if not mm.group(3) else ty + '[]')
                 self.struct_fields[name] = fl
 
     def scan_globals(self, toks):
