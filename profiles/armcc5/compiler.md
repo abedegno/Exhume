@@ -1282,10 +1282,62 @@ other bodies stubbed (callees kept), both gave other code for the function (size
 armcc's code for a function depends on more of the file than its callees; the start-up check
 rejects them and the whole unit is compiled.
 
-What is not done (worth doing next): generate variants in the workers (the parent spends 4-10 ms
-a variant and becomes the limit above about 150 variants a second); candidates as edit lists
-against the base, which would give crossover between islands and a cheap reduction at every new
-best; compound moves for the structural rewrites the misses needed (a temporary used for a store
-and the following call; sized arrays with locals removed across sibling blocks; goto chains
-with locals reached by pointer arithmetic); and a check of each new best against a second
-build of the same function where one exists.
+Second round: structural moves, moves as patches, simplify-first islands. The three misses
+were rewrites of several edits that only pay off together, so the rules gained general moves of
+those kinds and compound moves that apply a whole normalising pass in one step:
+
+- common value temporary: `L = E; f(L);` (or E computed again) against `{ T t = E; L = t;
+  f(t); }`, with the type chosen (int, unsigned int, L's type), the store through a cast pointer
+  optionally written plainly; and its inverse;
+- a group of locals inlined at every use (a run of locals assigned one after another, every
+  such run, every local read once), with the declarations left unused removed, a multi-name
+  declaration losing just those names; inlining now sees through function-like macros of the
+  file whose bodies call nothing;
+- remove every dead construct in one move (probes, dead stores to locals and parameters,
+  repeated stores, unused locals, casts to the operand's own type);
+- `else { if }` against `else if`;
+- a pointer local set to a struct object or field and moved by arithmetic (`p = (T *)&G[0];
+  p += K; x = p[1];`) replaced at each read by the field at that offset, from struct layouts
+  read by one probe compile (`__INTADDR__` offsets and sizeof of each field of the structs the
+  function's globals have); the inverse puts one object's fields behind a pointer local;
+- a goto chain to the else arm against `&&` (the then-arm form already went to `||`); consecutive
+  ifs with one idempotent body against `||`; `X = J; if (c) X = K;` against an if/else;
+- one helper for every occurrence of a pattern: every `A[K]` read (or only those that are call
+  arguments) through `get(k)`, every `A[K] = E;` through `set(k, v)`, and the inverse that
+  writes out any one-statement forceinline helper at its calls;
+- normalise: a random selection (or all) of the passes above in one move, and size-and: every
+  sizeable extern sized together with one structural move;
+- unsized extern arrays placed by at: lines take a size from the gap to the next known address.
+
+Each applied rule step is kept as a patch (its span edits with six tokens of context each), so an
+island's state is its list of moves. That gives crossover (another island's moves replayed on an
+island where their context is found) and a reduction of every new best over its moves before it
+is written: each move is left out in turn in parallel, then all that could go together, else one
+by one. Moves stay whole, so a compound move is never cut into a partial edit (line-hunk
+reduction can do that). A run resumed from an older state gets moves from the token hunks of
+each island's difference from the original. A share of the islands (at least two) starts from
+normalised forms of the base with different inlining choices, and returns there on restarts.
+
+The dead-code penalty now counts more kinds, weighted: stored comparisons, unused locals and
+pointer stores 1; casts to the same type and rule-made helpers or locals used for one read 0.5;
+dead stores to locals and parameters and repeated stores 0.25 (a redundant store has been the
+vendor's real code, so it only breaks ties; a redundant store that survives reduction of a best
+is listed in the best's notes as a candidate real feature). The report line shows the best score
+with no penalised construct added. The redundant-store rule no longer puts a dead store before a
+store whose value has a call (the call could read it), nor a store after a test past a store
+through a pointer.
+
+Regression after this round (same cases, 10 workers): the three misses were found, two exact in
+about a second (the simplify-first islands: sized arrays, pointer arithmetic to fields, goto
+chains to tests, locals inlined) and the third at its recorded answer's floor after 90 seconds
+(the common temporary). Of four earlier hits rerun, three were found again in 1-46 seconds; the
+fourth (a five-edit combination of probes, a dead store and a temporary) was missed in two
+15-minute tries (1 and 41); the first version missed it on its first run and found it on its
+second, by luck of the seed. The parent's cost per variant rose from 6 to 21 ms with the
+compound moves, and the rule set is a fifth larger, so such combinations are rarer per variant. The first test of the new moves also showed two traps: block locals of the
+same name (every probe declares its own `z`) must not be taken for one local, and a variant's
+move list must be the one it was generated from, not its island's current one.
+
+Not done: generating variants in the workers (the parent is the limit above about 60 variants a
+second with the compound moves); a check of each new best against a second build of the same
+function where one exists.
