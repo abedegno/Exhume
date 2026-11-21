@@ -521,14 +521,39 @@ def r_probe_addr(ctx, rng, everywhere=False):
     return Edit([ctx.insert_at(i, _probe_text(e))], f'probe {e} @{_line(ctx, i)}', meaning='probe')
 
 
+# any block that only declares one local and stores a side-effect-free value in it (the value is
+# never read): the stored-comparison probe however it is spelt (with or without the cast, the
+# value given at the declaration or after it)
+PROBE_ANY = re.compile(r'^\{\s*(?:(?:unsigned|signed|const|volatile|register)\s+)*\w+\s+(\w+)\s*'
+                       r'(?:=\s*([^;{}]*))?;\s*(?:\1\s*=\s*([^;{}]*);\s*)?\}$', re.S)
+_PROBE_TYPES = ('unsigned', 'signed', 'int', 'uint', 'char', 'uchar', 'short', 'ushort', 'long', 'ulong',
+                'u8', 'u16', 'u32', 's8', 's16', 's32', 'sizeof', 'void', 'const')
+_CALLISH = re.compile(r'\b(\w+)\s*\(')
+_ASSIGNISH = re.compile(r'\+\+|--|(?<![=!<>])=(?!=)')
+
+
+def is_probe_block(text):
+    """True for a block that is only a write to a local of its own (see PROBE_ANY)."""
+    s = ' '.join(text.split())
+    if PROBE.match(s): return True
+    m = PROBE_ANY.match(s)
+    if not m or (m.group(2) is None and m.group(3) is None): return False
+    for e in (m.group(2), m.group(3)):
+        if e is None: continue
+        if _ASSIGNISH.search(e): return False
+        if any(n not in _PROBE_TYPES for n in _CALLISH.findall(e)): return False
+        if re.search(r'\b%s\b' % re.escape(m.group(1)), e): return False
+    return True
+
+
 def find_probes(ctx):
     """[(kind, node or span, text)] of the probes in FUNC: stored comparisons in blocks, and the
     comma form `(t = (E)), C` in a condition."""
     out = []
     for n in ctx.nodes:
-        if n.kind == 'block' and n is not ctx.root and len(n.children) == 2:
+        if n.kind == 'block' and n is not ctx.root and len(n.children) in (1, 2):
             s = ctx.src(n.start, n.end)
-            if PROBE.match(' '.join(s.split())): out.append(('block', n, s))
+            if is_probe_block(s): out.append(('block', n, s))
         if n.kind in ('if', 'while') and n.cond:
             e = ctx.cond_expr(n)
             if e is not None and e.kind == 'comma' and e.kids[0].kind in ('paren', 'assign'):
