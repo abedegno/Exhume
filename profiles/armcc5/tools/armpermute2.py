@@ -525,14 +525,17 @@ class Search:
 
     def escalate(self):
         """For long unattended runs: every 3000 generated variants, look at the share that were
-        duplicate texts. Above 60% the neighbourhood is exhausted: go one level deeper (moves of
+        duplicate texts. Above 45% the neighbourhood is thinning: go one level deeper (moves of
         up to 3-6 edits), take a fresh seed, shake the rule weights, and send half the islands
         back to the original source. Below 25%, step back a level."""
         g = self.counts['generated']
         if g - self.win[0] < 3000: return
-        dup = (self.counts['dup_text'] - self.win[1]) / max(1, g - self.win[0])
-        self.win = (g, self.counts['dup_text'])
-        if dup > 0.6 and self.depth < 4:
+        # the share of valid texts already seen (generated also counts moves with no site)
+        sub = self.counts['submitted']
+        d_dup = self.counts['dup_text'] - self.win[1]
+        dup = d_dup / max(1, d_dup + sub - (self.win[2] if len(self.win) > 2 else 0))
+        self.win = (g, self.counts['dup_text'], sub)
+        if dup > 0.45 and self.depth < 4:
             self.depth += 1
             self.rng = random.Random(self.rng.random())
             self.weights = {k: v * math.exp(self.rng.gauss(0, 0.6)) for k, v in self.base_weights.items()}
@@ -542,7 +545,7 @@ class Search:
                 isl.key, isl.ohash = None, src.ohash
             self.counts['escalations'] += 1
             print(f'  escalate: duplicate texts {dup:.0%}, depth {self.depth}, new seed and rule mix', flush=True)
-        elif dup > 0.6:
+        elif dup > 0.45:
             self.weights = {k: v * math.exp(self.rng.gauss(0, 0.6)) for k, v in self.base_weights.items()}
             self.depth = 1                     # cycle: back to shallow with yet another mix
             print(f'  escalate: duplicate texts {dup:.0%}, depth reset with a new rule mix', flush=True)
