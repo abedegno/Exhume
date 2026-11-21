@@ -205,6 +205,11 @@ class Target:
         # it) is no obstacle: FUNC is placed at its own map address, its neighbours by the map
         code_names = {n for i, (n, _) in info.sections.items() if 'SHF_EXECINSTR' in (info.flags or {}).get(i, '')}
         errors = [e for e in errors if not any(f'section {n}:' in e or f'section {n} ' in e for n in code_names)]
+        # a data section the image holds in several pieces (its symbols give different bases) is
+        # resolved per symbol: a reference takes the base of the piece its target lies in
+        self.extra = extra
+        errors = [e for e in errors if 'its symbols disagree on its address' not in e
+                  or any(f'section {n}:' in e for n in code_names)]
         if errors: raise SystemExit('base object does not place: ' + '; '.join(errors[:5]))
         bases, errs = objplace.bases_for(o, info, placements, unplaced)
         if errs: raise SystemExit('base object does not place: ' + '; '.join(errs[:5]))
@@ -266,14 +271,24 @@ class Target:
             out[name] = hash((bytes(o.sections[idx].data[off:end]), rel))
         return out
 
-    def _data_base(self, o, sec):
+    def _data_base(self, o, sec, target=None):
         """A data section's address: from a symbol it defines that the base build placed (a
-        cut file may number or split its sections differently), else by its label."""
+        cut file may number or split its sections differently), else by its label. A section
+        the image holds in pieces has no single base: with target (an offset in the section) the
+        base is that of the piece holding it, from the nearest symbol at or below it that has
+        an address."""
         for x in o.symbols.values():
             if x.sec == sec and x.type == 'Data' and x.name in self.defined:
                 return self.defined[x.name] - x.value
         lab = self._label(o, sec)
         if lab in self.data_bases: return self.data_bases[lab]
+        if target is not None:
+            best = None
+            for x in o.symbols.values():
+                if x.sec == sec and x.type == 'Data' and x.value <= target:
+                    a = self.m.address(x.name, self.extra)
+                    if a is not None and (best is None or x.value > best[0]): best = (x.value, a)
+            if best: return best[1] - best[0]
         raise LookupError(f'section {lab} not placed')
 
     def place_function(self, o, funcs=None, name=None):
@@ -297,7 +312,8 @@ class Target:
                 if s.sec == idx:
                     S, T = base + (s.value & ~1), (s.value & 1 if s.type == 'Code' else 0)
                 else:
-                    S, T = self._data_base(o, s.sec) + s.value, 0
+                    add = struct.unpack_from('<I', b, r.offset)[0] if r.tname == 'R_ARM_ABS32' else 0
+                    S, T = self._data_base(o, s.sec, (s.value + add) & 0xFFFFFFFF) + s.value, 0
             elif s.sec == 'Abs':
                 S, T = s.value, 0
             else:
