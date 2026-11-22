@@ -1392,6 +1392,86 @@ difference in the instruction diff (two statements moved into a `for` header).
   (start 3, wrong size) exact after 60 variants in 27 seconds, reduced to the one recorded
   edit.
 
+Fourth round: a sweep first, so that an answer of one or two edits does not hang on the seed.
+A regression of 15 solved cases over three seeds on the 32-core host (6 workers, 300 s) found ten
+cases in seconds whatever the seed, but two whose answer was one probe or two edits were found
+on one seed in 2 seconds and missed on the others after thousands of compiles. What the misses
+showed:
+
+- A start of the wrong size is left at once. Any right-size result ranks above a wrong-size one,
+  so the first right-size variant became the best (23 or 46 differing instructions against the
+  start's 21 at two bytes too many) and every island went to it. The answer was one probe from
+  the original, and after the first seconds the original was reached only by restarts: two or
+  three in 300 seconds, and for the even islands those went to the normalised form (which has
+  the original's own probe removed), not to the original.
+- A random draw of a probe picks a point, an operand and a constant: about one draw in 3,000
+  gave any one of the exact forms.
+- The object hash that told "the code did not change" was of the object file, which holds the
+  path it was compiled at, so it differed from worker to worker: the bandit's no-change counts,
+  the tabu list and the duplicate-object count only worked when the same worker happened to
+  compile both. The hash is now of the function's placed bytes and the changed neighbours.
+- At a wrong size the instruction diff is of shifted code, and the hot lines from it mean
+  little. A base of the wrong size now has no hot lines.
+- `typedef unsigned int uint, undefined4;` registered only the last name, so in a file whose
+  `uint` came from such a line no global of that type was known to any rule.
+
+The sweep (on by default; `--no-sweep`): before the islands start, the workers list every single
+edit of the original, a rule per job, each edit once. The probe rules enumerate (`fn.enumerate`
+in permrules): a stored comparison at each insertion point that repeats each test made near it
+(`model == 'C'` again in the arm that tested it: the form most recorded probes had) and
+compares the two nearest operands with 0 (tier 1), then the other operands and the nearest
+constants (tiers 2 to 4); a shift of the nearest constant by the nearest local at each point
+(tier 1), of each constant the function uses more than once at every eighth point (tier 1.5) and
+at every point (tier 2); address comparisons of the nearest globals (tiers 3, 4); each existing
+probe removed. Every other rule is drawn with fixed seeds until 60 draws in a row give nothing
+new, its first 15 x weight edits in the first pass and the rest after the probes' second tier.
+The singles are compiled in that order (within a tier a fixed shuffle, so a time limit thins
+every part of the function alike); after tier 1.5 the probe families (a shift's constant, a
+comparison's operand) of which a member improved the score go first. Then pairs: the 40 best
+singles that changed the code, one per distinct code, two at a time, and each removal (a probe,
+the dead constructs, a normalised form) with the best 300, because a removal alone often scores
+no better than the start; then a beam: the 10 best distinct pairs each with one of the best 60
+singles as a third edit, the best of those with a fourth, up to six, while a level betters the
+one before. A pair is replayed from the two singles' patches; a patch whose context was changed
+by the other edit is found with less context (four, then three tokens a side).
+With `--time` the singles get a quarter of it, the pairs 15% and the beam 15%. The results are
+printed per rule and written to OUT/sweep.tsv. The best becomes the best, the even islands
+start from the best distinct results, the odd ones stay on the original, and 15% of all later
+jobs (`--origin`) are made from the original with two edits at once. Dead-code and move
+penalties apply to sweep results as to any other; `--only` and `--skip` choose its rules.
+
+The end-of-run line now names both orders: `best 23 after 301 s, 1 moves; start 21 size
+0x2e4/0x2e2; lowest count seen 22 with 63 moves`, and says when a right-size best has a higher
+count than a wrong-size start.
+
+Regression after this round, on the 32-core host with the native compiler (15 solved cases, the
+source before each match; seeds 7, 11 and 23; 6 workers, 300 s, five cases at a time). The sweep
+does not use the seed, so the three seeds gave the same result and, within a second or two, the
+same time in every case:
+
+| case | start | result on each seed | found by | singles listed, compiled |
+|---|---|---|---|---|
+| CAN receiver | 20 | exact, 4 s | single: if chain to switch | 7,966, 41 |
+| CAN receiver 2 | 8 | 1 (the recorded answer's floor) | single | 8,731, 2,521 |
+| charge limit | 11 | exact, 7 s | single: repeated store | 7,683, 37 |
+| update check (size +6) | 36 | exact, 77 s | pair: a shift of the shared constant 0x4f, the comma probe removed (the first pair tried) | 9,251, 3,174 |
+| current measurement | 7 | exact, 36 s | single: dead shift probe | 3,107, 509 |
+| discharge limit (size +2) | 21 | exact, 40 s | single: a nearby test repeated | 5,163, 594 |
+| byte receivers A and B | 8 | exact, 5 s | single: store inside the test | 4,972 and 4,769, 96 |
+| summary update | 4 | exact, 6 s | single: normalise | 6,107, 24 |
+| holding registers | 2 | exact, 8 s | single: normalise | 8,216, 26 |
+| register write | 2 | 1 (the recorded answer's floor) | single: common temporary | 11,226, 4,973 |
+| Modbus task (size -4) | 3 | exact, 3 s | single: dead store | 4,301, 130 |
+| CAN sender | 2 | exact, 7 s | single: local inlined | 7,838, 26 |
+| protocol task | 29 | exact, 98 s | third edit of the beam: arm swap and two range tests | 2,263, 2,255 |
+| 5.6 KB responder | 60 | 46 with 3 moves | third edit of the beam: loop header, common temporary, getter | 9,885, 1,756 |
+
+Before the sweep the same matrix (with and without focus) had the update check missed in all six
+runs (26 to 56) and the discharge limit exact on one seed and at 2 or worse on the other two;
+the responder was at 45 to 47 by the islands alone with focus and at 38, 49 and 52 without, so
+one run of six had found a better source (38 with 6 moves) than the sweep's 46. The cost is time on the cases an island found by luck in a second or two:
+the one-edit answers now take 3 to 40 seconds, because the sweep goes through the rules in
+turn. The islands after the sweep added nothing in these 300-second runs.
+
 Not done: a check of each new best against a second build of the same function where one
-exists; measuring the third round on the 32-core host (the figures above are one Mac under Wine,
-where the compile is three times slower than natively).
+exists.
