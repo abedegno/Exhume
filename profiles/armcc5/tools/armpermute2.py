@@ -1467,7 +1467,8 @@ class Search:
             isl = Island(-30 - len(out), text, r, [(rule, ed.desc)], self.key_of(r, self.dead_delta(nt), 1), r.chash)
             isl.moves, isl.h, isl.bh = [make_move(rule, ed.desc, toks, ed, words)], norm_hash(nt), self.put_base(text)
             isl.ridx, isl.name = 100 + len(out), 'the base without dead code: ' + ed.desc[:110]
-            self.seen.add(isl.h)
+            # (its text is not put in the set of texts made: the original's sweep has the same
+            # removal as a single edit, and pairs each removal with the best singles)
             out.append(isl)
         if out:
             print(f'  bases without dead code: {len(out)} (each swept as a start, whatever it scores):', flush=True)
