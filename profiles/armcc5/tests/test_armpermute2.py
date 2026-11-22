@@ -1,5 +1,6 @@
 """armpermute2.py's parts: the object reader (orcobj), the C reader (permc), the rewrite rules
-(permrules) and the scorer's instruction tokens (permscore).
+(permrules), the scorer's instruction tokens and line rows (permscore), and the search's shared
+parts (armpermute2: the set of texts made, the acceptance key, the focus, generation in a worker).
 
 No compiler is needed. Each rule is run on a small generic C file that has one site for it:
 it must apply, the result must still tokenize with balanced brackets and (when clang is on the
@@ -268,6 +269,151 @@ class MovesTest(unittest.TestCase):
         self.assertEqual(A.norm_hash(A.apply_move(c8.toks, mv)), A.norm_hash(R.apply(c8.toks, ed.spans)))
         lm = A.legacy_moves(t0, t2)
         self.assertEqual(A.norm_hash(A.apply_all(t0, lm)), A.norm_hash(t2))
+
+
+FOCUS_BODY = '''void f(ushort v)
+{
+    uchar a;
+    ushort b;
+    a = phase;
+    status = 1;
+    phase = 2;
+    send(a, 1);
+    counter = v * 10;
+    table[1] = 7;
+    table[2] = 8;
+    b = samples[3];
+    send(2, b);
+}
+'''
+
+
+class SearchPartsTest(unittest.TestCase):
+    """What the parent and the workers share: the set of texts made, the acceptance key with
+    its per-move cost, the line bookkeeping of the focus, and variant generation as a worker
+    runs it (no compiler)."""
+
+    def test_shared_set(self):
+        import armpermute2 as A
+        s = A.SharedSet(8)
+        h = A.norm_hash(permc.tokenize('int x;')[0])
+        self.assertTrue(s.add(h)); self.assertFalse(s.add(h)); self.assertIn(h, s)
+        self.assertNotIn(('retype', 'v'), s)
+        self.assertTrue(s.add(('retype', 'v'))); self.assertIn(('retype', 'v'), s)
+        for k in range(400): s.add(('x', k))            # more than the table holds: still answers
+        self.assertFalse(s.add(('x', 399)))
+
+    def test_move_penalty(self):
+        import armpermute2 as A
+        self.assertEqual(A.pen_key((0, 0, 0), 2, 9, 3.0, 0.15), (0, 0, 0))             # exact: no penalty
+        short, long_ = A.pen_key((1, 0, 48), 0, 2, 3.0, 0.15), A.pen_key((1, 0, 48), 0, 111, 3.0, 0.15)
+        self.assertLess(short, long_)                                                # the shorter list wins a tie
+        self.assertLess(A.pen_key((1, 0, 60), 0, 0, 3.0, 0.15), long_)               # 111 moves for 12 instructions: no gain
+        self.assertLess(A.pen_key((1, 0, 47), 0, 3, 3.0, 0.15), short)               # one instruction for one move: a gain
+        self.assertEqual(A.pen_key((1, 0, 48), 1.5, 2, 3.0, 0.0), (1, 0, 52.5))      # the dead-code penalty as before
+
+    def test_lines(self):
+        import armpermute2 as A
+        text = 'int a;\n/* c\n   c */ int b;\n\nint c;\n'
+        toks, _ = permc.tokenize(text)
+        self.assertEqual([l for t, l in zip(toks, A.token_lines(toks)) if t[1] == 'int'], [1, 3, 5])
+        old = '\n'.join(f'line {k}' for k in range(1, 21))
+        new = old.replace('line 5\n', 'line 5\nnew a\nnew b\n').replace('line 12\n', '').replace('line 15', 'LINE 15')
+        self.assertEqual(A.remap_lines(old, new, [2, 5, 9, 15, 18, 20]), (2, 5, 11, 16, 19, 21))
+        self.assertEqual(A.remap_lines(old, old, [1, 20]), (1, 20))
+
+    def test_edit_focus(self):
+        import armpermute2 as A
+        ctx, text = ctx_for(FOCUS_BODY)
+        tl = A.token_lines(ctx.toks)
+        first = text[:text.index('void f')].count('\n') + 1           # line of `void f`
+        hot = {first + 5, first + 6}                                    # status = 1; phase = 2;
+        seen = set()
+        for seed in range(60):
+            ed = R.r_stmt_swap(ctx, random.Random(seed))
+            if ed: seen.add((A.edit_focus(ctx, tl, ed, hot), ed.desc))
+        self.assertIn(True, {f for f, _ in seen}); self.assertIn(False, {f for f, _ in seen})
+        for f, desc in seen:
+            self.assertEqual(f, 'status = 1' in desc or 'phase = 2' in desc, desc)
+        # a declaration edit and an edit outside the body are exempt; so is a compound move
+        self.assertIsNone(A.edit_focus(ctx, tl, R.r_retype(ctx, random.Random(0)), hot))
+        ctx.array_sizes = {'samples': 12}
+        self.assertIsNone(A.edit_focus(ctx, tl, R.r_sized_extern(ctx, random.Random(0), everywhere=True), hot))
+        ed = R.r_normalise(ctx, random.Random(1), full=True)
+        self.assertTrue(ed.parts); self.assertIsNone(A.edit_focus(ctx, tl, ed, hot))
+        # a local inlined is judged by its uses, not by the declaration it removes
+        ed = next(e for e in (R.r_local_inline(ctx, random.Random(k), everywhere=True) for k in range(40)) if e and 'b' in e.desc.split())
+        self.assertFalse(A.edit_focus(ctx, tl, ed, hot))
+        self.assertTrue(A.edit_focus(ctx, tl, ed, {first + 12}))
+
+    def gen(self, **kw):
+        import armpermute2 as A
+        ctx, text = ctx_for(FOCUS_BODY)
+        g = A.Gen('f', ctx.tail, ctx.types, R.RULES, **kw)
+        return A, g, A.Base(text, ctx.toks, g.make_ctx(ctx.toks))
+
+    def test_worker_generation(self):
+        """A variant comes from the base and the seed alone, and its moves replay to its text."""
+        A, g, base = self.gen()
+        n = 0
+        for seed in range(40):
+            m = g.mutate(base, random.Random(seed))
+            if m is None: continue
+            n += 1
+            toks, trail, made = m
+            again = g.mutate(base, random.Random(seed))
+            self.assertEqual(A.norm_hash(again[0]), A.norm_hash(toks))
+            moves = [A.make_move(*x) for x in made]
+            self.assertEqual(len(moves), len(trail))
+            self.assertEqual(A.norm_hash(A.apply_all(base.toks, moves)), A.norm_hash(toks))
+        self.assertGreater(n, 30)
+        # the shared set drops a text made before; a tabu move is not made again
+        g.seen = A.SharedSet(10)
+        toks, trail, made = g.mutate(base, random.Random(3))
+        self.assertTrue(g.seen.add(A.norm_hash(toks))); self.assertFalse(g.seen.add(A.norm_hash(toks)))
+        g.tabu = A.SharedSet(10)
+        g.tabu.add((made[0][0], made[0][1]))
+        again = g.mutate(base, random.Random(3))
+        self.assertTrue(again is None or (again[2][0][0], again[2][0][1]) != (made[0][0], made[0][1]))
+
+    def test_focus_keeps_hot_edits(self):
+        """With --focus-cold 0 every edit made touches a hot line or is exempt."""
+        A, g, base = self.gen(focus=True, focus_cold=0.0, p_pair=0.0)
+        first = base.text[:base.text.index('void f')].count('\n') + 1
+        hot = {first + 9, first + 10}                                   # the table stores
+        st, n = __import__('collections').Counter(), 0
+        for seed in range(80):
+            m = g.mutate(base, random.Random(seed), hot=hot, st=st)
+            if m is None: continue
+            n += 1
+            rule, desc, toks, ed = m[2][0]
+            self.assertIsNot(A.edit_focus(base.ctx, base.lines(), ed, hot), False, desc)
+        self.assertGreater(n, 20)
+        self.assertGreater(sum(v for (r, k), v in st.items() if k == 'cold'), 0)
+        self.assertEqual(sum(v for (r, k), v in st.items() if k == 'cold_kept'), 0)
+
+
+class LineRowsTest(unittest.TestCase):
+    def test_line_program(self):
+        """A DWARF 3 line program as armcc -g writes it (2-byte instructions, line base 0, range 6,
+        opcode base 13), its address relocated to a Thumb function symbol."""
+        import objplace
+        files = b'\0' + b'/w/x.c\0\0\0\0' + b'\0'
+        head = bytes([2, 0, 0, 6, 13]) + bytes([0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1]) + files
+        prog = (bytes([0, 5, 2]) + struct.pack('<I', 4)      # set address: symbol + 4
+                + bytes([3, 9, 1])                           # line 10, row
+                + bytes([13 + 2 + 6 * 1])                    # special: one instruction on, two lines down, row
+                + bytes([2, 3, 3, 0x7F, 1])                  # three instructions on, one line up, row
+                + bytes([0, 1, 1]))                          # end of sequence
+        unit = struct.pack('<HI', 3, len(head)) + head + prog
+        data = struct.pack('<I', len(unit)) + unit
+        raw = bytes(0x40) + data
+        addr_at = 4 + 6 + len(head) + 3
+        o = objplace.Obj('', {1: objplace.Sec('.text', 'SHT_PROGBITS', 'SHF_ALLOC SHF_EXECINSTR', 0, 0x200, 4),
+                              2: objplace.Sec('.debug_line', 'SHT_PROGBITS', '', 0x40, len(data), 1)},
+                         {1: objplace.Sym('f', 0x101, 'Gb', 1, 'Code')},
+                         {2: [objplace.Rel(addr_at, 2, 'R_ARM_ABS32', 1, 'f')]})
+        self.assertEqual(permscore.line_rows(o, raw), {1: [(0x104, 10, '/w/x.c'), (0x106, 12, '/w/x.c'), (0x10C, 11, '/w/x.c')]})
 
 
 class CReaderTest(unittest.TestCase):

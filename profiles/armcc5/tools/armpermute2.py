@@ -1,30 +1,51 @@
 """Fast source permuter for one function: island search over catalogue rewrite rules, with
-real compiles in a worker pool and an in-process scorer.
+variants made, compiled and scored in a worker pool.
 
     python3 armpermute2.py [--config PATH] SRC.c FUNC [--runner native|wine] [--jobs N]
         [--islands K] [--iters N] [--time SECONDS] [--seed S] [--resume] [--out DIR]
         [--weights FILE.json] [--only RULE,...] [--skip RULE,...] [--cut auto|on|off]
         [--armcc-home DIR] [--mappings DIR] [--exec CMD] [--no-screen] [--pair P] [--everywhere P]
-        [--dead-penalty N] [--cross P] [--simplify SHARE] [--no-reduce]
+        [--dead-penalty N] [--move-penalty N] [--rebase MINUTES] [--cross P] [--simplify SHARE]
+        [--no-reduce] [--no-focus] [--focus-cold P] [--focus-near LINES]
 
-What it does, per variant: pick an island (an independent chain with its own base source),
-pick a rule by weight (permrules.RULES: the edit kinds that produced matches, both ways) and
-apply it once, at every site of what it chose (--everywhere probability), or two rules at
-distant sites as one step (--pair probability); skip the text if its normalised form (tokens
-without whitespace) was seen; compile it in a worker (permrun: one armcc process per variant,
-one worker per job, work files in /dev/shm) and score FUNC in the worker (permscore: object
-read in-process, FUNC placed at its map address; 0 only for equal bytes). The island keeps a
-variant that is no worse, now and then one a little worse (--temp), and goes back to the best
-after --restart rounds without progress. Order of goodness: exact; right size and unchanged
-neighbours, by differing instructions; then wrong size, by size difference and instructions.
-So a lower count at the wrong size is never progress.
+What it does, per variant: the parent picks an island (an independent chain with its own base
+source) and hands a worker a job: the base's name, a seed, the island's key. The worker parses
+the base (once per base, kept by its hash), picks a rule by weight (permrules.RULES: the edit
+kinds that produced matches, both ways) and applies it once, at every site of what it chose
+(--everywhere probability), or two rules at distant sites as one step (--pair probability);
+drops the text if its normalised form (tokens without whitespace) is in the set of texts
+already made, which all workers share; compiles it (permrun: one armcc process per variant,
+work files in /dev/shm) and scores FUNC (permscore: object read in-process, FUNC placed at its
+map address; 0 only for equal bytes). It sends back the score, the size, the trail and the
+text's hash, and the text with its moves only when the island or the best may keep it. The
+island keeps a variant that is no worse, now and then one a little worse (--temp), and goes
+back to the best after --restart rounds without progress. Order of goodness: exact; right size
+and unchanged neighbours, by differing instructions; then wrong size, by size difference and
+instructions. So a lower count at the wrong size is never progress.
+
+The parent does no parsing in the loop: it costs a fraction of a millisecond per variant
+(printed at the end, with the workers' generation time), so the workers are never short of jobs.
+
+Parsimony: each move in a variant's list costs --move-penalty differing instructions in the
+acceptance key (default 0.15), so of two sources with the same code the shorter list wins and a
+long chain of neutral edits is not progress; and an island that has given no new best for
+--rebase minutes (default 10, 0 for never) starts again from the best as reduced.
+
+Focus: after each improvement of an island, the source lines its differing instructions come
+from are worked out (one more compile of that text with -g; the line rows of .debug_line are
+read in-process, and used only when FUNC's code is the same with -g as without: this compiler
+build refuses -S, --asm and --interleave). An edit that touches a line within --focus-near
+lines (3) of such a line is always kept; any other is kept with probability --focus-cold
+(0.25). Edits that are global by nature are exempt: compound moves, edits outside FUNC's body
+and edits to a local's declaration. --no-focus turns it off.
 
 A new best is screened before it is kept (permscreen: clang, no new unsequenced or
 uninitialised warnings) and written to OUT/best.c with its edit trail; a score of 0 stops the
 run. Every attempt is logged to OUT/attempts.tsv (island, rules, sites, result, size); the end
 of a run prints per-rule statistics (tried, compiled, improved, accepted) and the throughput.
 State (island bases, best, seen hashes, rule statistics) is kept in OUT/state.json for --resume;
-every new best also goes to OUT/best/<time>_<score>.c with its edit list. Long runs escalate by
+every new best also goes to OUT/best/<time>_<score>.c with its edit list, and the lowest count
+seen, however long its list, to OUT/lowest.c. Long runs escalate by
 themselves when most generated texts are duplicates (deeper compound moves, a new seed and rule
 mix, half the islands back to the original). --dead-penalty N counts each dead-code construct
 added (stored comparison, unused local, pointer store) as N more differing instructions, and
@@ -52,7 +73,7 @@ globals have); unsized extern arrays take their size from the map row or, for an
 by an at: line, from the gap to the next known address.
 
 OUT defaults to <build>/permute2/FUNC. SRC is never modified. Rerun match.py on any result."""
-import collections, hashlib, json, math, os, queue, random, re, sys, time
+import collections, hashlib, json, math, mmap, os, queue, random, re, struct, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXHUME = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 for p in (HERE, os.path.join(EXHUME, 'tools')):
@@ -252,14 +273,14 @@ def callees(toks, func, pair=None):
     armcc uses a callee's register usage when the callee is defined in the same file, so their
     bodies must stay in a cut file."""
     pair = pair or permc.match_brackets(toks)
-    bodies = {}
+    bodies, none = {}, set()
     for i in range(len(toks) - 1):
-        if toks[i][0] == 'id' and toks[i + 1][1] == '(':
+        if toks[i][0] == 'id' and toks[i + 1][1] == '(' and toks[i][1] not in bodies and toks[i][1] not in none:
             try:
-                s, lb, rb = permc.find_function(toks, toks[i][1])
-                bodies.setdefault(toks[i][1], (lb, rb))
+                s, lb, rb = permc.find_function(toks, toks[i][1], pair)
+                bodies[toks[i][1]] = (lb, rb)
             except LookupError:
-                pass
+                none.add(toks[i][1])
     keep, todo = set(), [func]
     while todo:
         f = todo.pop()
@@ -311,15 +332,390 @@ def dead_count(toks, func):
     return len(DEAD.findall(' '.join(t[1] for t in toks[lb:rb + 1])))
 
 
+# ---------------------------------------------------------------- shared between parent and workers
+
+_Q = struct.Struct('<Q')
+
+
+class SharedSet:
+    """A set of 64-bit keys in anonymous shared memory, made before the workers fork so that all
+    of them and the parent see one table (open addressing, no lock: a lost race costs one
+    duplicate compile, a full neighbourhood overwrites the key's home slot). It holds the texts
+    already made, so a worker drops a duplicate before it compiles it, and the tabu moves."""
+
+    def __init__(self, bits=22):
+        self.mask = (1 << bits) - 1
+        self.mm = mmap.mmap(-1, 8 << bits)
+
+    @staticmethod
+    def key(h):
+        """A hex digest's first 64 bits, or a hash of any other value; never 0 (an empty slot)."""
+        if isinstance(h, str): return int(h[:16], 16) or 1
+        return int.from_bytes(hashlib.blake2b(repr(h).encode('latin1', 'replace'), digest_size=8).digest(), 'little') or 1
+
+    def add(self, h):
+        """True when h was not in the set (it is now)."""
+        k = self.key(h); i = k & self.mask; mm = self.mm
+        for _ in range(64):
+            v = _Q.unpack_from(mm, 8 * i)[0]
+            if v == k: return False
+            if v == 0:
+                _Q.pack_into(mm, 8 * i, k); return True
+            i = (i + 1) & self.mask
+        _Q.pack_into(mm, 8 * (k & self.mask), k)
+        return True
+
+    def __contains__(self, h):
+        k = self.key(h); i = k & self.mask; mm = self.mm
+        for _ in range(64):
+            v = _Q.unpack_from(mm, 8 * i)[0]
+            if v == k: return True
+            if v == 0: return False
+            i = (i + 1) & self.mask
+        return False
+
+
+def pen_key(k, d, nm, dead_penalty, move_penalty):
+    """The acceptance key of a result key k: each dead-code construct added (d) and each move of
+    the variant's list (nm) costs a share of a differing instruction, so of two sources with
+    the same code the one with the shorter list wins. An exact result is not penalised."""
+    if not k[0] or k[0] == 3: return k
+    return (k[0], k[1], k[2] + dead_penalty * max(0, d or 0) + move_penalty * nm)
+
+
+def token_lines(toks):
+    """The 1-based source line each token starts on (as the compiler numbers the rendered text)."""
+    out, ln = [], 1
+    for t in toks:
+        ln += t[2].count('\n')
+        out.append(ln)
+        if '\n' in t[1]: ln += t[1].count('\n')
+    return out
+
+
+def remap_lines(old, new, lines):
+    """Where the 1-based lines of text old are in text new: lines before the first changed line
+    stay, lines after the last one shift by the change in length, lines between follow a line
+    diff of the changed part (a changed line goes to the start of what replaced it)."""
+    a, b = old.split('\n'), new.split('\n')
+    n = min(len(a), len(b))
+    lo = 0
+    while lo < n and a[lo] == b[lo]: lo += 1
+    hi = 0
+    while hi < n - lo and a[len(a) - 1 - hi] == b[len(b) - 1 - hi]: hi += 1
+    ea, eb = len(a) - hi, len(b) - hi
+    mid = None
+    out = set()
+    for ln in lines:
+        i = ln - 1
+        if i < lo: out.add(ln)
+        elif i >= ea: out.add(ln + len(b) - len(a))
+        else:
+            if mid is None:
+                mid = {}
+                if (ea - lo) * max(1, eb - lo) <= 250000:
+                    import difflib
+                    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a[lo:ea], b[lo:eb], autojunk=False).get_opcodes():
+                        for x in range(i1, i2):
+                            mid[lo + x] = lo + (j1 + x - i1 if tag == 'equal' else min(j1, max(0, eb - lo - 1)))
+            j = mid.get(i, lo)
+            if j < len(b): out.add(j + 1)
+    return tuple(sorted(out))
+
+
+def edit_focus(ctx, tline, ed, hot):
+    """Does an Edit touch a hot line? True or False, or None for an edit that is global by
+    nature and so exempt from the focus: a compound move, an edit with no span inside FUNC's
+    body (an extern, a helper's definition, the prototype) and an edit whose spans in the body
+    only change locals' declarations (a type, the order, a split). A span that lies wholly in
+    declarations is not judged (so a local inlined or initialised is judged by its other
+    spans: the uses, the assignment); an insertion is judged by the line of the token it goes
+    before. hot holds the hot lines already widened by the window."""
+    if getattr(ed, 'parts', None): return None
+    decls = getattr(ctx, '_pmt_decls', None)
+    if decls is None:
+        decls = ctx._pmt_decls = set()
+        for l in ctx.locals.values():
+            if l.node is not None: decls.update(range(l.node.start, l.node.end))
+    toks, n = ctx.toks, len(tline)
+    judged = found = False
+    for a, b, new in ed.spans:
+        if a <= ctx.lb or a > ctx.rb: continue
+        insertion = b == a + 1 and len(new) > 1 and new[-1][1] == toks[a][1]
+        if not insertion and b > a and all(x in decls for x in range(a, b)): continue
+        judged = True
+        la = tline[min(a, n - 1)]
+        lb = la if insertion else tline[min(max(a, b - 1), n - 1)]
+        if not found: found = any(x in hot for x in range(la, lb + 1))
+    return found if judged else None
+
+
+def cut_form(form, toks, tail, func, types):
+    """The text compiled for a cut mode's form ('prefix', 'stub' or 'prefix+stub')."""
+    if form == 'prefix': return prefix_text(toks, tail, func)
+    if form == 'stub': return cut_text(toks, tail, func, types)
+    t, tl = permc.tokenize(prefix_text(toks, tail, func))
+    return cut_text(t, tl, func, types)
+
+
+class Base:
+    """One parsed base text in a worker."""
+    __slots__ = ('text', 'toks', 'ctx', 'tline')
+
+    def __init__(self, text, toks, ctx):
+        self.text, self.toks, self.ctx, self.tline = text, toks, ctx, None
+
+    def lines(self):
+        if self.tline is None: self.tline = token_lines(self.toks)
+        return self.tline
+
+
+class Gen:
+    """The generator a worker holds (made in the parent before the pool forks): it parses a base
+    text once per base (kept by the text's hash; the parent writes each base to the bases
+    folder and names it in the job), applies rules to it under the job's seed, drops a text
+    already in the shared set, compiles and scores the variant, and returns the score, the
+    size, the trail, the text's hash, and the text with its moves only when the parent may keep
+    it (it beats the island's key as of the job, the best, or a place on the Pareto front)."""
+    mode = 'whole'
+    dead_penalty = move_penalty = 0.0
+    dead0 = 0
+    p_pair, p_every = 0.3, 0.35
+    seen = tabu = wmm = None
+    bases_dir = None
+    focus, focus_cold, focus_near = False, 0.25, 3
+    src_name = None
+    origin_toks = None
+    cap = 8
+    sizes = layouts = None
+
+    def __init__(self, func, tail, types, rules, **kw):
+        self.func, self.tail, self.types, self.rules = func, tail, types, list(rules)
+        self.__dict__.update(kw)
+        self.cache = collections.OrderedDict()
+
+    # ---- what the parent uses too
+    def make_ctx(self, toks):
+        ctx = R.Ctx(toks, self.tail, self.func, self.types)
+        ctx.array_sizes = self.sizes or {}
+        ctx.layouts = self.layouts or {}
+        return ctx
+
+    def dead_of(self, toks, ctx=None):
+        """Weighted dead-code constructs of FUNC (permrules.dead_score)."""
+        try:
+            return R.dead_score(ctx or self.make_ctx(toks))
+        except Exception:
+            return dead_count(toks, self.func)
+
+    def job_text(self, toks):
+        if self.mode.startswith('cut'):
+            return cut_form(self.mode.split(':')[1], toks, self.tail, self.func, self.types)
+        return permc.render(toks, self.tail)
+
+    # ---- in a worker
+    def base(self, bh):
+        b = self.cache.get(bh)
+        if b is not None:
+            self.cache.move_to_end(bh); return b
+        with open(os.path.join(self.bases_dir, bh + '.c'), encoding='latin1') as f: text = f.read()
+        toks, _ = permc.tokenize(text)
+        b = self.cache[bh] = Base(text, toks, self.make_ctx(toks))
+        while len(self.cache) > self.cap: self.cache.popitem(last=False)
+        return b
+
+    def weights(self):
+        if self.wmm is None: return [r.weight for r in self.rules]
+        return struct.unpack_from(f'<{len(self.rules)}d', self.wmm, 0)
+
+    @staticmethod
+    def pick(rules, ws, rng):
+        x = rng.random() * sum(ws)
+        for r, w in zip(rules, ws):
+            x -= w
+            if x <= 0: return r
+        return rules[-1]
+
+    def mutate(self, base, rng, depth=0, ws=None, hot=None, st=None):
+        """(toks, [(rule, desc, meaning)], [(rule, desc, toks before, Edit)]) or None: one rule
+        applied once (at every site of what it chose with probability p_every), two with
+        probability p_pair, more when the search has escalated (depth). With hot lines (a set,
+        already widened), an edit that touches none of them is kept with probability focus_cold."""
+        ws = ws or self.weights()
+        st = st if st is not None else collections.Counter()
+        steps = 2 if rng.random() < self.p_pair else 1
+        if depth and rng.random() < 0.6:          # escalated: deeper compound moves
+            steps = rng.randint(2, 2 + depth)
+        toks, ctx, tline = base.toks, base.ctx, (base.lines() if hot else None)
+        trail, made = [], []
+        for s in range(steps):
+            for attempt in range(40 if hot else 12):
+                r = self.pick(self.rules, ws, rng)
+                every = r.everywhere and rng.random() < self.p_every
+                try:
+                    ed = r.fn(ctx, rng, everywhere=every)
+                except Exception:
+                    st[(r.id, 'crash')] += 1; ed = None
+                if ed is None:
+                    st[(r.id, 'nosite')] += 1; continue
+                try:
+                    nt = R.apply(toks, ed.spans)
+                except ValueError:
+                    st[(r.id, 'badedit')] += 1; continue
+                if self.tabu is not None and (r.id, ed.desc) in self.tabu:      # a move that already
+                    st[(r.id, 'tabu')] += 1; continue                           # left the code unchanged
+                if hot:
+                    f = edit_focus(ctx, tline, ed, hot)
+                    if f is False and rng.random() >= self.focus_cold:
+                        st[(r.id, 'cold')] += 1; continue
+                    st[(r.id, 'hot' if f else 'exempt' if f is None else 'cold_kept')] += 1
+                trail.append((r.id + ('*' if every else ''), ed.desc, ed.meaning))
+                made.append((r.id, ed.desc, toks, ed))
+                toks = nt
+                break
+            else:
+                return None
+            if s + 1 < steps:
+                try:
+                    ctx = self.make_ctx(toks)
+                except Exception:
+                    return None
+                if hot: tline = token_lines(toks)
+        return toks, trail, made
+
+    @staticmethod
+    def cross(base, cross):
+        """base with the moves of another island replayed on it (those whose context is found)."""
+        k, theirs = cross
+        toks, used = base.toks, []
+        for m in theirs:
+            nt = apply_move(toks, m)
+            if nt is not None: toks = nt; used.append(m)
+        if not used: return None
+        return toks, [('cross', f'{len(used)} moves of island {k}', 'same')], used
+
+    def run(self, job):
+        kind, nid, p = job
+        out = {'id': nid, 'gen': 0, 'dup': 0}
+        t0 = time.perf_counter()
+        base, made = None, ()
+        if kind == 'gen':
+            st = collections.Counter()
+            base = self.base(p['bh'])
+            rng = random.Random(p['seed'])
+            ws = self.weights()
+            hot = p.get('hot')
+            hot = {l + d for l in hot for d in range(-self.focus_near, self.focus_near + 1)} if hot and self.focus else None
+            m = h = None
+            for attempt in range(20):
+                out['gen'] += 1
+                m = self.cross(base, p['cross']) if p.get('cross') and attempt == 0 else None
+                if m is None: m = self.mutate(base, rng, p.get('depth', 0), ws, hot, st)
+                if m is None: continue
+                h = norm_hash(m[0])
+                if self.seen is not None and not self.seen.add(h):
+                    out['dup'] += 1; m = None; continue
+                break
+            out['st'] = dict(st)
+            if m is None:
+                out['none'] = True; out['tg'] = time.perf_counter() - t0
+                return out
+            toks, out['trail'], made = m
+            nm = p['nm'] + len(made)
+        elif kind == 'moves':                      # a move list replayed on the original
+            toks = apply_all(self.origin_toks, p['moves'])
+            if toks is None:
+                out['none'] = True; return out
+            h, nm = norm_hash(toks), len(p['moves'])
+            if p.get('nocompile'):
+                out['h'] = h; return out
+        else:                                      # 'text': a whole source the parent made
+            toks, _ = permc.tokenize(p['text'])
+            h, nm = norm_hash(toks), p.get('nm', 0)
+            if self.seen is not None: self.seen.add(h)
+        out['h'] = h
+        ctext = self.job_text(toks)
+        out['tg'] = time.perf_counter() - t0
+        raw, r, ohash, out['tc'], out['ts'], log = permrun.worker_score(ctext)
+        out['r'] = r
+        if r is None:
+            out['log'] = log; return out
+        out['ohash'] = ohash
+        k = r.key()
+        if not r.ok:
+            out['k'] = k; return out
+        old, thr, bkey, force = p.get('old'), p.get('thr'), p.get('bkey'), p.get('want')
+
+        def wanted(x):
+            return (old is not None and x < old) or (thr is not None and x <= thr) or (bkey is not None and x < bkey)
+        d = None
+        if self.dead_penalty and k[0] and (force or p.get('dead') or wanted(pen_key(k, 0, nm, 0, self.move_penalty))):
+            # prefer natural edits: each dead-code construct added costs this many instructions
+            # (worked out only where it can decide something: it needs a parse of the variant)
+            try:
+                d = self.dead_of(toks) - self.dead0
+            except Exception:
+                d = None
+        k = out['k'] = pen_key(k, d, nm, self.dead_penalty, self.move_penalty)
+        out['d'] = d
+        want = force or wanted(k) or (p.get('low') is not None and r.key() < p['low'])
+        if not want and d is not None and p.get('front') is not None:
+            f = p['front'].get(round(d * 4) / 4)
+            want = f is None or k < f
+        if want:
+            t1 = time.perf_counter()
+            text = out['text'] = ctext if self.mode == 'whole' else permc.render(toks, self.tail)
+            out['moves'] = [x if isinstance(x, dict) else make_move(*x) for x in made]
+            improved = force or (old is not None and k < old) or (bkey is not None and k < bkey)
+            if self.focus and not r.exact and not improved and p.get('hot') and base is not None:
+                out['hot'] = remap_lines(base.text, text, p['hot'])       # the base's hot lines, where they are now
+            out['tg'] += time.perf_counter() - t1
+            if self.focus and not r.exact and improved:
+                t1 = time.perf_counter()
+                out['hot'] = self.hot_of(text, raw)                       # an improvement: its own line rows
+                out['th'] = time.perf_counter() - t1
+        return out
+
+    def hot_of(self, text, raw):
+        """The source lines of text that the differing instructions of FUNC come from (a tuple),
+        or None: one more compile with -g, used only when FUNC's code is the same with it."""
+        if self.mode != 'whole':
+            raw, _, _ = permrun.worker_compile(text)
+            if raw is None: return None
+        raw_g, _, _ = permrun.worker_compile(text, ['-g'])
+        if raw_g is None: return None
+        hot = permrun._W['target'].hot_lines(raw, raw_g, self.src_name)
+        return tuple(hot) if hot else None
+
+
 # ---------------------------------------------------------------- the search
 
 class Island:
-    def __init__(self, k, text, toks, ctx, result, trail):
-        self.k, self.text, self.toks, self.ctx, self.result, self.trail = k, text, toks, ctx, result, trail
+    def __init__(self, k, text, result, trail, key=None, ohash=None):
+        self.k, self.text, self.result, self.trail = k, text, result, list(trail)
+        self.key = key if key is not None else result.key()
+        self.ohash = ohash
         self.moves = []
         self.home = None            # where restarts to the original go (a simplified base)
         self.stale = 0
-        self.best_key = result.key()
+        self.bh = self.h = self.hot = None      # base file hash, normalised text hash, hot lines
+        self.t_gain = time.time()   # when it last gave a new best or was sent back to the best
+
+    def take(self, src):
+        """Restart from src (the best, the original or a home)."""
+        self.text, self.result, self.trail = src.text, src.result, list(src.trail)
+        self.key, self.ohash, self.moves = src.key, src.ohash, list(src.moves)
+        self.bh, self.h, self.hot = src.bh, src.h, src.hot
+        self.stale = 0
+
+    def copy(self, k):
+        x = Island(k, self.text, self.result, self.trail, self.key, self.ohash)
+        x.moves, x.bh, x.h, x.hot = list(self.moves), self.bh, self.h, self.hot
+        return x
+
+
+Pending = collections.namedtuple('Pending', 'isl bh moves trail margin force vtrail vmoves t')
+FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus')
 
 
 class Search:
@@ -340,6 +736,11 @@ class Search:
         self.simplify = arg(a, '--simplify', 0.25, float)     # share of islands started from a normalised source
         self.temp = arg(a, '--temp', 0.6, float)
         self.dead_penalty = arg(a, '--dead-penalty', 0.0, float)
+        self.move_penalty = arg(a, '--move-penalty', 0.15, float)
+        self.rebase_s = 60 * arg(a, '--rebase', 10.0, float)   # minutes without a new best before an island goes back to it
+        self.focus = '--no-focus' not in a
+        self.focus_cold = arg(a, '--focus-cold', 0.25, float)
+        self.focus_near = arg(a, '--focus-near', 3, int)
         self.noop = collections.Counter()      # (rule, site) -> variants that left the code as it was
         self.tabu_after = arg(a, '--tabu', 2, int)
         self.restart = arg(a, '--restart', 400, int)
@@ -349,6 +750,9 @@ class Search:
                                                       'mappings': arg(a, '--mappings'), 'exec': arg(a, '--exec')})
         self.opts = permrun.source_opts(cfg, self.src, self.text)
         self.work = os.path.join(permrun.ram_dir(), f'pmt-{os.getpid()}')
+        self.pwork = os.path.join(self.work, 'parent')         # the parent's own compiles (one Wine prefix)
+        self.bases_dir = os.path.join(self.work, 'bases')
+        self.stem = os.path.splitext(os.path.basename(self.src))[0]
         self.rules = list(R.RULES)
         only = arg(a, '--only'); skip = arg(a, '--skip')
         if only: self.rules = [r for r in self.rules if r.id in only.split(',')]
@@ -360,14 +764,26 @@ class Search:
         self.base_weights = dict(self.weights)
         self.stats = collections.defaultdict(collections.Counter)
         self.counts = collections.Counter()
-        self.seen = set()
+        # shared with the workers (made before the pool forks)
+        self.seen = SharedSet(arg(a, '--seen-bits', 22, int))   # normalised texts already made
+        self.tabu = SharedSet(16)                               # (rule, site) moves not to make again
+        self.wmm = mmap.mmap(-1, 8 * max(1, len(self.rules)))   # the rules' effective weights
+        self.seen_new = []                  # hashes to append to OUT/seen.txt
+        self.bases = set()                  # base files written
+        self.obj_seen = set()
+        self.force = set()
+        self.t_submit = self.t_result = self.t_best = 0.0
         self.log = open(os.path.join(self.out, 'attempts.tsv'), 'a')
 
     # ---- start-up
+    def compile(self, text, extra=()):
+        """(object bytes or None, log) of one compile in the parent."""
+        return permrun.compile_once(self.runner, self.cfg, self.src, text, self.pwork, extra)
+
     def start(self):
         t0 = time.time()
-        os.makedirs(self.work, exist_ok=True)
-        raw, log = permrun.compile_once(self.runner, self.cfg, self.src, self.text, os.path.join(self.work, 'base'))
+        os.makedirs(self.bases_dir, exist_ok=True)
+        raw, log = self.compile(self.text)
         if raw is None: raise SystemExit('the source does not compile:\n' + log[-3000:])
         self.base_raw = raw
         self.target = permscore.Target(self.cfg, self.text, self.func, raw)
@@ -379,57 +795,90 @@ class Search:
         self.types = permc.file_types(self.src, self.text, incdirs)
         self.types.scan_globals(toks)
         self.sizes = array_sizes(self.runner, self.cfg, self.src, self.text, toks, self.types, self.target.m,
-                                 os.path.join(self.work, 'sizes'), getattr(self.target, 'extra', None))
+                                 self.pwork, getattr(self.target, 'extra', None))
         if self.sizes: print(f'  extern arrays sizeable from the map: {len(self.sizes)}', flush=True)
-        self.layouts = struct_layouts(self.runner, self.cfg, self.src, self.text, toks, self.types, self.func,
-                                      os.path.join(self.work, 'layouts'))
+        self.layouts = struct_layouts(self.runner, self.cfg, self.src, self.text, toks, self.types, self.func, self.pwork)
         if self.layouts: print(f'  struct layouts read: {", ".join(sorted(self.layouts))}', flush=True)
+        self.gen = Gen(self.func, tail, self.types, self.rules, sizes=self.sizes, layouts=self.layouts,
+                       p_pair=self.p_pair, p_every=self.p_every, dead_penalty=self.dead_penalty,
+                       move_penalty=self.move_penalty, seen=self.seen, tabu=self.tabu, wmm=self.wmm,
+                       bases_dir=self.bases_dir, focus_cold=self.focus_cold, focus_near=self.focus_near,
+                       src_name=self.stem + '.c', origin_toks=toks, cap=self.nisl + 3)
         self.mode = 'whole'
         cut = arg(self.a, '--cut', 'off')
         if cut != 'off':
             self.mode = self.check_cut(toks, tail, raw, cut)
-        ctx = self.make_ctx(toks)
+        self.gen.mode = self.mode
+        ctx = self.gen.make_ctx(toks)
+        self.origin_toks, self.origin_ctx = toks, ctx
+        self.dead0 = self.gen.dead0 = self.gen.dead_of(toks, ctx)
         self.base_result = r0
         self.screen = permscreen.Screen(self.src, self.opts, self.text, self.armcc_include()) if self.screen_on else None
-        self.islands = [Island(k, self.text, toks, ctx, r0, []) for k in range(self.nisl)]
-        self.best = Island(-1, self.text, toks, ctx, r0, [])
-        self.origin = Island(-2, self.text, toks, ctx, r0, [])
-        h0 = hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest()
-        for x in self.islands + [self.best, self.origin]: x.ohash = h0
-        self.seen.add(norm_hash(toks))
-        self.dead0 = self.dead_of(toks, ctx)
+        self.origin = Island(-2, self.text, r0, [], r0.key(), hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest())
+        self.origin.h = norm_hash(toks)
+        self.origin.bh = self.put_base(self.text)
+        self.seen.add(self.origin.h)
+        if self.focus and not r0.exact:
+            hot = self.hot_parent(self.text, raw)
+            if hot is None:
+                self.focus = False
+                print('  focus: off (a -g compile gives no line rows for FUNC, or other code for it)', flush=True)
+            else:
+                self.origin.hot = hot or None
+                print(f'  focus: the differing instructions come from {len(hot)} source lines '
+                      f'(-g compile, FUNC\'s code unchanged by it)', flush=True)
+        self.gen.focus = self.focus
+        self.low = (r0.key(), r0.text(), 0)       # the lowest result seen: key, text, moves
+        self.islands = [self.origin.copy(k) for k in range(self.nisl)]
+        self.best = self.origin.copy(-1)
         self.front = {}                     # dead-code edits added -> (key, text, result)
+        self.push_weights()
         if '--resume' in self.a: self.load_state()
+
+    def hot_parent(self, text, raw):
+        """The hot lines of text (a tuple, empty when no instruction differs) from a -g compile
+        in the parent, or None when the mapping cannot be had."""
+        raw_g, _ = self.compile(text, ['-g'])
+        if raw_g is None: return None
+        hot = self.target.hot_lines(raw, raw_g, self.stem + '.c')
+        return None if hot is None else tuple(hot)
 
     def armcc_include(self):
         home = arg(self.a, '--armcc-home') or os.environ.get('EXHUME_ARMCC_LINUX')
         return os.path.join(home, 'include') if home else None
 
-    def make_ctx(self, toks):
-        ctx = R.Ctx(toks, self.tail, self.func, self.types)
-        ctx.array_sizes = self.sizes
-        ctx.layouts = getattr(self, 'layouts', {})
-        return ctx
+    def key_of(self, r, d=None, nm=0):
+        return pen_key(r.key(), d, nm, self.dead_penalty, self.move_penalty)
 
-    def dead_of(self, toks, ctx=None):
-        """Weighted dead-code constructs of FUNC (permrules.dead_score)."""
-        try:
-            return R.dead_score(ctx or self.make_ctx(toks))
-        except Exception:
-            return dead_count(toks, self.func)
+    def dead_delta(self, toks):
+        return self.gen.dead_of(toks) - self.dead0 if self.dead_penalty else None
 
-    def key_of(self, r, toks, ctx=None):
-        k = r.key()
-        if self.dead_penalty and k[0]:
-            d = self.dead_of(toks, ctx) - self.dead0
-            k = (k[0], k[1], k[2] + self.dead_penalty * max(0, d))
-        return k
+    def put_base(self, text):
+        """The name of text in the bases folder the workers read (written once)."""
+        bh = hashlib.blake2b(text.encode('latin1', 'replace'), digest_size=10).hexdigest()
+        if bh not in self.bases:
+            with open(os.path.join(self.bases_dir, bh + '.c'), 'w', encoding='latin1', errors='replace') as f: f.write(text)
+            self.bases.add(bh)
+        return bh
+
+    def gc_bases(self, pending):
+        """Delete the base files no island, home or waiting job names."""
+        live = {p.bh for p in pending.values()} | {self.best.bh, self.origin.bh}
+        for isl in self.islands:
+            live.add(isl.bh)
+            if isl.home: live.add(isl.home.bh)
+        for bh in self.bases - live:
+            try:
+                os.remove(os.path.join(self.bases_dir, bh + '.c'))
+            except OSError:
+                pass
+        self.bases &= live
 
     def check_cut(self, toks, tail, whole_raw, cut):
         """The fastest cut form whose FUNC code equals the whole unit's ('prefix': the file up
         to FUNC; 'stub': other bodies as prototypes; or both), else the whole unit."""
         t0 = time.time()
-        permrun.compile_once(self.runner, self.cfg, self.src, self.text, os.path.join(self.work, 'cut'))
+        self.compile(self.text)
         best = ('whole', time.time() - t0)
         print(f'  whole unit: {best[1]:.2f} s per compile')
         for form in ('prefix', 'stub', 'prefix+stub'):
@@ -437,16 +886,10 @@ class Search:
             if m and m[1] < best[1] * 0.92: best = m
         return best[0]
 
-    def cut_of(self, form, toks):
-        if form == 'prefix': return prefix_text(toks, self.tail, self.func)
-        if form == 'stub': return cut_text(toks, self.tail, self.func, self.types)
-        t, tail = permc.tokenize(prefix_text(toks, self.tail, self.func))
-        return cut_text(t, tail, self.func, self.types)
-
     def check_cut1(self, toks, tail, whole_raw, form):
-        text = self.cut_of(form, toks)
+        text = cut_form(form, toks, tail, self.func, self.types)
         t0 = time.time()
-        raw, log = permrun.compile_once(self.runner, self.cfg, self.src, text, os.path.join(self.work, 'cut'))
+        raw, log = self.compile(text)
         dt = time.time() - t0
         if raw is None:
             print(f'  cut {form}: does not compile'); return None
@@ -462,7 +905,7 @@ class Search:
             print(f'  cut {form}: masked (pc-relative displacements differ), {dt:.2f} s per compile'); return ('cut-masked:' + form, dt)
         print(f'  cut {form}: other code for FUNC'); return None
 
-    # ---- variants
+    # ---- jobs
     def eff_weight(self, r):
         """The rule's weight scaled by how often it changes the code at all (a bandit over the
         logged outcomes: a rule whose variants mostly compile to the object already in hand
@@ -471,134 +914,96 @@ class Search:
         changed = (s['compiled'] - s['noop'] + 5) / (s['compiled'] + 10)
         return self.weights[r.id] * (0.15 + 0.85 * changed)
 
-    def pick_rule(self):
-        ws = [self.eff_weight(r) for r in self.rules]
-        x = self.rng.random() * sum(ws)
-        for r, w in zip(self.rules, ws):
-            x -= w
-            if x <= 0: return r
-        return self.rules[-1]
+    def push_weights(self):
+        """The rules' effective weights, into the memory the workers pick rules from."""
+        if self.rules: struct.pack_into(f'<{len(self.rules)}d', self.wmm, 0, *[self.eff_weight(r) for r in self.rules])
 
-    def crossover(self, isl):
-        """isl's text with the moves of another island it lacks replayed on it (those whose
-        context is found), or None."""
+    def cross_moves(self, isl):
+        """(island number, its moves isl lacks, at most 20) for a crossover job, or None."""
         others = [o for o in self.islands if o is not isl and o.moves]
         if not others: return None
         o = self.rng.choice(others)
         have = {move_sig(m) for m in isl.moves}
-        toks, used = isl.toks, []
         theirs = [m for m in o.moves if move_sig(m) not in have][-20:]      # each replay costs a scan
-        for m in theirs:
-            if move_sig(m) in have: continue
-            nt = apply_move(toks, m)
-            if nt is not None: toks = nt; used.append(m)
-        if not used: return None
-        return toks, [('cross', f'{len(used)} moves of island {o.k}', 'same')], used
+        return (o.k, theirs) if theirs else None
 
-    def mutate(self, isl):
-        """(toks, [(rule, desc, meaning)], [move]) or None."""
-        if self.p_cross and self.rng.random() < self.p_cross:
-            m = self.crossover(isl)
-            if m is not None: return m
-        steps = 2 if self.rng.random() < self.p_pair else 1
-        if self.depth and self.rng.random() < 0.6:          # escalated: deeper compound moves
-            steps = self.rng.randint(2, 2 + self.depth)
-        toks, ctx, trail, moves = isl.toks, isl.ctx, [], []
-        for s in range(steps):
-            for attempt in range(12):
-                r = self.pick_rule()
-                every = r.everywhere and self.rng.random() < self.p_every
-                try:
-                    ed = r.fn(ctx, self.rng, everywhere=every)
-                except Exception as e:
-                    self.stats[r.id]['crash'] += 1; ed = None
-                if ed is None:
-                    self.stats[r.id]['nosite'] += 1; continue
-                try:
-                    nt = R.apply(toks, ed.spans)
-                except ValueError:
-                    self.stats[r.id]['badedit'] += 1; continue
-                if self.noop[(r.id, ed.desc)] >= self.tabu_after:      # tabu: a move that already
-                    self.stats[r.id]['tabu'] += 1; continue           # left the code unchanged
-                trail.append((r.id + ('*' if every else ''), ed.desc, ed.meaning))
-                moves.append(make_move(r.id, ed.desc, toks, ed))
-                toks = nt
-                break
-            else:
-                return None
-            if s + 1 < steps:
-                try:
-                    ctx = self.make_ctx(toks)
-                except Exception:
-                    return None
-        return toks, trail, moves
+    def send(self, job, results):
+        nid = job[1]
+        self.pool.pool.apply_async(permrun._worker_gen, (job,), callback=results.put,
+                                   error_callback=lambda e, n=nid: results.put({'id': n, 'err': repr(e)}))
+        self.counts['submitted'] += 1
 
-    def job_text(self, toks):
-        if self.mode.startswith('cut'):
-            return self.cut_of(self.mode.split(':')[1], toks)
-        return permc.render(toks, self.tail)
+    def submit(self, nid, pending, results):
+        """Hand one variant job for the next island to the workers: the base's name, a seed,
+        and what decides whether its text is worth sending back."""
+        isl = self.islands[nid % self.nisl]
+        old, margin, thr = isl.key, None, None
+        if isl.k % 2 == 0:
+            # the island's draw for a variant a little worse is made here, so the worker knows
+            # what the island would keep: accepted when worse by no more than -temp * ln(u)
+            margin = -self.temp * math.log(max(self.rng.random(), 1e-300)) if self.temp > 0 else 0.0
+            thr = (old[0], old[1], old[2] + margin)
+        cross = self.cross_moves(isl) if self.p_cross and self.rng.random() < self.p_cross else None
+        p = {'bh': isl.bh, 'seed': self.rng.getrandbits(48), 'depth': self.depth, 'cross': cross, 'old': old,
+             'thr': thr, 'bkey': self.best.key, 'hot': isl.hot if self.focus else None, 'nm': len(isl.moves),
+             'low': self.low[0]}
+        if self.dead_penalty: p['front'] = {d: v[0] for d, v in self.front.items()}
+        pending[nid] = Pending(isl.k, isl.bh, isl.moves, isl.trail, margin, False, None, None, time.time())
+        self.send(('gen', nid, p), results)
 
     # ---- run
     def run(self):
+        try:
+            return self.run1()
+        finally:
+            self.cleanup()
+
+    def run1(self):
         self.start()
         if self.best.result.exact:
             print('already exact'); return 0
-        pool = permrun.Pool(self.runner, self.target, self.opts, os.path.splitext(os.path.basename(self.src))[0],
-                            self.jobs, os.path.join(self.work, 'pool'))
+        pool = permrun.Pool(self.runner, self.target, self.opts, self.stem, self.jobs, os.path.join(self.work, 'pool'), self.gen)
         results = queue.Queue()
         pending = {}
-        nid = 0
+        nid = nres = 0
         t_start = time.time()
-        gen_time = 0.0
+        cpu0 = time.process_time()
         last_report = t_start
         done_exact = False
         self.pool = pool
         try:
-            nid = self.simplify_islands(pool, results, pending, nid)
+            nid = self.simplify_islands(results, pending, nid)
             while True:
-                elapsed = time.time() - t_start
-                stop = elapsed > self.tlimit or self.counts['submitted'] >= self.iters or done_exact
-                while not stop and len(pending) < 2 * self.jobs:
-                    g0 = time.perf_counter()
-                    isl = self.islands[nid % self.nisl]
-                    m = None
-                    for _ in range(20):
-                        m = self.mutate(isl)
-                        self.counts['generated'] += 1
-                        self.escalate()
-                        if m is None: continue
-                        h = norm_hash(m[0])
-                        if h in self.seen:
-                            self.counts['dup_text'] += 1; m = None; continue
-                        self.seen.add(h)
-                        break
-                    if m is None:
-                        gen_time += time.perf_counter() - g0
-                        nid += 1; continue
-                    toks, trail, moves = m
-                    moves = list(isl.moves) + list(moves)       # the variant's whole move list: the island
-                    text = self.job_text(toks)                  # may move on before the result comes back
-                    gen_time += time.perf_counter() - g0
-                    pending[nid] = (isl.k, toks, trail, moves)
-                    for rid, _, _ in trail: self.stats[rid.rstrip('*')]['tried'] += 1
-                    pool.pool.apply_async(permrun._worker_job, ((nid, text),), callback=results.put,
-                                          error_callback=lambda e, n=nid: results.put((n, None, None, 0, 0, repr(e))))
-                    self.counts['submitted'] += 1
+                c0 = time.perf_counter()
+                while (len(pending) < 2 * self.jobs and not done_exact and time.time() - t_start <= self.tlimit
+                       and self.counts['submitted'] < self.iters):
+                    self.submit(nid, pending, results)
                     nid += 1
+                self.t_submit += time.perf_counter() - c0
                 if not pending: break
                 try:
                     res = results.get(timeout=5)
                 except queue.Empty:
+                    # a job whose worker died never answers: forget it after ten compile time
+                    # limits, so the run goes on (and can end)
+                    lost = [n for n, q in pending.items() if time.time() - q.t > 10 * permrun.TIMEOUT]
+                    for n in lost: del pending[n]
+                    self.counts['lost'] += len(lost)
                     continue
-                key, r, ohash, tc, ts, log = res
-                isl_k, toks, trail, moves = pending.pop(key)
-                self.counts['compile_s'] += tc; self.counts['score_s'] += ts
-                done_exact = self.consider(isl_k, toks, trail, r, ohash, log, moves, key in self.force) or done_exact
+                c0 = time.perf_counter()
+                p = pending.pop(res['id'], None)
+                if p is not None:
+                    done_exact = self.consider(p, res) or done_exact
+                    nres += 1
+                    if nres % 64 == 0: self.push_weights()
+                    if nres % 256 == 0: self.gc_bases(pending)
+                self.t_result += time.perf_counter() - c0
                 if time.time() - last_report > 60:
                     last_report = time.time()
                     self.report_line(time.time() - t_start)
                     self.save_state()
             el = time.time() - t_start
+            self.cpu = time.process_time() - cpu0
             if '--no-reduce' not in self.a and self.best.text != self.text:
                 if self.best.moves and getattr(self.best, 'reduced', False):
                     with open(os.path.join(self.out, 'reduced.c'), 'w', encoding='latin1') as f: f.write(self.best.text)
@@ -609,109 +1014,142 @@ class Search:
             pool.close()
             self.log.close()
         self.save_state()
-        self.final_report(el, gen_time)
+        self.final_report(el)
         return 0 if self.best.result.exact else 1
 
-    def consider(self, isl_k, toks, trail, r, ohash, log, moves=(), force=False):
-        isl = self.islands[isl_k]
+    def cleanup(self):
+        """Stop the parent's own compiler runner (its Wine prefix) and delete the work folder."""
+        import shutil
+        try:
+            self.runner.stop()
+        except Exception:
+            pass
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def consider(self, p, res):
+        """One result from a worker: statistics, then whether the island keeps the variant and
+        whether it is a new best. True when it ends the run (exact, neighbours unchanged)."""
+        c = self.counts
+        isl = self.islands[p.isl]
+        for (rid, name), n in (res.get('st') or {}).items(): self.stats[rid][name] += n
+        c['generated'] += res.get('gen', 0); c['dup_text'] += res.get('dup', 0)
+        c['wgen_s'] += res.get('tg', 0.0); c['compile_s'] += res.get('tc', 0.0); c['score_s'] += res.get('ts', 0.0)
+        if 'th' in res: c['focus_compiles'] += 1; c['focus_s'] += res['th']
+        self.escalate()
+        if 'err' in res:
+            c['errors'] += 1
+            if c['errors'] <= 5: print('  worker error: ' + res['err'] + ('\n' + res['trace'] if res.get('trace') else ''), flush=True)
+            return False
+        if res.get('none'):                            # no rule found a site, or every text was a duplicate
+            c['nogen'] += 1
+            return False
+        trail = res.get('trail') or p.vtrail or []
+        if res.get('h'): self.seen_new.append(res['h'])
+        c['made'] += 1
         rules = '+'.join(t[0] for t in trail)
         desc = ' | '.join(t[1] for t in trail)
+        ids = [t[0].rstrip('*') for t in trail]
+        for rid in ids: self.stats[rid]['tried'] += 1
+        r, log = res.get('r'), res.get('log', '')
         if r is not None and not r.ok:                 # compiled, but FUNC could not be scored
             log, r = 'not scored: ' + r.error, None
         if r is None:
-            self.counts['failed'] += 1
-            for rid, _, _ in trail: self.stats[rid.rstrip('*')]['failed'] += 1
-            self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\tFAILED\t\t\t{desc}\t{log.splitlines()[0] if log else ""}\n')
+            c['failed'] += 1
+            for rid in ids: self.stats[rid]['failed'] += 1
+            self.log.write(f'{time.time():.0f}\t{p.isl}\t{rules}\tFAILED\t\t\t{desc}\t{log.splitlines()[0] if log else ""}\n')
             return False
-        self.counts['compiled'] += 1
-        if ohash in self.obj_seen: self.counts['dup_obj'] += 1
+        c['compiled'] += 1
+        ohash = res['ohash']
+        if ohash in self.obj_seen: c['dup_obj'] += 1
         self.obj_seen.add(ohash)
-        for rid, _, _ in trail: self.stats[rid.rstrip('*')]['compiled'] += 1
-        if ohash == getattr(isl, 'ohash', None):            # the code did not change
-            for rid, desc, _ in trail:
-                self.noop[(rid.rstrip('*'), desc)] += 1; self.stats[rid.rstrip('*')]['noop'] += 1
-        k = r.key()
-        old = getattr(isl, 'key', None) or isl.result.key()
-        bkey = getattr(self.best, 'key', None) or self.best.result.key()
-        d = None
-        cctx = None
-        if self.dead_penalty and k[0] and (k <= old or k <= bkey or force):
-            # prefer natural edits: each dead-code construct added costs this many instructions
-            # (worked out only where it can decide something: the parse costs milliseconds)
-            try:
-                cctx = self.make_ctx(toks)
-            except Exception:
-                cctx = None
-            d = self.dead_of(toks, cctx) - self.dead0
-            k = (k[0], k[1], k[2] + self.dead_penalty * max(0, d))
-        accepted = False
+        for rid in ids: self.stats[rid]['compiled'] += 1
+        if ohash == isl.ohash:                          # the code did not change
+            for rid, (_, dsc, _) in zip(ids, trail):
+                self.noop[(rid, dsc)] += 1; self.stats[rid]['noop'] += 1
+                if self.noop[(rid, dsc)] == self.tabu_after: self.tabu.add((rid, dsc))
+        k, d, text = res['k'], res.get('d'), res.get('text')
+        old, bkey = isl.key, self.best.key
         strict = isl.k % 2 == 1          # odd islands keep only improvements: they stay near
-        if k < old or (k == old and not strict):   # their base, where a one- or two-edit answer is
-            accepted = True                        # found; drifting islands collect neutral edits
-        elif not strict and k[0] == old[0] and k[1] == old[1] and self.temp > 0:
-            accepted = self.rng.random() < math.exp(-(k[2] - old[2]) / self.temp)
+        accepted = k < old               # their base, where a one- or two-edit answer is found;
+        if not accepted and not strict:  # drifting islands collect neutral edits
+            accepted = k == old or (p.margin is not None and k[0] == old[0] and k[1] == old[1] and k[2] - old[2] <= p.margin)
         better = k < old
-        if force: accepted = True
+        if p.force: accepted = True
         if better:
-            for rid, _, _ in trail: self.stats[rid.rstrip('*')]['improved'] += 1
-        self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\t{r.diff}\t{r.size:#x}\t{"acc" if accepted else ""}\t{desc}\t{ohash}\n')
-        if d is not None:
-            d = round(d * 4) / 4
-            f = self.front.get(d)
+            for rid in ids: self.stats[rid]['improved'] += 1
+        self.log.write(f'{time.time():.0f}\t{p.isl}\t{rules}\t{r.diff}\t{r.size:#x}\t{"acc" if accepted else ""}\t{desc}\t{ohash}\n')
+        if d is not None and text is not None:
+            dq = round(d * 4) / 4
+            f = self.front.get(dq)
             if f is None or k < f[0]:                  # screened when reported, not here (clang
-                self.front[d] = (k, toks, r)           # in the parent would starve the workers)
+                self.front[dq] = (k, text, r)          # in the parent would starve the workers)
+        if text is not None and r.key() < self.low[0]:
+            # the lowest count seen whatever it took: kept apart, because with the per-move
+            # penalty the best is the best for its length, not the lowest count
+            self.low = (r.key(), r.text(), len(p.moves) + len(res.get('moves') or p.vmoves or ()))
+            with open(os.path.join(self.out, 'lowest.c'), 'w', encoding='latin1') as f: f.write(text)
+            with open(os.path.join(self.out, 'lowest.txt'), 'w') as f:
+                f.write(f'{self.func}: {self.low[1]} with {self.low[2]} moves (not reduced)\n')
         newbest = k < bkey
+        if (newbest or accepted) and text is None:
+            # the island or the best moved on after the job went out and the worker judged the
+            # text not worth sending: it is not rebuilt
+            c['no_text'] += 1
+            newbest = accepted = False
+        moves = list(p.moves) + list(res.get('moves') or p.vmoves or ())
         if newbest:
-            text = permc.render(toks, self.tail)
+            self.t_mark = time.perf_counter()          # screening and reduction wait for clang and the workers
             ok, why = self.screen.check(text) if self.screen else (True, [])
             if not ok:
-                self.counts['screened_out'] += 1
-                for rid, _, _ in trail: self.stats[rid.rstrip('*')]['screened_out'] += 1
-                self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\tSCREENED\t\t\t{desc}\t{"; ".join(why)[:300]}\n')
+                c['screened_out'] += 1
+                for rid in ids: self.stats[rid]['screened_out'] += 1
+                self.t_best += time.perf_counter() - self.t_mark
+                self.log.write(f'{time.time():.0f}\t{p.isl}\t{rules}\tSCREENED\t\t\t{desc}\t{"; ".join(why)[:300]}\n')
                 return False
             if r.exact and self.mode.startswith('cut'):
-                raw, lg = permrun.compile_once(self.runner, self.cfg, self.src, text, os.path.join(self.work, 'confirm'))
+                raw, lg = self.compile(text)
                 if raw is None or not self.target.score(raw).exact:
-                    self.log.write(f'{time.time():.0f}\t{isl_k}\t{rules}\tCUT-ZERO-NOT-WHOLE\n'); return False
+                    self.log.write(f'{time.time():.0f}\t{p.isl}\t{rules}\tCUT-ZERO-NOT-WHOLE\n'); return False
             accepted = True
-            for rid, _, _ in trail: self.stats[rid.rstrip('*')]['new_best'] += 1
-            ctx = cctx or self.make_ctx(toks)
-            self.best = Island(-1, text, toks, ctx, r, isl.trail + [(rules, desc)])
-            self.best.key, self.best.ohash = k, ohash
-            self.best.moves = list(moves)
+            for rid in ids: self.stats[rid]['new_best'] += 1
+            b = Island(-1, text, r, list(p.trail) + [(rules, desc)], k, ohash)
+            b.moves, b.h, b.hot, b.bh = moves, res.get('h'), res.get('hot'), self.put_base(text)
+            self.best = b
             if '--no-reduce' not in self.a: self.reduce_moves()
             self.write_best()
-            print(f'  new best {r.text()}  [{rules}] {desc[:150]}', flush=True)
+            print(f'  new best {self.best.result.text()}  ({len(self.best.moves)} moves)  [{rules}] {desc[:150]}', flush=True)
+            self.t_best += time.perf_counter() - self.t_mark
         if accepted:
-            for rid, _, _ in trail: self.stats[rid.rstrip('*')]['accepted'] += 1
-            if not newbest:
-                try:
-                    ctx = cctx or self.make_ctx(toks)
-                except Exception:
-                    return False
-            isl.text, isl.toks, isl.ctx, isl.result = None, toks, ctx, r
-            isl.ohash, isl.key = ohash, k
-            isl.trail = isl.trail + [(rules, desc)]
-            isl.moves = list(moves)
-            if force:
-                h = Island(-3, None, toks, ctx, r, list(isl.trail))
-                h.key, h.ohash, h.moves = k, ohash, list(isl.moves)
-                isl.home = h
+            for rid in ids: self.stats[rid]['accepted'] += 1
+            if newbest:
+                isl.take(self.best)                    # as reduced: the shorter list
+                isl.t_gain = time.time()
+            else:
+                isl.text, isl.result, isl.key, isl.ohash = text, r, k, ohash
+                isl.trail = list(p.trail) + [(rules, desc)]
+                isl.moves, isl.h, isl.hot, isl.bh = moves, res.get('h'), res.get('hot'), self.put_base(text)
+            if p.force: isl.home = isl.copy(-3)
         if better or newbest: isl.stale = 0
         else: isl.stale += 1
         if isl.stale > self.restart:
             # back to the best, or every other time to the original source (neutral edits the
             # best carries can block an answer that is one edit from the original)
-            self.counts['restarts'] += 1
-            src = self.best if self.counts['restarts'] % 2 or self.origin is None else (isl.home or self.origin)
-            isl.toks, isl.ctx, isl.result, isl.trail = src.toks, src.ctx, src.result, list(src.trail)
-            isl.key, isl.ohash = getattr(src, 'key', None), getattr(src, 'ohash', None)
-            isl.moves = list(src.moves)
-            isl.stale = 0
+            c['restarts'] += 1
+            isl.take(self.best if c['restarts'] % 2 else (isl.home or self.origin))
+        elif self.rebase_s and time.time() - isl.t_gain > self.rebase_s:
+            # parsimony: an island that has given no new best for --rebase minutes drops its
+            # own drifted text and starts again from the best as reduced
+            c['rebases'] += 1
+            isl.take(self.best)
+            isl.t_gain = time.time()
         return r.exact and not r.neighbours
 
-    obj_seen = set()
-    origin = None
+    def text_job(self, text):
+        """The result of text compiled and scored in a worker (waited for)."""
+        try:
+            return self.pool.pool.apply(permrun._worker_gen, (('text', -1, {'text': text}),))
+        except Exception:
+            return {}
 
     def reduce(self, pool):
         """armreduce.py's reduction of the best source to the line hunks that matter: drop each
@@ -722,11 +1160,7 @@ class Search:
         n = [0]
 
         def ok(lines):
-            text = '\n'.join(lines)
-            if self.mode.startswith('cut'):
-                toks, _ = permc.tokenize(text)
-                text = self.cut_of(self.mode.split(':')[1], toks)
-            _, r, _, _, _, _ = pool.pool.apply(permrun._worker_job, ((-1, text),))
+            r = self.text_job('\n'.join(lines)).get('r')
             n[0] += 1
             return r is not None and r.key() <= limit
         ops, keep = armreduce.reduce(a, b, ok)
@@ -753,18 +1187,15 @@ class Search:
         g = self.counts['generated']
         if g - self.win[0] < 3000: return
         # the share of valid texts already seen (generated also counts moves with no site)
-        sub = self.counts['submitted']
+        made = self.counts['made']
         d_dup = self.counts['dup_text'] - self.win[1]
-        dup = d_dup / max(1, d_dup + sub - (self.win[2] if len(self.win) > 2 else 0))
-        self.win = (g, self.counts['dup_text'], sub)
+        dup = d_dup / max(1, d_dup + made - self.win[2])
+        self.win = (g, self.counts['dup_text'], made)
         if dup > 0.45 and self.depth < 4:
             self.depth += 1
             self.rng = random.Random(self.rng.random())
             self.weights = {k: v * math.exp(self.rng.gauss(0, 0.6)) for k, v in self.base_weights.items()}
-            for isl in self.islands[::2]:
-                src = isl.home or self.origin
-                isl.toks, isl.ctx, isl.result, isl.trail = src.toks, src.ctx, src.result, list(src.trail)
-                isl.key, isl.ohash, isl.moves = getattr(src, 'key', None), src.ohash, list(src.moves)
+            for isl in self.islands[::2]: isl.take(isl.home or self.origin)
             self.counts['escalations'] += 1
             print(f'  escalate: duplicate texts {dup:.0%}, depth {self.depth}, new seed and rule mix', flush=True)
         elif dup > 0.45:
@@ -773,20 +1204,22 @@ class Search:
             print(f'  escalate: duplicate texts {dup:.0%}, depth reset with a new rule mix', flush=True)
         elif dup < 0.25 and self.depth:
             self.depth -= 1
+        self.push_weights()
 
     depth = 0
-    win = (0, 0)
+    win = (0, 0, 0)
+    origin = None
+    cpu = 0.0
 
     def write_best(self):
         os.makedirs(os.path.join(self.out, 'best'), exist_ok=True)
         stamp = time.strftime('%Y%m%d-%H%M%S')
         tag = 'exact' if self.best.result.exact else f'{self.best.result.diff}'
+        notes = self.best_notes()
         with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.c'), 'w', encoding='latin1') as f: f.write(self.best.text)
-        with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.txt'), 'w') as f:
-            f.write(self.best_notes())
+        with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.txt'), 'w') as f: f.write(notes)
         with open(os.path.join(self.out, 'best.c'), 'w', encoding='latin1') as f: f.write(self.best.text)
-        with open(os.path.join(self.out, 'best.txt'), 'w') as f:
-            f.write(self.best_notes())
+        with open(os.path.join(self.out, 'best.txt'), 'w') as f: f.write(notes)
 
     def best_notes(self):
         b = self.best
@@ -795,8 +1228,10 @@ class Search:
         if b.moves:
             out.append('moves (each one needed, after reduction):' if getattr(b, 'reduced', False) else 'moves:')
             out += [f'  {m["rule"]}\t{m["desc"]}' for m in b.moves]
+        if b.hot:
+            out.append('source lines the differing instructions come from: ' + ' '.join(str(x) for x in b.hot))
         try:
-            ctx = b.ctx or self.make_ctx(b.toks)
+            ctx = self.gen.make_ctx(permc.tokenize(b.text)[0])
             kept = [ctx.src(n.start, n.end) for n in R.repeated_stores(ctx) + R.dead_stores(ctx)]
             if kept and getattr(b, 'reduced', False):
                 out.append('redundant or dead stores that survived reduction (candidate real features):')
@@ -807,7 +1242,7 @@ class Search:
         out += [f'  {rules}\t{desc}' for rules, desc in b.trail]
         return '\n'.join(out) + '\n'
 
-    def simplify_islands(self, pool, results, pending, nid):
+    def simplify_islands(self, results, pending, nid):
         """Start a share of the islands from normalised forms of the base (dead constructs
         removed, externs sized, pointers to fields, goto chains to tests, locals inlined,
         else-if flattened): a fitted source hides the plain one. Submitted as forced first jobs
@@ -821,63 +1256,52 @@ class Search:
             for attempt in range(30):
                 rng = random.Random(self.rng.random())
                 try:
-                    ed = R.r_normalise(self.origin.ctx, rng, full=attempt < 15, imode=modes[(q + attempt) % 4])
-                    toks = R.apply(self.origin.toks, ed.spans) if ed else None
+                    ed = R.r_normalise(self.origin_ctx, rng, full=attempt < 15, imode=modes[(q + attempt) % 4])
+                    toks = R.apply(self.origin_toks, ed.spans) if ed else None
                 except Exception:
                     toks = None
                 if toks is None: continue
                 h = norm_hash(toks)
                 if h in seen: continue
-                seen.add(h); self.seen.add(h)
-                text = self.job_text(toks)
-                moves = [make_move('normalise', ed.desc, self.origin.toks, ed)]
-                pending[nid] = (isl.k, toks, [('normalise', ed.desc, 'probe')], moves)
-                self.force.add(nid)
-                pool.pool.apply_async(permrun._worker_job, ((nid, text),), callback=results.put,
-                                      error_callback=lambda e, n=nid: results.put((n, None, None, 0, 0, repr(e))))
-                self.counts['submitted'] += 1
+                seen.add(h)
+                moves = [make_move('normalise', ed.desc, self.origin_toks, ed)]
+                pending[nid] = Pending(isl.k, isl.bh, [], [], None, True, [('normalise', ed.desc, 'probe')], moves, time.time())
+                self.send(('text', nid, {'text': permc.render(toks, self.tail), 'want': True, 'nm': 1}), results)
                 print(f'  simplify-first island {isl.k}: {ed.desc[:160]}', flush=True)
                 nid += 1
                 break
         return nid
 
-    force = set()
+    def score_moves(self, lists, **kw):
+        """[(key or None, result dict)] of move lists replayed on the original, compiled and
+        scored in the workers (all at once, waited for)."""
+        jobs = [self.pool.pool.apply_async(permrun._worker_gen, (('moves', -1, dict(kw, moves=m, dead=True)),)) for m in lists]
+        out = []
+        for j in jobs:
+            try:
+                res = j.get(900)
+            except Exception:
+                res = {}
+            r = res.get('r')
+            out.append((res.get('k') if r is not None and r.ok else None, res))
+        return out
 
     def reduce_moves(self):
         """Reduce the new best over its moves: leave out each move in turn (in parallel), then
-        all that could go together, else one by one; keep a drop when FUNC scores no worse.
+        all that could go together, else one by one; keep a drop when FUNC scores no worse
+        (the per-move penalty makes a shorter list that scores the same better).
         Moves stay whole, so a compound move is never cut into a partial edit."""
         b = self.best
         moves = b.moves
         if len(moves) < 2: return
-        base = self.origin.toks
         limit = b.key
-
-        def build(keep):
-            t = base
-            for m, k in zip(moves, keep):
-                if not k: continue
-                t = apply_move(t, m)
-                if t is None: return None
-            return t
-
-        full = build([True] * len(moves))
-        if full is None or norm_hash(full) != norm_hash(b.toks):        # the list does not replay
+        if self.score_moves([moves], nocompile=True)[0][1].get('h') != b.h:        # the list does not replay
             self.counts['no_replay'] += 1
             if self.counts['no_replay'] <= 3: print('  (the new best\'s moves do not replay from the original: not reduced)', flush=True)
             return
 
-        def score(cands):
-            jobs = [self.pool.pool.apply_async(permrun._worker_job, ((-1, self.job_text(c)),)) if c is not None else None
-                    for c in cands]
-            out = []
-            for j, c in zip(jobs, cands):
-                try:
-                    _, r, _, _, _, _ = j.get(900) if j is not None else (None,) * 6
-                except Exception:
-                    r = None
-                out.append((self.key_of(r, c), r) if r is not None and r.ok else (None, None))
-            return out
+        def lst(keep):
+            return [m for m, k in zip(moves, keep) if k]
 
         keep = [True] * len(moves)
         for _ in range(3):
@@ -885,39 +1309,38 @@ class Search:
             cands = []
             for i in idx:
                 kp = list(keep); kp[i] = False
-                cands.append(build(kp))
-            ks = score(cands)
+                cands.append(lst(kp))
+            ks = self.score_moves(cands)
             good = [i for i, (k, _) in zip(idx, ks) if k is not None and k <= limit]
             if not good: break
             kp = list(keep)
             for i in good: kp[i] = False
-            k = score([build(kp)])[0][0]
+            k = self.score_moves([lst(kp)])[0][0]
             if k is not None and k <= limit:
                 keep = kp
                 continue
             for i in good[:40]:                         # one by one
                 kp = list(keep); kp[i] = False
-                k = score([build(kp)])[0][0]
+                k = self.score_moves([lst(kp)])[0][0]
                 if k is not None and k <= limit: keep = kp
             break
         if all(keep): return
-        toks = build(keep)
-        text = permc.render(toks, self.tail)
+        kept = lst(keep)
+        k, res = self.score_moves([kept], want=True)[0]
+        text = res.get('text')
+        if k is None or k > limit or text is None: return
         if self.screen:
             ok, why = self.screen.check(text)
             if not ok: return
-        kept = [m for m, k in zip(moves, keep) if k]
-        r_key, rr = score([toks])[0]
-        if r_key is None or r_key > limit: return
         print(f'  reduced the new best over its moves: {len(moves)} -> {len(kept)}', flush=True)
-        self.best.reduced_from = len(moves)
-        b.text, b.toks, b.ctx, b.moves, b.reduced = text, toks, self.make_ctx(toks), kept, True
-        b.key, b.result = r_key, rr
+        b.reduced_from, b.reduced = len(moves), True
+        b.text, b.moves, b.key, b.result, b.ohash = text, kept, k, res['r'], res['ohash']
+        b.h, b.hot, b.bh = res.get('h'), res.get('hot'), self.put_base(text)
 
     def report_line(self, el):
         c = self.counts
         print(f'  [{el:6.0f} s] submitted {c["submitted"]} compiled {c["compiled"]} failed {c["failed"]} '
-              f'dup text {c["dup_text"]} dup obj {c["dup_obj"]}  best {self.best.result.text()}  '
+              f'dup text {c["dup_text"]} dup obj {c["dup_obj"]}  best {self.best.result.text()} ({len(self.best.moves)} moves)  '
               f'{c["compiled"] / max(el, 1e-9):.1f}/s  zero-dead best {self.zero_dead()}', flush=True)
 
     def zero_dead(self):
@@ -925,32 +1348,43 @@ class Search:
         z = [v for d, v in self.front.items() if d <= 0]
         return min(z, key=lambda v: v[0])[2].text() if z else '-'
 
-
-    def final_report(self, el, gen_time):
+    def final_report(self, el):
         c = self.counts
-        print(f'\n{self.func}: best {self.best.result.text()} after {el:.0f} s')
+        print(f'\n{self.func}: best {self.best.result.text()} after {el:.0f} s, {len(self.best.moves)} moves')
+        if self.low[0] < self.best.result.key():
+            print(f'  lowest count seen: {self.low[1]} with {self.low[2]} moves (lowest.c; the best is the best for its length)')
         for rules, desc in self.best.trail: print(f'    {rules}: {desc}')
-        print('\nrule              tried  compiled  failed  improved  accepted  new_best  nosite  screened  noop  tabu')
+        print('\nrule              tried  compiled  failed  improved  accepted  new_best  nosite  screened  noop  tabu   hot  cold')
         for r in sorted(self.rules, key=lambda r: -self.stats[r.id]['tried']):
             s = self.stats[r.id]
             print(f'{r.id:16} {s["tried"]:7} {s["compiled"]:9} {s["failed"]:7} {s["improved"]:9} {s["accepted"]:9} '
-                  f'{s["new_best"]:9} {s["nosite"]:7} {s["screened_out"]:9} {s["noop"]:5} {s["tabu"]:5}')
+                  f'{s["new_best"]:9} {s["nosite"]:7} {s["screened_out"]:9} {s["noop"]:5} {s["tabu"]:5} '
+                  f'{s["hot"] + s["exempt"]:5} {s["cold"] + s["cold_kept"]:5}')
         print('\nPareto front (dead-code constructs added against the start, best score with that many):')
         for d in sorted(self.front):
-            k, toks, r = self.front[d]
+            k, text, r = self.front[d]
             if all(self.front[e][0] > k for e in self.front if e < d):
-                text = permc.render(toks, self.tail)
                 ok, why = self.screen.check(text) if self.screen else (True, [])
                 with open(os.path.join(self.out, f'best_dead{d:+g}.c'), 'w', encoding='latin1') as fh: fh.write(text)
                 print(f'  {d:+g}: {r.text()}   (best_dead{d:+g}.c){"" if ok else "  SCREEN: " + "; ".join(why)[:200]}')
         jobs = self.jobs
-        print(f'\nthroughput: generated {c["generated"]} ({c["generated"] / el:.1f}/s), submitted {c["submitted"]}, '
+        print(f'\nthroughput: generated {c["generated"]} ({c["generated"] / el:.1f}/s), jobs {c["submitted"]}, '
               f'compiled {c["compiled"]} ({c["compiled"] / el:.1f}/s, {c["compiled"] / el / jobs:.2f}/s per worker), '
               f'failed {c["failed"]}, duplicate texts {c["dup_text"]}, duplicate objects {c["dup_obj"]}, '
-              f'screened out {c["screened_out"]}, restarts {c["restarts"]}')
+              f'screened out {c["screened_out"]}, restarts {c["restarts"]}, back to the best {c["rebases"]}, '
+              f'jobs with no new text {c["nogen"]}, results whose text was not sent {c["no_text"]}, worker errors {c["errors"]}, jobs lost {c["lost"]}')
         n = max(1, c['compiled'] + c['failed'])
-        print(f'per variant: generate {1000 * gen_time / max(1, c["submitted"]):.2f} ms (parent), compile '
-              f'{1000 * c["compile_s"] / n:.0f} ms, score {1000 * c["score_s"] / max(1, c["compiled"]):.2f} ms (worker); mode {self.mode}')
+        t_res = self.t_result - self.t_best
+        print(f'per variant: parent {1000 * (self.t_submit + t_res) / n:.3f} ms (jobs {1000 * self.t_submit / n:.3f}, '
+              f'results {1000 * t_res / n:.3f}; apart from that {self.t_best:.1f} s in all screening and reducing new bests; '
+              f'the parent process used {1000 * self.cpu / n:.2f} ms of CPU per variant), '
+              f'worker generate {1000 * c["wgen_s"] / n:.1f} ms, compile {1000 * c["compile_s"] / n:.0f} ms, '
+              f'score {1000 * c["score_s"] / max(1, c["compiled"]):.2f} ms; mode {self.mode}')
+        if self.focus:
+            hot = sum(s['hot'] for s in self.stats.values()); ex = sum(s['exempt'] for s in self.stats.values())
+            cold = sum(s['cold'] for s in self.stats.values()); ck = sum(s['cold_kept'] for s in self.stats.values())
+            print(f'focus: edits at hot lines {hot}, exempt (global) {ex}, elsewhere kept {ck} and dropped {cold}; '
+                  f'{c["focus_compiles"]} -g compiles for line rows ({c["focus_s"]:.1f} s of worker time)')
         with open(os.path.join(self.out, 'rules.json'), 'w') as f:
             json.dump({k: dict(v) for k, v in self.stats.items()}, f, indent=1)
 
@@ -960,50 +1394,57 @@ class Search:
               'stats': {k: dict(v) for k, v in self.stats.items()}, 'best_trail': self.best.trail,
               'islands': []}
         for isl in self.islands:
-            p = os.path.join(self.out, f'island{isl.k}.c')
-            with open(p, 'w', encoding='latin1') as f: f.write(permc.render(isl.toks, self.tail))
+            with open(os.path.join(self.out, f'island{isl.k}.c'), 'w', encoding='latin1') as f: f.write(isl.text)
             st['islands'].append({'k': isl.k, 'trail': isl.trail, 'moves': [{k: v for k, v in m.items() if k != 'sig'} for m in isl.moves],
-                                  'home': permc.render(isl.home.toks, self.tail) if isl.home else None})
+                                  'home': isl.home.text if isl.home else None})
         st['best_moves'] = [{k: v for k, v in m.items() if k != 'sig'} for m in self.best.moves]
-        with open(os.path.join(self.out, 'seen.txt'), 'w') as f: f.write('\n'.join(sorted(self.seen)))
+        if self.seen_new:
+            with open(os.path.join(self.out, 'seen.txt'), 'a') as f: f.write('\n'.join(self.seen_new) + '\n')
+            self.seen_new = []
         with open(os.path.join(self.out, 'state.json'), 'w') as f: json.dump(st, f)
+
+    def load_island(self, k, text, trail, mv):
+        """An island from a saved text (compiled and scored here), or None."""
+        raw, log = self.compile(text)
+        if raw is None: return None
+        r = self.target.score(raw)
+        toks, _ = permc.tokenize(text)
+        h = norm_hash(toks)
+        if mv is not None:
+            t = apply_all(self.origin_toks, mv)
+            if t is None or norm_hash(t) != h: mv = None
+        if mv is None: mv = legacy_moves(self.origin_toks, toks)       # an older state, or moves that no longer replay
+        isl = Island(k, text, r, trail, self.key_of(r, self.dead_delta(toks), len(mv)),
+                     hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest())
+        isl.moves, isl.h, isl.bh = mv, h, self.put_base(text)
+        if self.focus and r.ok and not r.exact: isl.hot = self.hot_parent(text, raw) or None
+        return isl
 
     def load_state(self):
         p = os.path.join(self.out, 'state.json')
         if not os.path.exists(p): return
         with open(p) as f: st = json.load(f)
         if os.path.exists(os.path.join(self.out, 'seen.txt')):
-            with open(os.path.join(self.out, 'seen.txt')) as f: self.seen |= set(f.read().split())
+            with open(os.path.join(self.out, 'seen.txt')) as f:
+                for h in f.read().split(): self.seen.add(h)
         bp = os.path.join(self.out, 'best.c')
         cands = [bp] + [os.path.join(self.out, f'island{i["k"]}.c') for i in st['islands']]
         for k, path in enumerate(cands):
             if not os.path.exists(path): continue
             with open(path, encoding='latin1') as f: text = f.read()
-            raw, log = permrun.compile_once(self.runner, self.cfg, self.src, text, os.path.join(self.work, 'resume'))
-            if raw is None: continue
-            r = self.target.score(raw)
-            toks, _ = permc.tokenize(text)
-            isl = Island(k - 1, text, toks, self.make_ctx(toks), r, st['best_trail'] if k == 0 else st['islands'][k - 1]['trail'])
-            mv = st.get('best_moves') if k == 0 else st['islands'][k - 1].get('moves')
-            if mv is None or apply_all(self.origin.toks, mv) is None or norm_hash(apply_all(self.origin.toks, mv)) != norm_hash(toks):
-                mv = legacy_moves(self.origin.toks, toks)          # an older state, or moves that no longer replay
-            isl.moves = mv
-            isl.key = self.key_of(r, toks)
+            saved = None if k == 0 else st['islands'][k - 1]
+            isl = self.load_island(k - 1, text, st['best_trail'] if k == 0 else saved['trail'],
+                                   st.get('best_moves') if k == 0 else saved.get('moves'))
+            if isl is None: continue
             if k == 0:
                 self.best = isl
             elif k - 1 < len(self.islands):
                 self.islands[k - 1] = isl
-                home = st['islands'][k - 1].get('home')
-                if home:
-                    ht, _ = permc.tokenize(home)
-                    raw2, _ = permrun.compile_once(self.runner, self.cfg, self.src, home, os.path.join(self.work, 'resume'))
-                    if raw2 is not None:
-                        r2 = self.target.score(raw2)
-                        h = Island(-3, None, ht, self.make_ctx(ht), r2, [])
-                        h.key, h.ohash, h.moves = self.key_of(r2, ht), hashlib.blake2b(raw2[0x34:], digest_size=12).hexdigest(), legacy_moves(self.origin.toks, ht)
-                        isl.home = h
+                if saved.get('home'): isl.home = self.load_island(-3, saved['home'], [], None)
         for k, v in st.get('stats', {}).items(): self.stats[k].update(v)
-        print(f'  resumed: best {self.best.result.text()}', flush=True)
+        if self.best.result.key() < self.low[0]: self.low = (self.best.result.key(), self.best.result.text(), len(self.best.moves))
+        self.push_weights()
+        print(f'  resumed: best {self.best.result.text()} ({len(self.best.moves)} moves)', flush=True)
 
 
 def main(argv):
@@ -1012,7 +1453,7 @@ def main(argv):
     args = [x for x in a if not x.startswith('--')]
     # values of --options are not positional
     vals = {a[i + 1] for i, x in enumerate(a) if x.startswith('--') and i + 1 < len(a) and not a[i + 1].startswith('--')
-            and x not in ('--resume', '--no-screen')}
+            and x not in FLAGS}
     args = [x for x in args if x not in vals]
     if len(args) < 2: sys.exit(__doc__)
     cfg = config.load(path)
