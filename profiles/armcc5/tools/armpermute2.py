@@ -1413,7 +1413,7 @@ class Search:
         nb = len(self.debt) if T == float('inf') else min(len(self.debt), max(1, int(self.debt_share * T // 45)))
         if nb < len(self.debt): print(f'  bases without dead code: time for {nb} of {len(self.debt)} (45 s each at least; --debt-share, --time)', flush=True)
         for root in self.debt[:nb]:
-            if self.done(): break
+            if self.done() or time.time() >= self.t_run + self.tlimit: break
             sl = self.debt_share * T / nb
             self.sweep_root(root, time.time(), (0.7 * sl, 0.15 * sl, 0.15 * sl))
         self.t_best_sweep = self.t_best
@@ -1513,9 +1513,10 @@ class Search:
               f'({sum(1 for x in recs if x["tier"] == 0)} in the first pass; by tier: '
               + ', '.join(f'{t:g}: {n}' for t, n in sorted(collections.Counter(x["tier"] for x in recs).items())) + ')', flush=True)
 
-        d_single = time.time() + spans[0]       # the singles' time starts when the list is in hand
-        d_pair = d_single + spans[1]
-        d_third = d_pair + spans[2]
+        end = self.t_run + self.tlimit          # no stage runs past --time
+        d_single = min(end, time.time() + spans[0])       # the singles' time starts when the list is in hand
+        d_pair = min(end, d_single + spans[1])
+        d_third = min(end, d_pair + spans[2])
 
         class Lazy(list):                      # the move lists of a selection of the singles
             def __getitem__(me, n):
@@ -1701,7 +1702,7 @@ class Search:
               + (bs['r'].text() if bs else '-') + '; best after pairs and beam ' + (allr[0]['r'].text() if allr else '-')
               + (f'  [{allr[0]["rule"]}] {allr[0]["desc"][:100]}' if allr else ''), flush=True)
         # again from the best, when it is a different place: half the start's count or less
-        if (depth < self.resweep and got and not self.done() and got[0].result.ok and root.result.ok
+        if (depth < self.resweep and got and not self.done() and time.time() < end and got[0].result.ok and root.result.ok
                 and got[0].key < k0 and got[0].result.diff * 2 <= root.result.diff):
             child = got[0]
             self.nchild += 1

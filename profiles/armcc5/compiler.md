@@ -1566,5 +1566,66 @@ The responder is the one case where the two keys choose differently: of the star
 structural differences the old key's 46 keeps six, the new key's 51 or 52 one, at a cost of ten
 or eleven register ties.
 
+Sixth round: the way out of a probe-matched source. A function whose committed source scored 2
+with a comma probe was three steps from exact: the probe removed (2 to 88), three stores through
+a `set(i, v)` helper (88 to 4), one clear before a set (4 to 0). From the committed source the
+sweep found nothing in 9,533 singles and 2,421 pairs: the first step makes everything worse, the
+second is a helper at some of its sites only, and the third pays only after both.
+
+- Bases without dead code. Each dead construct of the given source is removed (each probe, the
+  comma probe of a condition, each dead or repeated store, alone; each kind together; all
+  together), and every removal that compiles and changes the function's code is a start with
+  its own sweep of singles, pairs and beam, whatever it scores (`--debt-bases`, 16; together
+  they get `--debt-share` of `--time`, 0.3). Such a sweep is not there to put probes back: its
+  first stage is the first pass of every rule, then the site subsets, and the probe tiers last.
+- Site subsets. A rule that sends several sites through one helper or local (index_helper,
+  setter, getter, addr_helper, expr_helper, local_cache, cache_group, arg_local, uniform) was
+  tried at one site or at all. The sweep now lists each such edit at every subset of its sites
+  too (all subsets up to 8 sites; of more, every run of neighbouring sites and a fixed sample of
+  120), found from the edit itself: its spans that replace code in the function's body are the
+  sites, what it inserts and what it writes outside the body stays. The subsets of the edits
+  whose whole form scored best go first.
+- Again from the best. When a sweep's best has half its start's count or less, the sweep is
+  made again from that best (`--resweep`, one level, half the time).
+- In the structural count an instruction that is only displaced (two neighbours in the other
+  order, or one moved up to 16 places with the rest in order) is one difference, not a missing
+  one and an extra one: the flat count had made the better source of that function (two
+  transpositions, 4) look worse than the probe-matched one (2).
+- A folder of starts: `--seed-dir DIR`, by default `<tree>/variants/FUNC`, each `*.c` in it a
+  seed source; and every run leaves OUT/variants/, the best text of each distinct residue (set
+  of structural differences left), as candidates for that folder.
+
+Regression with these defaults (the same 15 cases and conditions as the fifth round's; the rule
+set had meanwhile grown from 84 to 131 rules, and with the site subsets a function lists 17,000
+to 18,000 single edits where it listed 9,000 to 10,000). No exact case is lost; the times are a
+few seconds longer:
+
+| case | start (structure + registers) | result | fifth round |
+|---|---|---|---|
+| CAN receiver | 20 (0 + 20) | exact, 7-8 s | exact, 4-5 s |
+| CAN receiver 2 | 8 (1 + 7) | 1 (1 + 0) | 1 (1 + 0) |
+| charge limit | 11 (0 + 11) | exact, 7-8 s | exact, 7 s |
+| update check (size +6) | 36 (18 + 18) | exact, 83-84 s | exact, 78 s |
+| current measurement | 7 (0 + 7) | exact, 42-43 s | exact, 37-38 s |
+| discharge limit (size +2) | 21 (9 + 12) | exact, 49 s | exact, 42-43 s |
+| byte receivers A and B | 8 (0 + 8) | exact, 6 s | exact, 5-6 s |
+| summary update | 4 (2 + 2) | exact, 6 s | exact, 6 s |
+| holding registers | 2 (1 + 1) | exact, 9-11 s | exact, 9 s |
+| register write | 2 (2 + 0) | 1 (1 + 0) | 1 (1 + 0) |
+| Modbus task (size -4) | 3 (2 + 1) | exact, 4 s | exact, 3 s |
+| CAN sender | 2 (1 + 1) | exact, 7 s | exact, 7 s |
+| protocol task | 29 (26 + 3) | exact, 102 s | exact, 100 s |
+| 5.6 KB responder | 60 (7 + 53) | 52 on each seed (structure 1), 3 moves | 52, 51, 51 (structure 1) |
+
+(Some starts read differently from the fifth round's because a displaced instruction now counts
+once.) And the function this round was built for, from its committed probe source with the
+compiler of its own tree, 6 workers, `--time 2400`: exact after 676 seconds, three moves. The original's sweep found nothing (18,297 singles in
+458 s, 2,428 pairs in 60 s, none better than the start). The first base, the comma probe
+removed (start 88 = 30 + 58 at the wrong size), found in 108 s of singles a `set` helper for the
+buffer at 11 of its 28 stores: 4 = 2 + 2, its site subsets tried first because the whole helper
+had improved the base. The sweep made again from that 4 found a clear before a set, a single
+edit, after 26 s: exact. (Another exact source than the one found by hand, which has the
+helper at three stores and the clear at another byte; several exist.)
+
 Not done: a check of each new best against a second build of the same function where one
 exists.
