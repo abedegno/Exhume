@@ -251,11 +251,14 @@ def line_rows(o, raw):
 
 
 class Result:
-    __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code')
+    __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code', 'chash')
 
     def __init__(self, ok=False, exact=False, diff=None, size=None, want_size=None, neighbours=(), error='', code=b''):
         self.ok, self.exact, self.diff, self.size, self.want_size = ok, exact, diff, size, want_size
         self.neighbours, self.error, self.code = neighbours, error, code
+        # what the result hangs on: FUNC's placed bytes and the neighbours that changed (the object's
+        # own bytes hold the path it was compiled at, so they differ from one work folder to the next)
+        self.chash = hashlib.blake2b(code + repr(neighbours).encode(), digest_size=12).hexdigest() if ok else ''
 
     @property
     def size_ok(self):

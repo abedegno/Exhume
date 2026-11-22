@@ -174,15 +174,17 @@ def worker_compile(text, extra=()):
 
 
 def worker_score(text):
-    """(object bytes, Result or None, object hash, seconds compile, seconds score, log) of text
-    compiled and scored in this worker."""
+    """(object bytes, Result or None, code hash, seconds compile, seconds score, log) of text
+    compiled and scored in this worker. The hash is of the function's placed bytes and the
+    changed neighbours (Result.chash), the same in every worker for the same code."""
     raw, log, tc = worker_compile(text)
     if raw is None:
         return None, None, None, tc, 0.0, log[-1500:]
     t1 = time.perf_counter()
     r = _W['target'].score(raw)
     r.code = b''
-    return raw, r, hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest(), tc, time.perf_counter() - t1, ''
+    r.chash        # (set before the code is dropped)
+    return raw, r, r.chash or hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest(), tc, time.perf_counter() - t1, ''
 
 
 def _worker_job(job):
