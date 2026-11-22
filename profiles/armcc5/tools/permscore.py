@@ -30,6 +30,20 @@ and whose code (raw bytes and relocations) differs in the variant is placed at i
 address and compared with the image; one that no longer matches is reported, so a declaration
 edit that breaks a neighbour is seen.
 
+Two counts (the trust key): the plain count above can fall while the code gets further from the
+image, because one wrong instruction (an `sxtb` a retyped temporary adds) can shift a dozen
+register ties elsewhere into place. So score also counts the structural difference: the same
+aligned diff over instructions with their registers masked (mnemonic without its width and
+without the flag suffix a narrow encoding forces, operand kinds, immediates, memory offsets,
+shifts, literal values, call targets, branch structure; b and b.w, and a conditional branch of
+either width, are one kind; sp and pc stay themselves; a plain register-to-register mov is left
+out, being a tie the allocator did not make). Result.key orders by the structural count first,
+then by the rest of the plain count (the register level): an instruction the image does not
+have, lacks or has in another place cannot be paid for with register ties. Result.flat (the
+permuter's --flat-score) gives the old single count. Literal pools and pc-relative displacements
+are in neither count (data is skipped, branch targets are instruction indexes), so a pool or a
+branch that moved only because the size changed upstream does not count as structure.
+
 Source lines of the differing instructions (hot_lines, for the permuter's focused site choice):
 MDK-Lite's armcc refuses -S, --asm and --interleave ("not available with your license"), so the
 lines come from a second compile of the same text with -g: the object's .debug_line programs are
@@ -112,6 +126,94 @@ def rows_of(buf, at, data, word, fn_mask=False):
             out.append((a, (hw, h2), None))
         off += 4
     return out
+
+
+_CS = None
+_STOK = {}
+_ALU = ('add', 'sub', 'and', 'orr', 'eor', 'bic', 'lsl', 'lsr', 'asr', 'ror', 'adc', 'sbc', 'mul', 'rsb', 'orn')
+_FLAG = {m + 's': m for m in _ALU + ('mov', 'mvn', 'neg')}
+
+
+def _stok(tok):
+    """The structural token of a plain instruction (its halfwords): mnemonic and operand
+    shape with the registers masked; None for a register-to-register mov. Without capstone,
+    or for halfwords it does not decode, the halfwords themselves."""
+    global _CS
+    s = _STOK.get(tok, 0)
+    if s != 0: return s
+    if _CS is None:
+        try:
+            import capstone
+            _CS = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
+            _CS.detail = True
+        except Exception:
+            _CS = False
+    s = tok
+    if _CS:
+        from capstone import arm
+        insn = next(_CS.disasm(b''.join(struct.pack('<H', h) for h in tok), 0), None)
+        if insn is not None:
+            mn = insn.mnemonic
+            if mn.endswith('.w'): mn = mn[:-2]
+            mn = _FLAG.get(mn, mn)
+            if mn.startswith('it') and not insn.operands:
+                s = tok                            # an IT instruction has no register: itself
+            elif mn in ('push', 'pop', 'ldm', 'stm', 'ldmdb', 'stmdb'):
+                s = (mn,)                          # which registers are saved is the allocator's doing
+            else:
+                ops = []
+                for op in insn.operands:
+                    if op.type == arm.ARM_OP_REG:
+                        k = 'S' if op.reg == arm.ARM_REG_SP else 'P' if op.reg == arm.ARM_REG_PC else 'r'
+                        ops.append((k, op.shift.type, op.shift.value) if op.shift.type else k)
+                    elif op.type == arm.ARM_OP_IMM:
+                        ops.append(('i', op.imm))
+                    elif op.type == arm.ARM_OP_MEM:
+                        b = 'S' if op.mem.base == arm.ARM_REG_SP else 'P' if op.mem.base == arm.ARM_REG_PC else 'r'
+                        ops.append(('m', b, bool(op.mem.index), op.mem.disp, op.shift.type, op.shift.value))
+                    else:
+                        ops.append(('?', op.type))
+                if mn == 'mov' and ops == ['r', 'r']: s = None
+                else:
+                    if mn in _ALU and len(ops) == 2: ops.insert(0, ops[0] if not isinstance(ops[0], tuple) else 'r')   # `adds r0, #1` is `add r0, r0, #1`
+                    s = (mn,) + tuple(ops)
+    _STOK[tok] = s
+    return s
+
+
+def struct_rows(rows):
+    """rows_of's rows as structural rows [(address, structural token, branch target)]: registers
+    masked, branch widths made one kind, register-to-register movs left out."""
+    out = []
+    for a, t, tgt in rows:
+        h = t[0]
+        if isinstance(h, int):
+            s = _stok(t)
+            if s is None: continue
+        elif h in ('bc', 'bcw'): s = ('bc', t[1])
+        elif h in ('b', 'bw'): s = ('b',)
+        elif h == 'cb': s = ('cb', (t[1] >> 11) & 1)
+        elif h in ('ldr', 'ldrw'): s = ('ldr=', t[2])
+        elif h in ('adr', 'adrw'): s = ('adr',)
+        elif h in ('tbb', 'tbh'): s = ('tb',)
+        elif h == 'table': s = ('table',)
+        else: s = t
+        out.append((a, s, tgt))
+    return out
+
+
+def normalise_struct(rows):
+    """As normalise, for structural rows: a branch target becomes the index of the first row at
+    or after it (the row it names may be a mov that was left out)."""
+    import bisect
+    addrs = [r[0] for r in rows]
+    masked, labels = [], []
+    for a, t, tgt in rows:
+        if tgt is None or not addrs or not addrs[0] <= tgt <= addrs[-1]:
+            masked.append(t if tgt is None else t + (tgt,)); labels.append(None)
+        else:
+            masked.append(t); labels.append(bisect.bisect_left(addrs, tgt))
+    return masked, labels
 
 
 def normalise(rows, mask_ext=False):
@@ -251,11 +353,13 @@ def line_rows(o, raw):
 
 
 class Result:
-    __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code', 'chash')
+    __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code', 'chash', 'struct')
+    flat = False                 # True: the old single count (no structural level in the key)
 
-    def __init__(self, ok=False, exact=False, diff=None, size=None, want_size=None, neighbours=(), error='', code=b''):
+    def __init__(self, ok=False, exact=False, diff=None, size=None, want_size=None, neighbours=(), error='', code=b'', struct=None):
         self.ok, self.exact, self.diff, self.size, self.want_size = ok, exact, diff, size, want_size
         self.neighbours, self.error, self.code = neighbours, error, code
+        self.struct = diff if struct is None else min(struct, diff)      # the structural part of diff
         # what the result hangs on: FUNC's placed bytes and the neighbours that changed (the object's
         # own bytes hold the path it was compiled at, so they differ from one work folder to the next)
         self.chash = hashlib.blake2b(code + repr(neighbours).encode(), digest_size=12).hexdigest() if ok else ''
@@ -265,14 +369,16 @@ class Result:
         return self.size == self.want_size
 
     def key(self):
-        """Sort key: exact first, then right size, then differing instructions."""
-        if not self.ok: return (3, 0, 10 ** 9)
-        if self.exact and not self.neighbours: return (0, 0, 0)
-        return (1 if self.size_ok and not self.neighbours else 2, abs(self.size - self.want_size), self.diff)
+        """Sort key: exact first, then right size, then the structural difference, then the
+        rest of the differing instructions (the register level). With flat the count is one."""
+        if not self.ok: return (3, 0, 0, 10 ** 9)
+        if self.exact and not self.neighbours: return (0, 0, 0, 0)
+        st = 0 if Result.flat else self.struct
+        return (1 if self.size_ok and not self.neighbours else 2, abs(self.size - self.want_size), st, self.diff - st)
 
     def text(self):
         if not self.ok: return 'FAILED ' + self.error
-        s = 'EXACT' if self.exact else f'{self.diff}'
+        s = 'EXACT' if self.exact else f'{self.diff}' if Result.flat else f'{self.diff} (structure {self.struct}, registers {self.diff - self.struct})'
         if not self.size_ok: s += f' size {self.size:#x}/{self.want_size:#x}'
         if self.neighbours: s += ' neighbours changed: ' + ','.join(self.neighbours)
         return s
@@ -297,7 +403,10 @@ class Target:
         lo = min([r.addr for r in unit] + [row.addr]); hi = max([r.addr + r.size for r in unit] + [row.addr + row.size])
         self.idata = {a for a in fnscore.image_data(img, lo, hi) if row.addr <= a < row.addr + row.size}
         word = lambda a: struct.unpack('<I', img.bytes(a, 4))[0] if row.addr <= a < row.addr + row.size else None
-        self.exp = normalise(rows_of(self.want, row.addr, self.idata, word, fn_mask), fn_mask)
+        rows = rows_of(self.want, row.addr, self.idata, word, fn_mask)
+        self.exp = normalise(rows, fn_mask)
+        self.exp_srows = struct_rows(rows)
+        self.exp_s = normalise_struct(self.exp_srows)
         # placement of the other sections, from the base object
         o, info = orcobj.read(raw=base_raw)
         extra = armmap.annotations(src_text)
@@ -461,15 +570,17 @@ class Target:
             def word(a):
                 k = a - at
                 return struct.unpack_from('<I', code, k)[0] if 0 <= k <= len(code) - 4 else None
-            got = normalise(rows_of(code, at, data, word, self.fn_mask), self.fn_mask)
+            rows = rows_of(code, at, data, word, self.fn_mask)
+            got = normalise(rows, self.fn_mask)
             n, _ = diff_count(self.exp, got)
+            st = 0 if Result.flat else diff_count(self.exp_s, normalise_struct(struct_rows(rows)))[0]
             if n == 0:
                 # the same instructions, yet other bytes: a pc-relative displacement, an adr
                 # offset or data no load names (a string). Count the differing halfwords so
                 # that only equal bytes score 0.
                 n = max(1, sum(1 for k in range(0, min(len(code), len(self.want)) - 1, 2)
                                if code[k:k + 2] != self.want[k:k + 2]))
-            r = Result(True, False, n, len(code), self.want_size, neigh, code=code)
+            r = Result(True, False, n, len(code), self.want_size, neigh, code=code, struct=st)
         if len(self.cache) > 20000: self.cache.clear()
         self.cache[h] = r
         return r
@@ -522,6 +633,31 @@ class Target:
             _, line, name = rows[k]
             if src_name is None or os.path.basename(name.replace('\\', '/')) == src_name: lines.add(line)
         return sorted(lines)
+
+    def struct_diff(self, raw, limit=30):
+        """The structural differences as lines (`-` what the image has, `+` what the object has,
+        registers masked), at most limit of them: the instructions that are wrong, missing or in
+        another place, whatever the register ties."""
+        try:
+            o = self._read(raw)
+            code, data, at = self.place_function(o)
+
+            def word(a):
+                k = a - at
+                return struct.unpack_from('<I', code, k)[0] if 0 <= k <= len(code) - 4 else None
+            gs = struct_rows(rows_of(code, at, data, word, self.fn_mask))
+            n, ops = diff_count(self.exp_s, normalise_struct(gs))
+        except Exception:
+            return []
+
+        def show(t):
+            return ' '.join(x if isinstance(x, str) else hex(x) if isinstance(x, int) else '(' + ' '.join(str(y) for y in x) + ')' for x in t)
+        out = []
+        for _, i1, i2, j1, j2 in ops:
+            out += [f'- {self.exp_srows[i][0]:08X} {show(self.exp_srows[i][1])}' for i in range(i1, i2)]
+            out += [f'+ {gs[j][0]:08X} {show(gs[j][1])}' for j in range(j1, j2)]
+            if len(out) >= limit: break
+        return out[:limit]
 
     def listing_diff(self, raw):
         """Human-readable differing tokens (for --diff)."""
