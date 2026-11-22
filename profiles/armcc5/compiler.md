@@ -1194,8 +1194,9 @@ folder), one 12 KB source unit:
   the same name; the link prefers the pin, and so must a scorer. Cost: 0.5 ms when the bytes are
   equal, 1-13 ms otherwise (2,800 instructions), results cached by object hash.
 - Mutation is a tokenizer, a statement tree and a small expression parser (`permc.py`), no C
-  parser library: 0.1-0.5 ms per rule, 4-5 ms per variant in the parent including the second
-  parse of a two-edit move, the rendering and the duplicate check.
+  parser library: 0.1-0.5 ms per rule, 4-5 ms per variant including the second parse of a
+  two-edit move, the rendering and the duplicate check (in the parent at first; in the workers
+  since the third round, below).
 - Throughput: 60 variants a second with 16 workers on the 12 KB unit (3.7 per worker), 130 a
   second on a smaller unit. Between a third and a half of the compiled variants give an object
   already seen: most single edits do not change the code.
@@ -1338,6 +1339,59 @@ compound moves, and the rule set is a fifth larger, so such combinations are rar
 same name (every probe declares its own `z`) must not be taken for one local, and a variant's
 move list must be the one it was generated from, not its island's current one.
 
-Not done: generating variants in the workers (the parent is the limit above about 60 variants a
-second with the compound moves); a check of each new best against a second build of the same
-function where one exists.
+Third round: generation in the workers, focused site choice, parsimony. A 9-hour run of
+655,000 variants on a 5.6 KB function ran at 21 variants a second on 13 workers that could have
+compiled 50 (the one parent made every variant, 21 ms each), and its best needed 111 moves after
+reduction: drift, not structure. The one real fix found since, by hand, was a small local
+difference in the instruction diff (two statements moved into a `for` header).
+
+- The parent no longer parses or edits anything in the loop. A job is the name of a base text
+  (the parent writes each island base once to a folder in the RAM directory, named by its hash),
+  a seed, the island's key and what the island would still accept. The worker parses a base once
+  (kept by hash), applies the rules under the seed, compiles, scores, and sends back the score,
+  size, trail and the text's hash; the text and its moves come back only when the island, the
+  best or the Pareto front may keep it. The set of texts already made is a table of 64-bit
+  hashes in shared memory (made before the pool forks), so a worker drops a duplicate before it
+  compiles it; the tabu moves and the rules' bandit weights are shared the same way. Reduction
+  over moves sends move lists, not texts. Measured on one Mac under Wine with 4 workers, same
+  function, same options (compile 0.76-0.80 s there, so the workers were the limit both times):
+  the parent's main thread went from 5.9 ms to 0.11 ms per variant and the parent process's CPU
+  from 6.9 ms to 0.4-0.5 ms per variant; throughput 4.1-4.6 a second before, 4.5-4.6 after;
+  generation now costs 5-7 ms per variant of worker time, beside the compile. The parent's limit is now
+  some thousands of variants a second, so the worker count sets the rate.
+- Wine: the compiler's messages go to a file. With a pipe, a background process of the prefix
+  (services.exe) could inherit it and hold it open after armcc ended, and the first compile then
+  waited for the 120-second limit. The parent's own compiles share one prefix, stopped at the end.
+- Focus. MDK-Lite's armcc refuses `-S`, `--asm` and `--interleave` ("Option not available with
+  your license"), so the source lines come from debug information instead: the same text
+  compiled once more with `-g`, and the `.debug_line` programs read in-process
+  (`permscore.line_rows`). Checked on a real 64 KB unit: the code section and its relocations
+  are byte for byte the same with `-g` as without, and the line of every one of 4,281 listing
+  rows agrees with `fromelf --text -c --interleave=line_numbers` on the same object (fromelf is
+  not run by the tool). The tool checks again at each use: the lines are taken only when the
+  function places to the same bytes from the `-g` object. Each differing instruction of the
+  variant's function (for an instruction the image has and the variant lacks, its neighbours)
+  gives a hot line. This is done for the start, and in the worker for each variant that improves
+  its island or the best (about one compile in a hundred); a neutral variant an island keeps
+  inherits the base's hot lines, carried to their new numbers by a line diff. An edit with a
+  span within `--focus-near` lines (3) of a hot line is always kept; any other is kept with
+  probability `--focus-cold` (0.25). Exempt: compound moves, edits with no span in the
+  function's body (externs, helper definitions) and edits that only change locals' declarations
+  (type, order, split); a span that lies wholly in declarations is not judged, so inlining a
+  local is judged by its uses. `--no-focus` turns it off. On the function above (score 52, 14
+  hot lines of 374) a quarter of the edits the rules proposed were at hot lines, 7% exempt and
+  two thirds elsewhere, of which a quarter were kept.
+- Parsimony. Each move in a variant's list costs `--move-penalty` (0.15) differing instructions
+  in the acceptance key, as the dead-code penalty does per construct: of two sources with the
+  same code the shorter list wins, a neutral edit is no longer equal to its base (a strict island
+  refuses it; a drifting island takes it only by its temperature), and reduction drops every
+  move that does not pay for itself. An island that has given no new best for `--rebase` minutes
+  (10) starts again from the best as reduced. Because the best is now the best for its length,
+  the lowest count seen whatever its length is kept apart (`lowest.c`).
+- Regression after this round, on the Mac (4 workers, Wine): the redundant-store case
+  (start 3, wrong size) exact after 60 variants in 27 seconds, reduced to the one recorded
+  edit.
+
+Not done: a check of each new best against a second build of the same function where one
+exists; measuring the third round on the 32-core host (the figures above are one Mac under Wine,
+where the compile is three times slower than natively).
