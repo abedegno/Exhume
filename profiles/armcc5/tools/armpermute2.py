@@ -1462,7 +1462,7 @@ class Search:
             out.append(isl)
         if out:
             print(f'  bases without dead code: {len(out)} (each swept as a start, whatever it scores):', flush=True)
-            for x in out: print(f'    {x.result.text():>28}  {x.trail[0][1][:130]}', flush=True)
+            for x in out: print(f'    {x.trail[0][1][:110]}: start {x.result.text()[:90]}', flush=True)
         return out
 
     def sweep_root(self, root, t_start, spans, depth=0):
