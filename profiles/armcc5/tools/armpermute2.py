@@ -104,6 +104,9 @@ for p in (HERE, os.path.join(EXHUME, 'tools')):
 import permc, permrules as R, permrun, permscore, permscreen, orcobj        # noqa: E402
 
 
+SAME_ONLY = False        # --same-only: no edit that may change what the program does (meaning 'type')
+
+
 def arg(a, name, default=None, conv=str):
     if name in a:
         i = a.index(name)
@@ -520,6 +523,7 @@ def list_singles(ctx, r, sweep_max, weight):
             ed = r.fn(ctx, random.Random(f'{r.id}:{seed}'), everywhere=every)
         except Exception:
             ed = None
+        if ed is not None and SAME_ONLY and ed.meaning == 'type': ed = None
         seed += 1
         if ed is not None and add(0 if len(out) < first else 2.5, ed): miss = 0
         else: miss += 1
@@ -665,6 +669,7 @@ class Gen:
                     ed = r.fn(ctx, rng, everywhere=every)
                 except Exception:
                     st[(r.id, 'crash')] += 1; ed = None
+                if ed is not None and SAME_ONLY and ed.meaning == 'type': ed = None
                 if ed is None:
                     st[(r.id, 'nosite')] += 1; continue
                 try:
@@ -845,7 +850,7 @@ class Island:
 
 
 Pending = collections.namedtuple('Pending', 'isl bh moves trail margin force vtrail vmoves t')
-FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus', '--no-sweep', '--sweep-only')
+FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus', '--no-sweep', '--sweep-only', '--same-only')
 
 
 class Search:
@@ -862,6 +867,8 @@ class Search:
         self.tlimit = arg(a, '--time', 10 ** 9, float)
         self.p_pair = arg(a, '--pair', 0.3, float)
         self.p_every = arg(a, '--everywhere', 0.35, float)
+        global SAME_ONLY
+        SAME_ONLY = '--same-only' in a
         self.p_cross = arg(a, '--cross', 0.06, float)
         self.simplify = arg(a, '--simplify', 0.25, float)     # share of islands started from a normalised source
         self.temp = arg(a, '--temp', 0.6, float)
