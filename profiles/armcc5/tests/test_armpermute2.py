@@ -118,6 +118,7 @@ CASES = {
     'goto_and': ('void f(void) { if ((status & 4) == 0 && phase == 2) counter = 1; else counter = 2; }', 'goto', 'goto_and'),
     'merge_ifs': ('void f(void) { if (status == 1) phase = 1; if (counter == 2) phase = 1; }', 'status == 1 || counter == 2', 'merge_ifs'),
     'flag_else': ('void f(void) { phase = 0; if (status == 1) phase = 1; }', 'else phase = 0', 'flag_else'),
+    'loop_form': ('void f(void) { ushort k; k = 0; while (k < 3) { send(1, k); k++; } }', 'for (k = 0; k < 3; k++)', 'loop_form'),
     'index_helper': ('void f(void) { send(table[3], table[4]); }', 'send(pmt_at0(3), pmt_at0(4))', 'helper_inline'),
     'helper_inline': ('static __forceinline ushort get(unsigned int k) { return table[k]; }\nvoid f(void) { send(1, get(3)); }', 'send(1, table[3])', None),
     'normalise': ('void f(void) { uchar a; { unsigned int z; z = (unsigned int)(status == 3); } a = phase; send(a, 1); }', '{ send(phase, 1); }', None),
