@@ -204,6 +204,20 @@ CASES = {
     'nop_form': ('void f(void) { if (status) phase = 1; counter = 2; }', 'if (status && 1)', None),
     'func_pragma': ('void f(void) { status = 1; }\n', '#pragma O0', 'func_pragma'),
     'file_opts': ('/* opts: --cpu Cortex-M3 -O1 */\nvoid f(void) { status = 1; }', '#define PMT_FILE_OPTS "--no_data_reorder"', None),
+    'dead_zero': ('void f(ushort v) { counter = v + 1; }', 'counter = 0; counter = v + 1;', None),
+    'literal_local': ('void f(void) { uchar value; value = status; send(value, 1); send(0x80, 0); }', 'value = 0x80; send(value, 0);', None),
+    'uniform': ('void f(void) { table[0] = status << 8; table[1] = phase << 8; table[2] = counter << 8; send(1, 2); }',
+                'table[0] = status * 256; table[1] = phase * 256; table[2] = counter * 256;', None),
+    'copy_source': ('void f(ushort s, ushort n) { int end; end = s + n; if (end > 100) status = 1; }', 'if ((s + n) > 100)', None),
+    'known_guard': ('void f(void) { status = 2; phase = 1; }', 'if (status == 2) phase = 1;', 'known_guard'),
+    'switch_guard': ('void f(void) { switch (status) { case 3: phase = 1; break; case 16: phase = 2; break; } }',
+                     'if (status >= 3 && status <= 16) switch (status)', 'switch_guard'),
+    'bool_store': ('void f(void) { if (status > 3) phase = 1; else phase = 0; }', 'phase = (status > 3);', 'bool_store'),
+    'accum_start': ('void f(void) { uint id; id = 0; id |= status << 8; id |= phase; counter = id; }', 'id = status << 8; id |= phase;', 'accum_start'),
+    'regroup': ('void f(ushort a, ushort b, ushort c) { counter = a + b + c; }', 'a + (b + c)', None),
+    'probe_forms': ('void f(uchar n) { if (n == 3) status = 1; phase = n; }', 'while (', None),
+    'extra_param': ('void f(uchar n) { status = n; }', 'pmt_unused0)', 'extra_param'),
+    'wrap_form': ('void f(void) { state.level = counter & 0xffff; }', 'state.level = (unsigned short)counter;', 'wrap_form'),
 }
 
 STRUCT = '''typedef struct { uchar a; uchar b; uchar c; ushort d; } Rec;
@@ -884,11 +898,19 @@ BEHAVE['levers'] = [
     # a known variable that the statement itself steps or a call beside the literal changes; a step with two reads
     'uchar bump(void) { status++; return status; }\nvoid f(uchar *p) { uchar n; uchar x; n = 0; status = 0; send(bump(), 0); send(n++, 0); '
     'send(n, status); x = *p + p[1]; p++; send(x, *p); x = phase ? *p : 3; p++; send(x, p[0]); }',
+    # an accumulation, a flag, a copy whose source changes later, a switch without a default
+    'void f(uchar *p) { uint id; ushort end; uchar ok; id = 0; id |= p[0] << 8; id |= p[1]; end = table[0] + table[1]; if (end > 300) ok = 1; '
+    'else ok = 0; table[2] = end; table[0] = 7; send(ok, table[0] + table[1]); counter = id + end + ok; switch (status) { case 1: phase = 4; break; '
+    'case 2: phase = 5; send(1, phase); break; } ok = status; status = 9; send(ok, status); }',
+    # a copy whose source a call beside its use changes
+    'uchar bump(void) { status++; return status; }\nvoid f(void) { uchar k; ushort e; k = status + 1; send(bump(), k); e = table[0] + phase; '
+    'table[0] = 3; send(k, e); k = phase + 2; phase = bump(); send(k, phase); }',
 ]
 for _r in ('known_const', 'formula_copy', 'sink_assign', 'step_fold', 'index_step', 'loop_step', 'early_exit', 'clamp_form', 'chain_tail',
            'view_access', 'narrow_operand', 'cast_neg', 'mask_form', 'via_target', 'subexpr_local', 'expr_helper', 'addr_helper',
            'outline_block', 'cache_group', 'scope_init', 'union_split', 'index_split', 'cmp_diff', 'probe_test', 'probe_elem',
-           'probe_ptr', 'array_operand', 'nop_form', 'func_pragma', 'decl_order', 'expr_split', 'ptr_base'):
+           'probe_ptr', 'array_operand', 'nop_form', 'func_pragma', 'decl_order', 'expr_split', 'ptr_base', 'dead_zero', 'literal_local',
+           'copy_source', 'known_guard', 'switch_guard', 'bool_store', 'accum_start', 'regroup', 'probe_forms', 'uniform', 'wrap_form'):
     BEHAVE[_r] = BEHAVE.get(_r, []) + BEHAVE['levers']
 BEHAVE['local_split'] = BEHAVE['local_reuse'] = BEHAVE['local_merge']
 BEHAVE['sub_neg'] = BEHAVE['arrow_deref'] = BEHAVE['index_deref'] = BEHAVE['factor']
