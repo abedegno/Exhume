@@ -17,8 +17,14 @@ still finds its quoted includes. One compiler process per variant: measured nati
 start is 7 ms against 140-250 ms of code generation, and batching many variants into one call
 gains nothing.
 
-Pool: one worker process per job (fork), each holding its own runner and the scorer (Target),
-so compile and score both run in the workers; the parent only mutates and decides."""
+Pool: one worker process per job (fork), each holding its own runner, the scorer (Target) and
+armpermute2's generator (its Gen: the rules, the parsed bases, the shared sets), so a variant
+is made, compiled and scored in a worker (_worker_gen); the parent only hands out jobs and
+decides. _worker_job compiles and scores a text the caller made.
+
+The compiler's messages go to a file, not a pipe: under Wine a background process of the
+prefix (services.exe) can inherit a pipe and hold it open after armcc has ended, and the
+caller then waits for the time limit."""
 import hashlib, multiprocessing as mp, os, re, shlex, shutil, subprocess, sys, tempfile, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path: sys.path.insert(0, HERE)
@@ -85,7 +91,9 @@ class Wine:
         self.prefix = None
 
     def start(self, work):
-        self.prefix = os.path.join(work, 'wineprefix')
+        prefix = os.path.join(work, 'wineprefix')
+        if prefix == self.prefix and os.path.isdir(prefix): return        # already running there
+        self.prefix = prefix
         os.makedirs(self.prefix, exist_ok=True)
         self.env = dict(os.environ, ARM_TOOL_VARIANT='mdk_lite', WINEDEBUG='-all', WINEPREFIX=self.prefix,
                         WINEDLLOVERRIDES='mscoree,mshtml=',
@@ -105,18 +113,23 @@ class Wine:
 
     def compile(self, src, obj, opts):
         cmd = [self.wine, self.exe, '-c'] + opts + [src, '-o', obj]
+        logp = obj + '.log'
         for attempt in range(3):
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, env=self.env, timeout=TIMEOUT)
+                with open(logp, 'w') as lf:
+                    r = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                       env=self.env, timeout=TIMEOUT)
             except subprocess.TimeoutExpired:
                 continue
             if r.returncode in (0, 1): break
         else:
             return None, 'timeout or crash'
-        if r.returncode != 0 or not os.path.exists(obj): return None, r.stdout + r.stderr
+        with open(logp, errors='replace') as lf: log = lf.read()
+        os.remove(logp)
+        if r.returncode != 0 or not os.path.exists(obj): return None, log
         with open(obj, 'rb') as f: data = f.read()
         os.remove(obj)
-        return data, r.stdout + r.stderr
+        return data, log
 
 
 def make_runner(kind, cfg, args):
@@ -133,13 +146,13 @@ def make_runner(kind, cfg, args):
 _W = {}
 
 
-def _worker_init(runner, target, opts, stem, work):
+def _worker_init(runner, target, opts, stem, work, gen=None):
     os.makedirs(work, exist_ok=True)
     wd = os.path.join(work, f'w{os.getpid()}')
     os.makedirs(wd, exist_ok=True)
     runner.start(wd)
     _W.update(runner=runner, target=target, opts=opts, src=os.path.join(wd, stem + '.c'),
-              obj=os.path.join(wd, stem + '.o'), wd=wd)
+              obj=os.path.join(wd, stem + '.o'), wd=wd, gen=gen)
     import atexit
     atexit.register(_worker_exit)
 
@@ -152,26 +165,46 @@ def _worker_exit():
         pass
 
 
+def worker_compile(text, extra=()):
+    """(object bytes or None, log, seconds) of one compile of text in this worker."""
+    with open(_W['src'], 'w', encoding='latin1') as f: f.write(text)
+    t0 = time.perf_counter()
+    raw, log = _W['runner'].compile(_W['src'], _W['obj'], _W['opts'] + list(extra))
+    return raw, log, time.perf_counter() - t0
+
+
+def worker_score(text):
+    """(object bytes, Result or None, object hash, seconds compile, seconds score, log) of text
+    compiled and scored in this worker."""
+    raw, log, tc = worker_compile(text)
+    if raw is None:
+        return None, None, None, tc, 0.0, log[-1500:]
+    t1 = time.perf_counter()
+    r = _W['target'].score(raw)
+    r.code = b''
+    return raw, r, hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest(), tc, time.perf_counter() - t1, ''
+
+
 def _worker_job(job):
     """job (key, text) -> (key, Result or None, object hash, seconds compile, seconds score, log)."""
     key, text = job
-    with open(_W['src'], 'w', encoding='latin1') as f: f.write(text)
-    t0 = time.perf_counter()
-    raw, log = _W['runner'].compile(_W['src'], _W['obj'], _W['opts'])
-    t1 = time.perf_counter()
-    if raw is None:
-        return key, None, None, t1 - t0, 0.0, log[-1500:]
-    r = _W['target'].score(raw)
-    r.code = b''
-    t2 = time.perf_counter()
-    return key, r, hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest(), t1 - t0, t2 - t1, ''
+    return (key,) + worker_score(text)[1:]
+
+
+def _worker_gen(job):
+    """A job for the worker's generator (armpermute2.Gen.run): a dict with the job's 'id'."""
+    try:
+        return _W['gen'].run(job)
+    except Exception as e:
+        import traceback
+        return {'id': job[1], 'err': f'{type(e).__name__}: {e}', 'trace': traceback.format_exc()[-1500:]}
 
 
 class Pool:
-    def __init__(self, runner, target, opts, stem, jobs, work):
+    def __init__(self, runner, target, opts, stem, jobs, work, gen=None):
         ctx = mp.get_context('fork')
         self.work = work
-        self.pool = ctx.Pool(jobs, _worker_init, (runner, target, opts, stem, work))
+        self.pool = ctx.Pool(jobs, _worker_init, (runner, target, opts, stem, work, gen))
 
     def imap(self, jobs):
         return self.pool.imap_unordered(_worker_job, jobs)
@@ -184,8 +217,8 @@ class Pool:
         shutil.rmtree(self.work, ignore_errors=True)
 
 
-def compile_once(runner, cfg, src_path, text, work=None):
-    """(object bytes or None, log) of one compile in this process."""
+def compile_once(runner, cfg, src_path, text, work=None, extra=()):
+    """(object bytes or None, log) of one compile in this process (extra: more options)."""
     work = work or tempfile.mkdtemp(prefix='pmt-', dir=ram_dir())
     os.makedirs(work, exist_ok=True)
     stem = os.path.splitext(os.path.basename(src_path))[0]
@@ -193,6 +226,6 @@ def compile_once(runner, cfg, src_path, text, work=None):
     with open(p, 'w', encoding='latin1') as f: f.write(text)
     runner.start(work)
     try:
-        return runner.compile(p, os.path.join(work, stem + '.o'), source_opts(cfg, src_path, text))
+        return runner.compile(p, os.path.join(work, stem + '.o'), source_opts(cfg, src_path, text) + list(extra))
     finally:
         os.remove(p)
