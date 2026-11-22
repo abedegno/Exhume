@@ -37,7 +37,9 @@ aligned diff over instructions with their registers masked (mnemonic without its
 without the flag suffix a narrow encoding forces, operand kinds, immediates, memory offsets,
 shifts, literal values, call targets, branch structure; b and b.w, and a conditional branch of
 either width, are one kind; sp and pc stay themselves; a plain register-to-register mov is left
-out, being a tie the allocator did not make). Result.key orders by the structural count first,
+out, being a tie the allocator did not make; an instruction that is only displaced, two
+neighbours in the other order or one moved up to 16 places, counts once, not as one missing
+and one extra). Result.key orders by the structural count first,
 then by the rest of the plain count (the register level): an instruction the image does not
 have, lacks or has in another place cannot be paid for with register ties. Result.flat (the
 permuter's --flat-score) gives the old single count. Literal pools and pc-relative displacements
@@ -352,6 +354,35 @@ def line_rows(o, raw):
     return out
 
 
+MOVE_REACH = 16
+
+
+def struct_count(exp_s, got_s):
+    """(structural count, opcodes): diff_count over structural streams, with an instruction that
+    is only somewhere else counted once, not twice. The aligned diff shows a displaced
+    instruction (two neighbours in the other order, or one moved a few places with the rest in
+    order) as one the image has and the object lacks plus the same one the object has and the
+    image lacks: such a pair, within MOVE_REACH instructions, is one difference."""
+    n, ops = diff_count(exp_s, got_s)
+    em, gm = exp_s[0], got_s[0]
+    dels, inss = [], []
+    for tag, i1, i2, j1, j2 in ops:
+        if i2 - i1 == 1 and j2 - j1 == 1 and em[i1] == gm[j1]: continue       # a branch that differs, not its place
+        dels += [(i, em[i]) for i in range(i1, i2)]
+        inss += [(i1, gm[j]) for j in range(j1, j2)]
+    if not dels or not inss: return n, ops
+    by = {}
+    for k, (p, t) in enumerate(inss): by.setdefault(t, []).append((p, k))
+    moved, used = 0, set()
+    for i, t in dels:
+        best = None
+        for p, k in by.get(t, ()):
+            if k not in used and abs(p - i) <= MOVE_REACH and (best is None or abs(p - i) < abs(best[0] - i)): best = (p, k)
+        if best is not None:
+            used.add(best[1]); moved += 1
+    return max(n - moved, (n + 1) // 2), ops
+
+
 class Result:
     __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code', 'chash', 'struct')
     flat = False                 # True: the old single count (no structural level in the key)
@@ -573,7 +604,7 @@ class Target:
             rows = rows_of(code, at, data, word, self.fn_mask)
             got = normalise(rows, self.fn_mask)
             n, _ = diff_count(self.exp, got)
-            st = 0 if Result.flat else diff_count(self.exp_s, normalise_struct(struct_rows(rows)))[0]
+            st = 0 if Result.flat else struct_count(self.exp_s, normalise_struct(struct_rows(rows)))[0]
             if n == 0:
                 # the same instructions, yet other bytes: a pc-relative displacement, an adr
                 # offset or data no load names (a string). Count the differing halfwords so
