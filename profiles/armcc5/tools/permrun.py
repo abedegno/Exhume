@@ -168,8 +168,12 @@ def _worker_exit():
 def worker_compile(text, extra=()):
     """(object bytes or None, log, seconds) of one compile of text in this worker."""
     with open(_W['src'], 'w', encoding='latin1') as f: f.write(text)
+    opts = _W['opts']
+    if 'PMT_FILE_OPTS' in text:                 # a variant with its own /* opts: */ line (permrules.r_file_opts)
+        m = re.search(r'/\*\s*opts:\s*([^*]+?)\s*\*/', text[:4000])
+        if m and '{root}' not in m.group(1): opts = shlex.split(m.group(1)) + opts[-1:]
     t0 = time.perf_counter()
-    raw, log = _W['runner'].compile(_W['src'], _W['obj'], _W['opts'] + list(extra))
+    raw, log = _W['runner'].compile(_W['src'], _W['obj'], opts + list(extra))
     return raw, log, time.perf_counter() - t0
 
 

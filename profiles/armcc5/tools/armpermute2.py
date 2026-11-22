@@ -112,6 +112,7 @@ globals have); unsized extern arrays take their size from the map row or, for an
 by an at: line, from the gap to the next known address.
 
 OUT defaults to <build>/permute2/FUNC. SRC is never modified. Rerun match.py on any result."""
+import shlex
 import collections, hashlib, json, math, mmap, os, queue, random, re, struct, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXHUME = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
@@ -620,6 +621,7 @@ class Gen:
     origin_toks = None
     cap = 8
     sizes = layouts = None
+    c_opts = None               # the file's compile options as one line (for permrules.r_file_opts)
 
     def __init__(self, func, tail, types, rules, **kw):
         self.func, self.tail, self.types, self.rules = func, tail, types, list(rules)
@@ -632,6 +634,7 @@ class Gen:
         ctx = R.Ctx(toks, self.tail, self.func, self.types)
         ctx.array_sizes = self.sizes or {}
         ctx.layouts = self.layouts or {}
+        ctx.c_opts = self.c_opts
         return ctx
 
     def dead_of(self, toks, ctx=None):
@@ -976,7 +979,7 @@ class Search:
         self.layouts = struct_layouts(self.runner, self.cfg, self.src, self.text, toks, self.types, self.func, self.pwork)
         if self.layouts: print(f'  struct layouts read: {", ".join(sorted(self.layouts))}', flush=True)
         self.gen = Gen(self.func, tail, self.types, self.rules, sizes=self.sizes, layouts=self.layouts,
-                       p_pair=self.p_pair, p_every=self.p_every, dead_penalty=self.dead_penalty,
+                       c_opts=shlex.join(self.opts[:-1]), p_pair=self.p_pair, p_every=self.p_every, dead_penalty=self.dead_penalty,
                        move_penalty=self.move_penalty, seen=self.seen, tabu=self.tabu, wmm=self.wmm,
                        bases_dir=self.bases_dir, focus_cold=self.focus_cold, focus_near=self.focus_near,
                        src_name=self.stem + '.c', origin_toks=toks, cap=self.nisl + 3)
