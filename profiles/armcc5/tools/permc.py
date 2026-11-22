@@ -153,6 +153,16 @@ class TypeInfo:
             body, name = m.group(1), m.group(2)
             self.names.add(name)
             self.typedefs[name] = ' '.join(body.split())
+            if '{' not in body and '(' not in body and ',' in body:
+                # `typedef unsigned int uint, undefined4;`: every declarator is a name of the type
+                first = body.split(',')[0].split()
+                base = ' '.join(first[:-1])
+                parts = body.split(',')
+                for part in [first[-1]] + parts[1:-1] + [parts[-1] + name]:
+                    m2 = re.match(r'^\s*([*\s]*)([A-Za-z_]\w*)\s*$', part, re.S)
+                    if m2 and base:
+                        self.names.add(m2.group(2))
+                        self.typedefs[m2.group(2)] = (base + ' ' + m2.group(1).replace(' ', '')).strip()
             br = body.find('{')
             if br >= 0:
                 fl = []
