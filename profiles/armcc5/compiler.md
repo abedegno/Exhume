@@ -1479,5 +1479,92 @@ compile, 26 ms generation and 36 ms scoring), the parent 0.13 ms per variant. An
 the original after a sweep makes two edits at once: its single edits are all in the set of
 texts made, and counted as duplicates they had set off the escalation.
 
+Fifth round: a key that can be trusted, other starts, edits outside the function.
+
+- The plain count of differing instructions could be bought. A two-hour run took a 5.6 KB
+  function from 53 to 30 with honest edits, but on the way its best was a 38 that retyped a
+  temporary to `signed char`: an `sxtb` the image does not have (and other behaviour), while
+  about fifteen register ties elsewhere fell into place. Probes had done the same earlier. The
+  scorer now also counts the structural difference: the same aligned diff over instructions
+  with their registers masked (capstone decodes each distinct encoding once per worker:
+  mnemonic without its width suffix and without the flag suffix a narrow encoding forces, the
+  operand kinds, immediates, memory offsets, shifts; a literal load keeps its value, a call
+  its target; `b` and `b.w` are one kind, as are the two widths of a conditional branch; a
+  two-operand ALU form is its three-operand one; sp and pc stay themselves; push and pop lose
+  their register lists; a register-to-register `mov` is left out as a tie the allocator did not
+  make). An instruction the image does not have, lacks, or has in another place is structure;
+  literal pools and pc-relative displacements are in neither count, so what only moved because
+  the size changed upstream is not structure. The acceptance key is now exact; right size;
+  the structural count; then the rest of the plain count (register ties) with the dead-code and
+  move penalties. Scores print as `30 (structure 4, registers 26)`, best.txt lists the structural
+  differences, and `--flat-score` gives the old key. Under the new key the bests of that run
+  read: the start 53 (7 + 46); the honest 38 before the retype (4 + 34); the retyped 38 (5 +
+  33), which is now worse than the one it replaced; a 43 on the way had been 13 + 30; the final
+  30 is 4 + 26. On the same function's older source the old key's 46 and 40 are 6 + 40 and 5 +
+  35, and the new key's best after 300 seconds is 52 = 1 + 51 against a start of 10 + 50: one
+  structural difference left, which best.txt names (`ldrh` in the image where the source's
+  code has `ldr`). Scoring costs more (two aligned diffs: 28 ms a variant on that function
+  before, 43 to 50 ms now, on a loaded host, beside a 200 ms compile).
+  A 20-minute run with the new key from that run's 53 source (6 workers, dead-code penalty 3)
+  ended at 47 = 1 + 46 with the same one structural difference left; 329 variants that retyped
+  something to `signed char` were compiled, 16 were kept by an island for a while, none became
+  a best.
+- Other starts. `--seed-source FILE` (repeatable) gives another complete text of the same
+  source file: the function as a sibling release has it, an older commit, a hand variant. It is
+  compiled and scored at the start and kept when its count is within `--seed-factor` (2) times
+  the best start's plus 5; a kept one gets an equal part of the sweep's time and its own islands
+  (the islands go to the starts in turn, every second island of a start strict), and every
+  result that descends from it has a first move `seed` naming the file. First use: a function
+  whose committed source scored 2 with a comma probe, and a probe-free variant with a helper
+  that scored 4. With the variant as a seed source the sweep found an exact source in 51 seconds
+  on 6 workers: the variant plus one redundant store, a single edit that years of hand and
+  random search from the probe source had not reached (to be confirmed by match.py).
+- Edits outside the function body (`permmacro.py`, registered at the end of permrules):
+  `macro_body` rewrites the body of a function-like macro the function invokes, so every
+  invocation at once (do-while(0) against a plain block, two statements against a comma
+  expression, `x[i++] = v;` against `x[i] = v; i++;`: these keep the meaning; statement order,
+  a block-local temporary for a parameter against its direct use, a parameter's parentheses:
+  marked 'type', since what they do depends on the arguments at every invocation in the file);
+  `macro_expand` writes one invocation out as the preprocessor would, so that site can be
+  edited alone, and `macro_fold` turns a run of tokens that is exactly an expansion back into
+  the invocation; `file_order` swaps two file-scope declarations of globals the function names
+  ('same' for two extern declarations; 'type' when a definition is among them, because the
+  order of definitions is the order of the objects in their section: the scorer takes a data
+  section's address from one symbol's map row and the others by their offsets in the variant's
+  own section, so a reordered section shows as wrong literals, but the object layout itself is
+  only checked by match.py).
+- The end of a run lists the time and compile count of each new best ("is it still
+  descending?") and writes OUT/yield.json (per rule: compiles, how many changed the code,
+  improved an island, entered a best) and OUT/weights.json (the run's weights scaled by each
+  rule's rate of improvements against the average, a quarter to four times), which a later run
+  loads with `--weights`.
+
+Regression with the new key (the same 15 cases, seeds 7, 11 and 23, 6 workers, 300 s, one case
+at a time on a host busy with other runs; the three seeds agree but for the last row, the
+sweep not using the seed).
+No case that was exact is lost and the times are within a second or two, three on the largest
+unit, of the fourth round's:
+
+| case | start (structure + registers) | result | fourth round |
+|---|---|---|---|
+| CAN receiver | 20 (0 + 20) | exact, 4-5 s | exact, 4 s |
+| CAN receiver 2 | 8 (1 + 7) | 1 (1 + 0) | 1 |
+| charge limit | 11 (0 + 11) | exact, 7 s | exact, 7 s |
+| update check (size +6) | 36 (20 + 16) | exact, 78 s | exact, 77 s |
+| current measurement | 7 (0 + 7) | exact, 37-38 s | exact, 36 s |
+| discharge limit (size +2) | 21 (17 + 4) | exact, 42-43 s | exact, 40 s |
+| byte receivers A and B | 8 (0 + 8) | exact, 5-6 s | exact, 5 s |
+| summary update | 4 (4 + 0) | exact, 6 s | exact, 6 s |
+| holding registers | 2 (2 + 0) | exact, 9 s | exact, 8 s |
+| register write | 2 (2 + 0) | 1 (1 + 0) | 1 |
+| Modbus task (size -4) | 3 (2 + 1) | exact, 3 s | exact, 3 s |
+| CAN sender | 2 (2 + 0) | exact, 7 s | exact, 7 s |
+| protocol task | 29 (29 + 0) | exact, 100 s | exact, 98 s |
+| 5.6 KB responder | 60 (10 + 50) | 52, 51, 51 (structure 1), 3 moves | 46 (6 + 40), 3 moves |
+
+The responder is the one case where the two keys choose differently: of the start's ten
+structural differences the old key's 46 keeps six, the new key's 51 or 52 one, at a cost of ten
+or eleven register ties.
+
 Not done: a check of each new best against a second build of the same function where one
 exists.
