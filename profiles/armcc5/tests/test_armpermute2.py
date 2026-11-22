@@ -122,6 +122,13 @@ CASES = {
     'loop_form': ('void f(void) { ushort k; k = 0; while (k < 3) { send(1, k); k++; } }', 'for (k = 0; k < 3; k++)', 'loop_form'),
     'index_helper': ('void f(void) { send(table[3], table[4]); }', 'send(pmt_at0(3), pmt_at0(4))', 'helper_inline'),
     'helper_inline': ('static __forceinline ushort get(unsigned int k) { return table[k]; }\nvoid f(void) { send(1, get(3)); }', 'send(1, table[3])', None),
+    'macro_body': ('#define PUT(v) do { table[1] = (v); counter++; } while (0)\nvoid f(void) { PUT(status); phase = 1; }',
+                   '#define PUT(v) { table[1] = (v); counter++; }', None),
+    'macro_expand': ('#define PUT(v) do { table[1] = (v); counter++; } while (0)\nvoid f(void) { PUT(status); }',
+                     'do { table[1] = (status); counter++; } while (0);', 'macro_fold'),
+    'macro_fold': ('#define PUT(v) do { table[1] = (v); counter++; } while (0)\nvoid f(void) { do { table[1] = (phase); counter++; } while (0); }',
+                   'PUT(phase);', 'macro_expand'),
+    'file_order': ('extern uchar alpha;\nextern ushort beta;\nvoid f(void) { alpha = 1; beta = 2; }', 'extern ushort beta; extern uchar alpha;', 'file_order'),
     'normalise': ('void f(void) { uchar a; { unsigned int z; z = (unsigned int)(status == 3); } a = phase; send(a, 1); }', '{ send(phase, 1); }', None),
     'stmt_move': ('void f(void) { uchar n; n = 1; status = 2; phase = 3; counter = 4; send(n, 0); }', 'phase = 3; n = 1; status = 2;', 'stmt_move'),
     'compound_swap': ('void f(void) { if (status) phase = 1; while (counter < 3) counter++; }',
@@ -533,7 +540,7 @@ class TrustKeyTest(unittest.TestCase):
         st = permscore.diff_count(permscore.normalise_struct(permscore.struct_rows(e)), permscore.normalise_struct(permscore.struct_rows(g)))[0]
         return full, st
 
-    @unittest.skipUnless(__import__('importlib').util.find_spec('capstone'), 'needs capstone')
+    @unittest.skipUnless(__import__('importlib.util').util.find_spec('capstone'), 'needs capstone')
     def test_structure_against_registers(self):
         # ldrb r1,[r0,#3] ; adds r1,#1 ; strb r1,[r0,#0] ; bx lr
         want = self.code(0x78c1, 0x3101, 0x7001, 0x4770)
@@ -867,7 +874,12 @@ def top_level_declarations(text):
     return '\n'.join(out)
 
 
-def bundle(texts):
+# rules that edit above the function in ways that can share one file: a macro redefined before each
+# variant, extern declarations in another order
+LOOSE_BUNDLE = {'macro_body', 'macro_expand', 'macro_fold', 'file_order'}
+
+
+def bundle(texts, loose=False):
     """One C text holding several variants of a PRELUDE + body file, the functions each defines renamed
     with its number: (text, [first line of each variant]); None when a variant does not start with the
     PRELUDE (an edit above the function's file part) or declares a type."""
@@ -877,7 +889,7 @@ def bundle(texts):
         if not text.startswith(PRELUDE) or 'typedef' in text[len(PRELUDE):]: return None
         body = text[len(PRELUDE):]
         decls.add(top_level_declarations(body))
-        if len(decls) > 1: return None                      # a declaration edited: the variants cannot share a file
+        if len(decls) > 1 and not loose: return None        # a declaration edited: the variants cannot share a file
         names = sorted(set(defined_functions(body)))
         chunk = ''.join(f'#define {n} {n}_v{k}\n' for n in names) + body.rstrip('\n') + '\n' + ''.join(f'#undef {n}\n' for n in names)
         lines.append(line); line += chunk.count('\n')
@@ -1008,12 +1020,12 @@ void *t_memcpy(void *d, const void *s, unsigned int n) { unsigned char *a = d; c
 STATES = 30         # states of the globals each variant is run from
 
 
-def host_program(ctx, texts):
+def host_program(ctx, texts, loose=False):
     """A host C program that runs every variant (of one PRELUDE + body file) over STATES states of the
     globals and prints, per variant and seed, the calls made, the value returned and the globals. The
     pointers passed point into the globals themselves, so a rule that assumes a store through a pointer
     cannot reach a named object shows up."""
-    b = bundle(texts)
+    b = bundle(texts, loose)
     if b is None: return None
     g = ctx.types.globals
     names = sorted(n for n, v in g.items() if v[2] and n not in ctx.types.functions)
@@ -1043,7 +1055,7 @@ def behaviour(ctx, text, outs, d, tag):
     """[(description, variant text)] of the variants that do not behave as text does; None when the
     variants cannot share one program (an edit above the function's part of the file)."""
     texts = [text] + [n for _, n, _ in outs]
-    prog = host_program(ctx, texts)
+    prog = host_program(ctx, texts, tag.rsplit('_', 1)[0] in LOOSE_BUNDLE)
     if prog is None: return None
     src, exe = os.path.join(d, tag + '.c'), os.path.join(d, tag)
     with open(src, 'w') as f: f.write(prog)

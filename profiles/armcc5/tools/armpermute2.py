@@ -9,7 +9,7 @@ variants made, compiled and scored in a worker pool.
         [--no-reduce] [--no-focus] [--focus-cold P] [--focus-near LINES]
         [--no-sweep] [--sweep-max N] [--sweep-share F] [--pair-share F] [--pairs M] [--pair-removals R]
         [--beam B] [--beam-share F] [--sweep-only]
-        [--origin SHARE] [--flat-score]
+        [--origin SHARE] [--flat-score] [--seed-source FILE]... [--seed-factor F]
 
 First a sweep, so that an answer of one or two edits does not hang on the seed: every single
 edit of the original source is listed (for the probe rules by enumeration: each insertion
@@ -48,6 +48,13 @@ instructions. So a lower count at the wrong size is never progress.
 
 The parent does no parsing in the loop: it costs a fraction of a millisecond per variant
 (printed at the end, with the workers' generation time), so the workers are never short of jobs.
+
+Other starts: each --seed-source FILE is another complete text of the same source file (the
+function as a sibling release has it, an older commit, a hand variant). It is compiled and
+scored at the start, and kept when its count is within --seed-factor (2) times the best start's
+plus 5. A kept one gets an equal part of the sweep's time and its own islands (the islands go
+to the starts in turn); every result that descends from it has a first move `seed` that names
+the file, in best.txt and in the logs.
 
 The key (trust): a result is ordered by exact; then right size with unchanged neighbours; then
 its structural difference (differing instructions with the registers masked: an instruction
@@ -264,7 +271,11 @@ def make_move(rule, desc, toks, ed, words=None):
     return m
 
 
+SEED_TOKS = []           # the tokens of each --seed-source text (set before the workers fork)
+
+
 def apply_move(toks, m):
+    if 'seed' in m: return SEED_TOKS[m['seed']]        # the whole text of a seed source, in place of the original
     for p in m.get('seq') or [m['patch']]:
         toks = apply_patch(toks, p)
         if toks is None: return None
@@ -273,7 +284,7 @@ def apply_move(toks, m):
 
 def move_sig(m):
     if 'sig' not in m:
-        m['sig'] = hashlib.blake2b(json.dumps(m.get('seq') or m['patch']).encode('latin1', 'replace'), digest_size=8).hexdigest()
+        m['sig'] = hashlib.blake2b(json.dumps(m.get('seq') or m.get('patch') or ['seed', m.get('seed')]).encode('latin1', 'replace'), digest_size=8).hexdigest()
     return m['sig']
 
 
@@ -606,7 +617,7 @@ class Gen:
     bases_dir = None
     focus, focus_cold, focus_near = False, 0.25, 3
     src_name = None
-    origin_toks = origin_ctx = origin_words = None
+    origin_toks = None
     cap = 8
     sizes = layouts = None
 
@@ -614,6 +625,7 @@ class Gen:
         self.func, self.tail, self.types, self.rules = func, tail, types, list(rules)
         self.__dict__.update(kw)
         self.cache = collections.OrderedDict()
+        self.root_ctx = {}
 
     # ---- what the parent uses too
     def make_ctx(self, toks):
@@ -746,23 +758,24 @@ class Gen:
             toks, out['trail'], made = m
             nm = p['nm'] + len(made)
         elif kind == 'list':                       # the single edits of the original by one rule, as moves
-            if self.origin_ctx is None:
-                self.origin_ctx = self.make_ctx(self.origin_toks)
-                self.origin_words = [t[1] for t in self.origin_toks]
-            ctx = self.origin_ctx
+            root = p.get('root', 0)                # 0 the original, n the n-th seed source
+            if root not in self.root_ctx:
+                rt = self.origin_toks if not root else SEED_TOKS[root - 1]
+                self.root_ctx[root] = (rt, self.make_ctx(rt), [t[1] for t in rt])
+            rtoks, ctx, rwords = self.root_ctx[root]
             if p['rule'] is None: rid, items = 'normalise', simplify_singles(ctx)
             else:
                 r = next(x for x in self.rules if x.id == p['rule'])
                 rid, items = r.id, list_singles(ctx, r, p['max'], p['weight'])
             out['items'] = [(tier, rid, ed.desc, p['rule'] is None, fam,
                              hashlib.blake2b(repr(span_key(ed)).encode('latin1', 'replace'), digest_size=10).digest(),
-                             make_move(rid, ed.desc, self.origin_toks, ed, self.origin_words)) for tier, ed, fam in items]
+                             make_move(rid, ed.desc, rtoks, ed, rwords)) for tier, ed, fam in items]
             out['tg'] = time.perf_counter() - t0
             return out
         elif kind == 'moves':                      # a move list replayed on the original
             toks = apply_all(self.origin_toks, p['moves'])
-            if toks is None and len(p['moves']) == 2 and p.get('either'):      # a pair: the other order
-                toks = apply_all(self.origin_toks, p['moves'][::-1])
+            if toks is None and len(p['moves']) >= 2 and p.get('either'):      # a pair: the other order
+                toks = apply_all(self.origin_toks, p['moves'][:-2] + [p['moves'][-1], p['moves'][-2]])
                 out['swapped'] = True
             if toks is None:
                 out['none'] = True; return out
@@ -845,6 +858,9 @@ class Island:
         self.home = None            # where restarts to the original go (a simplified base)
         self.stale = 0
         self.bh = self.h = self.hot = None      # base file hash, normalised text hash, hot lines
+        self.strict = k % 2 == 1    # keeps only improvements (the odd islands)
+        self.root = None            # the start it belongs to (the original or a seed source)
+        self.anchor = False
         self.t_gain = time.time()   # when it last gave a new best or was sent back to the best
 
     def take(self, src):
@@ -992,13 +1008,69 @@ class Search:
                               f'(-g compile, FUNC\'s code unchanged by it)', flush=True)
         self.gen.focus = self.focus
         self.low = (r0.key(), r0.text(), 0)       # the lowest result seen: key, text, moves
-        self.islands = [self.origin.copy(k) for k in range(self.nisl)]
-        self.best = self.origin.copy(-1)
-        self.anchor = self.origin.copy(-4)  # jobs made from the original all through the run (--origin)
-        self.swept = False
+        self.origin.ridx, self.origin.name = 0, 'the original'
+        self.roots = [self.origin] + self.seed_roots()      # the starts: the original and the seed sources kept
+        n = len(self.roots)
+        if n > 1 and arg(self.a, '--islands') is None: self.nisl = max(self.nisl, 2 * n)
+        self.islands = []
+        for k in range(self.nisl):          # the islands go to the starts in turn; of a start's islands every
+            isl = self.roots[k % n].copy(k)  # second one keeps only improvements
+            isl.root, isl.strict = self.roots[k % n], (k // n) % 2 == 1
+            self.islands.append(isl)
+        first = min(self.roots, key=lambda x: x.key)
+        self.best = first.copy(-1)
+        if first.result.key() < self.low[0]: self.low = (first.result.key(), first.result.text(), len(first.moves))
+        self.anchors = []                   # jobs made from each start all through the run (--origin)
+        for root in self.roots:
+            a = root.copy(-100 - root.ridx)
+            a.root, a.strict, a.anchor = root, True, True
+            self.anchors.append(a)
+        self.swept = set()                  # the base hashes of the starts whose single edits were swept
         self.front = {}                     # dead-code edits added -> (key, text, result)
         self.push_weights()
         if '--resume' in self.a: self.load_state()
+
+    def seed_roots(self):
+        """An island for each --seed-source FILE that is worth searching: another complete text
+        of the source file (a sibling release's, an older commit's, a hand variant). Each is
+        compiled and scored; it is kept when FUNC scores, with a count within --seed-factor
+        (2) times the best start's plus 5. A kept one gets a share of the sweep and its own
+        islands; what descends from it carries a first move `seed` naming the file."""
+        files = [self.a[i + 1] for i, x in enumerate(self.a) if x == '--seed-source' and i + 1 < len(self.a)]
+        factor = arg(self.a, '--seed-factor', 2.0, float)
+        cands = []
+        for path in files:
+            with open(path, encoding='latin1') as f: text = f.read()
+            name = os.path.basename(path)
+            raw, log = self.compile(text)
+            if raw is None:
+                print(f'  seed source {path}: does not compile: {(log.strip().splitlines() or [""])[-1][:160]}', flush=True); continue
+            r = self.target.score(raw)
+            if not r.ok:
+                print(f'  seed source {path}: not scored: {r.error}', flush=True); continue
+            try:
+                toks, _ = permc.tokenize(text)
+                permc.find_function(toks, self.func)
+            except Exception as e:
+                print(f'  seed source {path}: {type(e).__name__}: {e}', flush=True); continue
+            cands.append((path, name, text, raw, r, toks))
+        best = min([self.base_result.diff or 0] + [c[4].diff for c in cands]) if cands else 0
+        out = []
+        for path, name, text, raw, r, toks in cands:
+            if not r.exact and r.diff > factor * best + 5:
+                print(f'  seed source {path}: {r.text()}: left out (more than {factor:g} times the best start\'s {best} plus 5)', flush=True)
+                continue
+            self.types.scan_globals(toks)
+            SEED_TOKS.append(toks)
+            mv = [{'rule': 'seed', 'desc': f'seed source {name} ({r.text()})', 'seed': len(SEED_TOKS) - 1}]
+            isl = Island(-10 - len(out), text, r, [('seed', mv[0]['desc'])], self.key_of(r, self.dead_delta(toks), 1), r.chash)
+            isl.moves, isl.h, isl.bh = mv, norm_hash(toks), self.put_base(text)
+            isl.ridx, isl.name = len(SEED_TOKS), 'seed source ' + name
+            self.seen.add(isl.h)
+            if self.focus and not r.exact and r.size_ok: isl.hot = self.hot_parent(text, raw) or None
+            print(f'  seed source {path}: start {r.text()}: searched beside the original', flush=True)
+            out.append(isl)
+        return out
 
     def hot_parent(self, text, raw):
         """The hot lines of text (a tuple, empty when no instruction differs) from a -g compile
@@ -1028,7 +1100,7 @@ class Search:
 
     def gc_bases(self, pending):
         """Delete the base files no island, home or waiting job names."""
-        live = {p.bh for p in pending.values()} | {self.best.bh, self.origin.bh}
+        live = {p.bh for p in pending.values()} | {self.best.bh} | {x.bh for x in self.roots}
         for isl in self.islands:
             live.add(isl.bh)
             if isl.home: live.add(isl.home.bh)
@@ -1102,9 +1174,9 @@ class Search:
         """Hand one variant job for the next island to the workers: the base's name, a seed,
         and what decides whether its text is worth sending back."""
         isl = self.islands[nid % self.nisl]
-        if self.p_origin and self.rng.random() < self.p_origin: isl = self.anchor
+        if self.p_origin and self.rng.random() < self.p_origin: isl = self.rng.choice(self.anchors)
         old, margin, thr = isl.key, None, None
-        if isl.k % 2 == 0 and isl is not self.anchor:
+        if not isl.strict:
             # the island's draw for a variant a little worse is made here, so the worker knows
             # what the island would keep: accepted when worse by no more than -temp * ln(u)
             margin = -self.temp * math.log(max(self.rng.random(), 1e-300)) if self.temp > 0 else 0.0
@@ -1113,8 +1185,8 @@ class Search:
         p = {'bh': isl.bh, 'seed': self.rng.getrandbits(48), 'depth': self.depth, 'cross': cross, 'old': old,
              'thr': thr, 'bkey': self.best.key, 'hot': isl.hot if self.focus else None, 'nm': len(isl.moves),
              'low': self.low[0]}
-        if isl is self.anchor: p['cross'] = None
-        if self.swept and isl.bh == self.origin.bh and not cross:
+        if isl.anchor: cross = p['cross'] = None
+        if isl.bh in self.swept and not cross:
             p['steps'] = 2                        # the single edits of the original were tried in the sweep
         if self.dead_penalty: p['front'] = {d: v[0] for d, v in self.front.items()}
         pending[nid] = Pending(isl.k, isl.bh, isl.moves, isl.trail, margin, False, None, None, time.time())
@@ -1248,20 +1320,29 @@ class Search:
         return out
 
     def sweep(self, t_start):
-        """The systematic first stage. Singles: every single edit of the original (sweep_list)
-        is compiled and scored. Pairs: the best --pairs singles that changed the object (one
-        per distinct object, improving ones first) are applied two at a time. The best result
-        becomes the best; the even islands start from the best distinct results, the odd ones
-        stay on the original. An exact result ends the run."""
+        """The systematic first stage, for each start in turn (the original, then each seed
+        source kept), each with an equal part of the sweep's time."""
+        for root in self.roots:
+            if self.best.result.exact and not self.best.result.neighbours: break
+            self.sweep_root(root, t_start if root is self.roots[0] else time.time(), 1.0 / len(self.roots))
+
+    def sweep_root(self, root, t_start, part):
+        """The sweep of one start. Singles: every single edit of it (sweep_list) is compiled and
+        scored. Pairs: the best --pairs singles that changed the object (one per distinct
+        object, improving ones first) are applied two at a time; then the beam. The best result
+        becomes the best; the start's islands that are not strict start from the best distinct
+        results, its strict ones stay on the start. An exact result ends the run."""
         t0 = time.time()
         limited = self.tlimit < 1e8
-        d_single = t_start + self.sweep_share * self.tlimit if limited else float('inf')
-        d_pair = t_start + (self.sweep_share + self.pair_share) * self.tlimit if limited else float('inf')
-        d_third = d_pair + self.beam_share * self.tlimit if limited else float('inf')
+        P = list(root.moves)                   # the seed move of a seed source, before every move list
+        if len(self.roots) > 1: print(f'  sweep of {root.name} (start {root.result.text()}):', flush=True)
+        d_single = t_start + part * self.sweep_share * self.tlimit if limited else float('inf')
+        d_pair = d_single + part * self.pair_share * self.tlimit if limited else float('inf')
+        d_third = d_pair + part * self.beam_share * self.tlimit if limited else float('inf')
         # the workers list the singles, a rule per job (the compound rules take seconds on a
         # large function); one edit is kept once, for the first rule that makes it
         jobs = ([None] if self.simplify > 0 else []) + [r.id for r in self.rules]
-        asyncs = [self.pool.pool.apply_async(permrun._worker_gen, (('list', n, {'rule': rid, 'max': self.sweep_max,
+        asyncs = [self.pool.pool.apply_async(permrun._worker_gen, (('list', n, {'rule': rid, 'max': self.sweep_max, 'root': root.ridx,
                   'weight': self.base_weights.get(rid, 1.0)}),)) for n, rid in enumerate(jobs)]
         items, seen = [], set()
         for a in asyncs:
@@ -1277,14 +1358,14 @@ class Search:
                 seen.add(it[5]); items.append(it)
         recs = [{'rule': rid, 'tier': tier, 'desc': desc, 'simp': simp, 'fam': fam, 'moves': [mv]}
                 for tier, rid, desc, simp, fam, key, mv in sweep_order(items)]
-        print(f'  sweep: {len(recs)} single edits of the original listed in {time.time() - t0:.1f} s '
+        print(f'  sweep: {len(recs)} single edits listed in {time.time() - t0:.1f} s '
               f'({sum(1 for x in recs if x["tier"] == 0)} in the first pass; by tier: '
               + ', '.join(f'{t:g}: {n}' for t, n in sorted(collections.Counter(x["tier"] for x in recs).items())) + ')', flush=True)
 
         class Lazy(list):                      # the move lists of a selection of the singles
             def __getitem__(me, n):
-                return recs[list.__getitem__(me, n)]['moves']
-        k0, o0 = self.origin.key, self.origin.ohash
+                return P + recs[list.__getitem__(me, n)]['moves']
+        k0, o0 = root.key, root.ohash
         # first the first pass and the probes' first tiers; then the rest, the families (a shift
         # probe's constant, a comparison's operand) of which a member improved the score first
         early = [n for n, x in enumerate(recs) if x['tier'] < 2]
@@ -1327,7 +1408,7 @@ class Search:
             print(f'    {rid:16} {st["listed"]:6} {st["compiled"]:9} {st["failed"]:7} {st["changed"]:8} {st["improved"]:9}  '
                   + (f'{b[1]}  {b[2][:90]}' if b else '-'), flush=True)
         done.sort(key=lambda x: x['k'])
-        with open(os.path.join(self.out, 'sweep.tsv'), 'w') as f:
+        with open(os.path.join(self.out, 'sweep.tsv'), 'w' if root.ridx == 0 else 'a') as f:
             f.write('stage\trule\ttier\tscore\tkey\tobject\tedit\n')
             for x in done:
                 f.write(f'single\t{x["rule"]}\t{x["tier"]}\t{x["r"].text()}\t{x["k"]}\t{x["ohash"]}\t{" ".join(x["desc"].split())}\n')
@@ -1359,14 +1440,14 @@ class Search:
             pset |= {(min(a, b), max(a, b)) for a in rset for b in range(len(wide)) if a != b}
             # best first: by the ranks of the two singles (a removal counts as rank 0)
             pl = sorted(pset, key=lambda ab: ((0 if ab[0] in rset else ab[0]) + (0 if ab[1] in rset else ab[1]), ab))
-            lists = [top[a]['moves'] + top[b]['moves'] for a, b in pl]
+            lists = [P + top[a]['moves'] + top[b]['moves'] for a, b in pl]
             t1 = time.time()
             res = self.pump(lists, d_pair, either=True)
             for n, (a, b) in enumerate(pl):
                 rr = res.get(n)
                 r = rr.get('r') if rr else None
                 if r is None or not r.ok: continue
-                mv = lists[n][::-1] if rr.get('swapped') else lists[n]
+                mv = top[b]['moves'] + top[a]['moves'] if rr.get('swapped') else top[a]['moves'] + top[b]['moves']
                 pairs.append({'rule': top[a]['rule'] + '+' + top[b]['rule'], 'tier': -1, 'desc': top[a]['desc'] + ' | ' + top[b]['desc'],
                               'moves': mv, 'k': rr['k'], 'r': r, 'ohash': rr['ohash'], 'h': rr.get('h'), 'd': rr.get('d'), 'simp': False,
                               'parents': min(top[a]['k'], top[b]['k'])})
@@ -1388,7 +1469,7 @@ class Search:
                 cand = [(p, x) for x in ext for p in bp if not any(m is x['moves'][0] for m in p['moves'])]
                 if not cand: break
                 t2 = time.time()
-                res = self.pump([p['moves'] + x['moves'] for p, x in cand], d_third)
+                res = self.pump([P + p['moves'] + x['moves'] for p, x in cand], d_third)
                 cur = []
                 for n, (p, x) in enumerate(cand):
                     rr = res.get(n)
@@ -1416,24 +1497,24 @@ class Search:
         for x in allr[:8]:
             what = 'single ' if x['tier'] >= 0 else '%d edits' % (1 - x['tier'])
             print(f'    {what} {x["r"].text():>24}  [{x["rule"]}] {x["desc"][:140]}', flush=True)
-        self.swept = True
+        self.swept.add(root.bh)
         self.counts['sweep_s'] = time.time() - t0
 
         def fetch(x, k):
             """An island at the result x (its text asked of a worker), or None."""
-            kk, rr = self.score_moves([x['moves']], want=True)[0]
+            kk, rr = self.score_moves([P + x['moves']], want=True)[0]
             if kk is None or rr.get('text') is None: return None
-            isl = Island(k, rr['text'], rr['r'], [(x['rule'], x['desc'])], kk, rr['ohash'])
-            isl.moves, isl.h, isl.hot, isl.bh = list(x['moves']), rr.get('h'), rr.get('hot'), self.put_base(rr['text'])
+            isl = Island(k, rr['text'], rr['r'], list(root.trail) + [(x['rule'], x['desc'])], kk, rr['ohash'])
+            isl.moves, isl.h, isl.hot, isl.bh = P + list(x['moves']), rr.get('h'), rr.get('hot'), self.put_base(rr['text'])
             if isl.result.key() < self.low[0]: self.set_low(isl.result, isl.text, len(isl.moves))
             return isl
         # the best becomes the best; the even islands take the best distinct results
         seeds, objs = [], set()
         for x in allr:
-            if x['k'] >= k0 or len(seeds) >= (self.nisl + 1) // 2: break
+            if x['k'] >= k0 or len(seeds) >= max(1, sum(1 for i in self.islands if i.root is root and not i.strict)): break
             if x['ohash'] in objs: continue
             objs.add(x['ohash']); seeds.append(x)
-        even = [i for i in self.islands if i.k % 2 == 0]
+        even = [i for i in self.islands if i.root is root and not i.strict]
         for n, x in enumerate(seeds):
             isl = fetch(x, -1)
             if isl is None: continue
@@ -1459,7 +1540,7 @@ class Search:
         """One result from a worker: statistics, then whether the island keeps the variant and
         whether it is a new best. True when it ends the run (exact, neighbours unchanged)."""
         c = self.counts
-        isl = self.anchor if p.isl == -4 else self.islands[p.isl]
+        isl = self.anchors[-100 - p.isl] if p.isl <= -100 else self.islands[p.isl]
         for (rid, name), n in (res.get('st') or {}).items(): self.stats[rid][name] += n
         c['generated'] += res.get('gen', 0); c['dup_text'] += res.get('dup', 0)
         c['wgen_s'] += res.get('tg', 0.0); c['compile_s'] += res.get('tc', 0.0); c['score_s'] += res.get('ts', 0.0)
@@ -1499,7 +1580,7 @@ class Search:
                 if self.noop[(rid, dsc)] == self.tabu_after: self.tabu.add((rid, dsc))
         k, d, text = res['k'], res.get('d'), res.get('text')
         old, bkey = isl.key, self.best.key
-        strict = isl.k % 2 == 1 or isl is self.anchor      # odd islands keep only improvements: they stay near
+        strict = isl.strict              # strict islands keep only improvements: they stay near
         accepted = k < old               # their base, where a one- or two-edit answer is found;
         if not accepted and not strict:  # drifting islands collect neutral edits
             accepted = k == old or (p.margin is not None and k[:-1] == old[:-1] and k[-1] - old[-1] <= p.margin)
@@ -1534,7 +1615,7 @@ class Search:
                 return False
             accepted = True
             for rid in ids: self.stats[rid]['new_best'] += 1
-        if isl is self.anchor:
+        if isl.anchor:
             # a job from the original: nothing moves the original; a new best goes to the island
             # that has gone longest without progress
             if newbest:
@@ -1558,7 +1639,7 @@ class Search:
             # back to the best, or every other time to the original source (neutral edits the
             # best carries can block an answer that is one edit from the original)
             c['restarts'] += 1
-            isl.take(self.best if c['restarts'] % 2 else (isl.home or self.origin))
+            isl.take(self.best if c['restarts'] % 2 else (isl.home or isl.root or self.origin))
         elif self.rebase_s and time.time() - isl.t_gain > self.rebase_s:
             # parsimony: an island that has given no new best for --rebase minutes drops its
             # own drifted text and starts again from the best as reduced
@@ -1650,7 +1731,7 @@ class Search:
             self.depth += 1
             self.rng = random.Random(self.rng.random())
             self.weights = {k: v * math.exp(self.rng.gauss(0, 0.6)) for k, v in self.base_weights.items()}
-            for isl in self.islands[::2]: isl.take(isl.home or self.origin)
+            for isl in self.islands[::2]: isl.take(isl.home or isl.root or self.origin)
             self.counts['escalations'] += 1
             print(f'  escalate: duplicate texts {dup:.0%}, depth {self.depth}, new seed and rule mix', flush=True)
         elif dup > 0.45:
@@ -1709,7 +1790,7 @@ class Search:
         of those islands; the islands keep them as their home for restarts."""
         if self.simplify <= 0: return nid
         n = max(2, int(round(self.simplify * self.nisl)))
-        targets = [i for i in self.islands if i.k % 2 == 0 and i.home is None][:n]
+        targets = [i for i in self.islands if not i.strict and i.home is None and (i.root is None or i.root is self.origin)][:n]
         seen = set()
         modes = ['runs', 'run', 'every', 'single']
         for q, isl in enumerate(targets):
@@ -1932,6 +2013,7 @@ class Search:
             if k == 0:
                 self.best = isl
             elif k - 1 < len(self.islands):
+                isl.root, isl.strict = self.islands[k - 1].root, self.islands[k - 1].strict
                 self.islands[k - 1] = isl
                 if saved.get('home'): isl.home = self.load_island(-3, saved['home'], [], None)
         for k, v in st.get('stats', {}).items(): self.stats[k].update(v)

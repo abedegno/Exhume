@@ -5471,3 +5471,11 @@ r_probe_addr.enumerate = enum_probe_addr
 r_probe_remove.enumerate = enum_probe_remove
 MEANING = {'retype': 'type', 'volatile_read': 'same', 'const_type': 'type', 'global_type': 'type', 'callee_linkage': 'type',
            'pad_local': 'probe'}
+
+
+# ---------------------------------------------------------------- engine-side rules (not part of the catalogue blocks above)
+# Edits outside the function body: the macros FUNC invokes (macro_body, macro_expand, macro_fold)
+# and the order of the file's declarations it names (file_order). They live in permmacro.py, which
+# belongs to the permuter's engine; this block only registers them. Keep it last.
+import permmacro as _permmacro          # noqa: E402
+_permmacro.register(globals())
