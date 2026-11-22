@@ -519,6 +519,49 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(permscore.Result().chash, '')
 
 
+class TrustKeyTest(unittest.TestCase):
+    """The structural count comes before the register count in a result's key."""
+
+    @staticmethod
+    def code(*hws):
+        return b''.join(struct.pack('<H', h) for h in hws)
+
+    def counts(self, want, got):
+        e = permscore.rows_of(want, 0, set(), lambda x: None)
+        g = permscore.rows_of(got, 0, set(), lambda x: None)
+        full = permscore.diff_count(permscore.normalise(e), permscore.normalise(g))[0]
+        st = permscore.diff_count(permscore.normalise_struct(permscore.struct_rows(e)), permscore.normalise_struct(permscore.struct_rows(g)))[0]
+        return full, st
+
+    @unittest.skipUnless(__import__('importlib').util.find_spec('capstone'), 'needs capstone')
+    def test_structure_against_registers(self):
+        # ldrb r1,[r0,#3] ; adds r1,#1 ; strb r1,[r0,#0] ; bx lr
+        want = self.code(0x78c1, 0x3101, 0x7001, 0x4770)
+        ties = self.code(0x78c2, 0x3201, 0x7002, 0x4770)            # r2 in place of r1: three ties, no structure
+        self.assertEqual(self.counts(want, ties), (3, 0))
+        sx = self.code(0x78c1, 0xb249, 0x3101, 0x7001, 0x4770)      # the same registers and an sxtb the image lacks
+        self.assertEqual(self.counts(want, sx), (1, 1))
+        wide = self.code(0xf898, 0x1003, 0x3101, 0xf888, 0x1000, 0x4770)   # the base in r8: wide loads, the same structure
+        self.assertEqual(self.counts(want, wide)[1], 0)
+        copy = self.code(0x78c1, 0x460a, 0x3201, 0x7002, 0x4770)    # a register copy in between: not structure
+        self.assertEqual(self.counts(want, copy)[1], 0)
+        swap = self.code(0x78c1, 0x7001, 0x3101, 0x4770)            # two instructions in the other order: structure
+        self.assertGreater(self.counts(want, swap)[1], 0)
+        # one wrong instruction outranks any number of ties; the old count says the opposite
+        a = permscore.Result(True, False, 3, 8, 8, (), code=b'a', struct=0)
+        b = permscore.Result(True, False, 1, 8, 8, (), code=b'b', struct=1)
+        self.assertLess(a.key(), b.key())
+        self.assertEqual(a.text(), '3 (structure 0, registers 3)')
+        permscore.Result.flat = True
+        try:
+            self.assertLess(b.key(), a.key()); self.assertEqual(a.text(), '3')
+        finally:
+            permscore.Result.flat = False
+        import armpermute2 as A
+        self.assertEqual(A.pen_key(a.key(), 1, 2, 3.0, 0.15), (1, 0, 0, 3 + 3.0 + 0.3))
+        self.assertEqual(permscore.Result(True, True, 0, 8, 8, ()).key(), (0, 0, 0, 0))
+
+
 class LineRowsTest(unittest.TestCase):
     def test_line_program(self):
         """A DWARF 3 line program as armcc -g writes it (2-byte instructions, line base 0, range 6,

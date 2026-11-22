@@ -9,7 +9,7 @@ variants made, compiled and scored in a worker pool.
         [--no-reduce] [--no-focus] [--focus-cold P] [--focus-near LINES]
         [--no-sweep] [--sweep-max N] [--sweep-share F] [--pair-share F] [--pairs M] [--pair-removals R]
         [--beam B] [--beam-share F] [--sweep-only]
-        [--origin SHARE]
+        [--origin SHARE] [--flat-score]
 
 First a sweep, so that an answer of one or two edits does not hang on the seed: every single
 edit of the original source is listed (for the probe rules by enumeration: each insertion
@@ -49,6 +49,13 @@ instructions. So a lower count at the wrong size is never progress.
 The parent does no parsing in the loop: it costs a fraction of a millisecond per variant
 (printed at the end, with the workers' generation time), so the workers are never short of jobs.
 
+The key (trust): a result is ordered by exact; then right size with unchanged neighbours; then
+its structural difference (differing instructions with the registers masked: an instruction
+the image does not have, lacks or has elsewhere); then the rest of the differing instructions
+(register ties), with the penalties below added. So no number of register ties pays for a wrong
+instruction. Scores print as `30 (structure 4, registers 26)`; best.txt lists the structural
+differences. --flat-score gives the old single count.
+
 Parsimony: each move in a variant's list costs --move-penalty differing instructions in the
 acceptance key (default 0.15), so of two sources with the same code the shorter list wins and a
 long chain of neutral edits is not progress; and an island that has given no new best for
@@ -67,6 +74,8 @@ uninitialised warnings) and written to OUT/best.c with its edit trail; a score o
 run. Every attempt is logged to OUT/attempts.tsv (island, rules, sites, result, size); the end
 of a run prints per-rule statistics (tried, compiled, improved, accepted) and the throughput.
 State (island bases, best, seen hashes, rule statistics) is kept in OUT/state.json for --resume;
+the end report lists the time and compile count of each new best, and OUT/yield.json and
+OUT/weights.json hold what each rule gave per compile and weights for a later run's --weights;
 every new best also goes to OUT/best/<time>_<score>.c with its edit list, and the lowest count
 seen, however long its list, to OUT/lowest.c. Long runs escalate by
 themselves when most generated texts are duplicates (deeper compound moves, a new seed and rule
@@ -413,7 +422,7 @@ def pen_key(k, d, nm, dead_penalty, move_penalty):
     the variant's list (nm) costs a share of a differing instruction, so of two sources with
     the same code the one with the shorter list wins. An exact result is not penalised."""
     if not k[0] or k[0] == 3: return k
-    return (k[0], k[1], k[2] + dead_penalty * max(0, d or 0) + move_penalty * nm)
+    return k[:-1] + (k[-1] + dead_penalty * max(0, d or 0) + move_penalty * nm,)
 
 
 def token_lines(toks):
@@ -800,6 +809,8 @@ class Gen:
             text = out['text'] = ctext if self.mode == 'whole' else permc.render(toks, self.tail)
             out['moves'] = [x if isinstance(x, dict) else make_move(*x) for x in made]
             improved = force or (old is not None and k < old) or (bkey is not None and k < bkey)
+            if improved and not r.exact and not permscore.Result.flat:
+                out['sdiff'] = permrun._W['target'].struct_diff(raw)      # which instructions are wrong
             if self.focus and not r.exact and not improved and p.get('hot') and base is not None and r.size_ok:
                 out['hot'] = remap_lines(base.text, text, p['hot'])       # the base's hot lines, where they are now
             out['tg'] += time.perf_counter() - t1
@@ -850,7 +861,7 @@ class Island:
 
 
 Pending = collections.namedtuple('Pending', 'isl bh moves trail margin force vtrail vmoves t')
-FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus', '--no-sweep', '--sweep-only', '--same-only')
+FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus', '--no-sweep', '--sweep-only', '--same-only', '--flat-score')
 
 
 class Search:
@@ -876,6 +887,9 @@ class Search:
         self.move_penalty = arg(a, '--move-penalty', 0.15, float)
         self.rebase_s = 60 * arg(a, '--rebase', 10.0, float)   # minutes without a new best before an island goes back to it
         self.focus = '--no-focus' not in a
+        permscore.Result.flat = '--flat-score' in a      # the old single count as the key (before the workers fork)
+        self.history = []                   # (seconds, compiles, score, moves) at each new best
+        self.sdiffs = {}                    # text hash -> its structural differences (from the worker that scored it)
         self.sweep_on = '--no-sweep' not in a
         self.sweep_max = arg(a, '--sweep-max', 3000, int)      # single edits per rule
         self.sweep_share = arg(a, '--sweep-share', 0.25, float) # of --time, for the single edits
@@ -1094,7 +1108,7 @@ class Search:
             # the island's draw for a variant a little worse is made here, so the worker knows
             # what the island would keep: accepted when worse by no more than -temp * ln(u)
             margin = -self.temp * math.log(max(self.rng.random(), 1e-300)) if self.temp > 0 else 0.0
-            thr = (old[0], old[1], old[2] + margin)
+            thr = old[:-1] + (old[-1] + margin,)
         cross = self.cross_moves(isl) if self.p_cross and self.rng.random() < self.p_cross else None
         p = {'bh': isl.bh, 'seed': self.rng.getrandbits(48), 'depth': self.depth, 'cross': cross, 'old': old,
              'thr': thr, 'bkey': self.best.key, 'hot': isl.hot if self.focus else None, 'nm': len(isl.moves),
@@ -1121,7 +1135,7 @@ class Search:
         results = queue.Queue()
         pending = {}
         nid = nres = 0
-        t_start = time.time()
+        t_start = self.t_run = time.time()
         cpu0 = time.process_time()
         last_report = t_start
         done_exact = False
@@ -1299,7 +1313,8 @@ class Search:
             x.update(k=rr['k'], r=r, ohash=rr['ohash'], h=rr.get('h'), d=rr.get('d'))
             st['compiled'] += 1
             if x['ohash'] != o0: st['changed'] += 1
-            if x['k'] < k0: st['improved'] += 1
+            if x['k'] < k0: st['improved'] += 1; self.stats[x['rule']]['sweep_improved'] += 1
+            self.stats[x['rule']]['sweep'] += 1
             if 'best' not in st or x['k'] < st['best'][0]: st['best'] = (x['k'], r.text(), x['desc'])
             done.append(x)
         el = time.time() - t0
@@ -1459,6 +1474,7 @@ class Search:
             return False
         trail = res.get('trail') or p.vtrail or []
         if res.get('h'): self.seen_new.append(res['h'])
+        self.keep_sdiff(res)
         c['made'] += 1
         rules = '+'.join(t[0] for t in trail)
         desc = ' | '.join(t[1] for t in trail)
@@ -1486,7 +1502,7 @@ class Search:
         strict = isl.k % 2 == 1 or isl is self.anchor      # odd islands keep only improvements: they stay near
         accepted = k < old               # their base, where a one- or two-edit answer is found;
         if not accepted and not strict:  # drifting islands collect neutral edits
-            accepted = k == old or (p.margin is not None and k[0] == old[0] and k[1] == old[1] and k[2] - old[2] <= p.margin)
+            accepted = k == old or (p.margin is not None and k[:-1] == old[:-1] and k[-1] - old[-1] <= p.margin)
         better = k < old
         if p.force: accepted = True
         if better:
@@ -1567,9 +1583,15 @@ class Search:
             if '--no-reduce' not in self.a: self.reduce_moves()
             self.write_best()
             print(f'  new best {self.best.result.text()}  ({len(self.best.moves)} moves)  [{rules}] {desc[:150]}', flush=True)
+            self.history.append((time.time() - self.t_run, self.counts['compiled'], self.best.result.text(), len(self.best.moves)))
             return None
         finally:
             self.t_best += time.perf_counter() - t0
+
+    def keep_sdiff(self, res):
+        if res.get('sdiff') is not None and res.get('h'):
+            if len(self.sdiffs) > 300: self.sdiffs.clear()
+            self.sdiffs[res['h']] = res['sdiff']
 
     def set_low(self, r, text, nm):
         self.low = (r.key(), r.text(), nm)
@@ -1641,6 +1663,7 @@ class Search:
 
     depth = 0
     t_best_sweep = 0.0
+    t_run = 0.0
     win = (0, 0, 0)
     origin = None
     cpu = 0.0
@@ -1664,6 +1687,9 @@ class Search:
             out += [f'  {m["rule"]}\t{m["desc"]}' for m in b.moves]
         if b.hot:
             out.append('source lines the differing instructions come from: ' + ' '.join(str(x) for x in b.hot))
+        if self.sdiffs.get(b.h):
+            out.append('structural differences (- the image, + this source; registers masked):')
+            out += ['  ' + x for x in self.sdiffs[b.h]]
         try:
             ctx = self.gen.make_ctx(permc.tokenize(b.text)[0])
             kept = [ctx.src(n.start, n.end) for n in R.repeated_stores(ctx) + R.dead_stores(ctx)]
@@ -1717,6 +1743,7 @@ class Search:
             except Exception:
                 res = {}
             r = res.get('r')
+            self.keep_sdiff(res)
             out.append((res.get('k') if r is not None and r.ok else None, res))
         return out
 
@@ -1823,8 +1850,36 @@ class Search:
             cold = sum(s['cold'] for s in self.stats.values()); ck = sum(s['cold_kept'] for s in self.stats.values())
             print(f'focus: edits at hot lines {hot}, exempt (global) {ex}, elsewhere kept {ck} and dropped {cold}; '
                   f'{c["focus_compiles"]} -g compiles for line rows ({c["focus_s"]:.1f} s of worker time)')
+        if self.history:
+            print('new bests, by time and compiles (is it still descending?):')
+            for sec, n, text, nm in self.history: print(f'  {sec:7.0f} s  {n:8} compiles  {text}, {nm} moves')
+            last = self.history[-1]
+            print(f'  since the last one: {el - last[0]:.0f} s and {c["compiled"] - last[1]} compiles without a new best')
+        self.write_yield()
         with open(os.path.join(self.out, 'rules.json'), 'w') as f:
             json.dump({k: dict(v) for k, v in self.stats.items()}, f, indent=1)
+
+    def write_yield(self):
+        """OUT/yield.json: per rule, what its variants gave per compile (changed the code,
+        improved an island, entered a best). OUT/weights.json: the run's weights scaled by each
+        rule's rate of improvements against the average rate (between a quarter and four times;
+        a rule with fewer than 30 compiles keeps its weight), in the form --weights loads."""
+        tot_c = sum(s['compiled'] for s in self.stats.values()) or 1
+        avg = (sum(s['improved'] + 2 * s['new_best'] for s in self.stats.values()) + 1) / tot_c
+        y, w = {}, {}
+        for r in self.rules:
+            s = self.stats[r.id]
+            n = s['compiled']
+            rate = (s['improved'] + 2 * s['new_best']) / n if n else 0.0
+            y[r.id] = {'compiled': n, 'changed_code': n - s['noop'], 'improved': s['improved'], 'accepted': s['accepted'],
+                       'new_best': s['new_best'], 'improved_per_compile': round(s['improved'] / n, 5) if n else None,
+                       'sweep_singles': s['sweep'], 'sweep_improved': s['sweep_improved']}
+            base = self.base_weights.get(r.id, r.weight)
+            f = min(4.0, max(0.25, (rate + avg * 30 / n) / (avg + avg * 30 / n))) if n >= 30 else 1.0
+            if s['sweep'] >= 30 and not s['sweep_improved'] and not s['improved']: f = min(f, 0.5)
+            w[r.id] = round(base * f, 3)
+        with open(os.path.join(self.out, 'yield.json'), 'w') as f: json.dump(y, f, indent=1)
+        with open(os.path.join(self.out, 'weights.json'), 'w') as f: json.dump(w, f, indent=1)
 
     # ---- state
     def save_state(self):
