@@ -3547,7 +3547,7 @@ def r_stmt_move(ctx, rng, everywhere=False):
         c = ctx._sm = [(blk, k) for blk in permc.blocks(ctx.root) if len(blk.children) >= 2
                        for k, s in enumerate(blk.children) if s.kind == 'stmt']
     if not c: return None
-    for _ in range(10):
+    for _ in range(24):
         blk, k = rng.choice(c)
         kids = blk.children
         s = kids[k]
