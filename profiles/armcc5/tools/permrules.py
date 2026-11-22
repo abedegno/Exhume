@@ -535,6 +535,184 @@ def r_probe_addr(ctx, rng, everywhere=False):
     return Edit([ctx.insert_at(i, _probe_text(e))], f'probe {e} @{_line(ctx, i)}', meaning='probe')
 
 
+# ---- enumeration of the probe rules, for the permuter's sweep of single edits
+# A rule function may carry `enumerate(ctx)`: a list of (tier, Edit) or (tier, Edit, family)
+# covering what the rule can make, not a random draw of it. The tiers order the work when there
+# is not time for all of it: every insertion point gets its tier 1 probes before any point gets
+# its tier 2 ones. A family names what an edit shares with others at other points (the constant
+# a shift probe uses, the operand a comparison reads): the sweep tries the rest of a family
+# sooner once one of its members has improved the score.
+
+def _names_near(ctx, i, want_local=False, with_globals=True):
+    """Variable reads visible at token i (as _operands_near), each once, nearest use first."""
+    best = {}
+    for k in range(max(ctx.lb, i - 60), min(ctx.rb, i + 60)):
+        w = ctx.toks[k]
+        if w[0] == 'id' and w[1] not in permc.KEYWORDS and ctx.toks[k + 1][1] != '(' and ctx.visible(w[1], i):
+            if w[1] in ctx.types.functions: continue
+            loc = ctx.locals.get(w[1])
+            if loc and (loc.dims or not ctx.assigned_before(w[1], i)): continue
+            if w[1] in ctx.dup_names: continue
+            is_local = bool(loc or w[1] in ctx.params)
+            if want_local and not is_local: continue
+            if not with_globals and not is_local: continue
+            g = ctx.types.globals.get(w[1])
+            if g and g[1]: continue
+            if not _int_name(ctx, w[1]): continue
+            d = abs(k - i)
+            if d < best.get(w[1], 1 << 30): best[w[1]] = d
+    if not best:
+        return [n for n in list(ctx.locals) + list(ctx.params) if ctx.visible(n, i) and _int_name(ctx, n)
+                and ctx.assigned_before(n, i) and n not in ctx.dup_names]
+    return sorted(best, key=lambda n: (best[n], n))
+
+
+def _consts_near(ctx, i, nonzero=False):
+    """The function's constants used within 80 tokens of token i, each once, nearest first."""
+    best = {}
+    for k in range(max(ctx.lb, i - 80), min(ctx.rb, i + 80)):
+        w = ctx.toks[k]
+        if w[0] in ('num', 'chr') and w[1] in ctx.consts and not (nonzero and w[1] in ('0', '1')):
+            d = abs(k - i)
+            if d < best.get(w[1], 1 << 30): best[w[1]] = d
+    return sorted(best, key=lambda c: (best[c], c))
+
+
+def _probe_points(ctx):
+    """The insertion points for a new probe: every statement boundary not inside a probe."""
+    inside = [(n.start, n.end) for kind, n, _ in find_probes(ctx) if kind == 'block']
+    return [p for p in ctx.points() if not any(a < p[0] < b for a, b in inside)]
+
+
+def _probe_edit(ctx, i, e):
+    return Edit([ctx.insert_at(i, _probe_text(e))], f'probe {e} @{_line(ctx, i)}', meaning='probe')
+
+
+def _tests_near(ctx, i, limit=4):
+    """Comparisons with a constant that the function makes within 120 tokens of token i, as
+    `E == K` texts, nearest first: a probe that repeats a test near it (`model == 'C'` again in
+    the arm that tested it) is the form most recorded probes had."""
+    tests = getattr(ctx, '_pmt_tests', None)
+    if tests is None:
+        tests = ctx._pmt_tests = []
+        for top in _all_exprs(ctx):
+            for e in permc.ewalk(top):
+                if e.kind != 'bin' or e.op not in ('==', '!=', '<', '>', '<=', '>='): continue
+                l, r = e.kids
+                if r.kind != 'atom' or ctx.toks[r.start][0] not in ('num', 'chr'): continue
+                if permc.has_side_effects(l, ctx.toks): continue
+                names = [ctx.toks[k][1] for k in range(l.start, l.end) if ctx.toks[k][0] == 'id']
+                if any(n in ctx.dup_names for n in names): continue
+                tests.append((e.start, names, f'{ctx.src(l.start, l.end)} == {ctx.toks[r.start][1]}'))
+    out = []
+    for at, names, text in sorted(tests, key=lambda x: abs(x[0] - i)):
+        if abs(at - i) > 120 or len(out) >= limit: break
+        if text in out: continue
+        if all(ctx.visible(n, i) and ctx.assigned_before(n, i) for n in names if n in ctx.locals): out.append(text)
+    return out
+
+
+def _shared_consts(ctx, limit=10):
+    """Constants the function uses more than once (candidates for one shared register), most
+    used first; not 0 or 1."""
+    cnt = {}
+    for k in range(ctx.lb, ctx.rb):
+        w = ctx.toks[k]
+        if w[0] in ('num', 'chr') and w[1] in ctx.consts and w[1] not in ('0', '1'): cnt[w[1]] = cnt.get(w[1], 0) + 1
+    return [c for c in sorted(cnt, key=lambda c: (-cnt[c], c)) if cnt[c] > 1][:limit]
+
+
+def enum_probe_cmp(ctx):
+    """Tier 1: at each point, the tests made near it repeated, and the two nearest operands
+    compared with 0. Tier 2: the other operands with 0, the two nearest with the nearest
+    constant. Tier 3: every operand with the two nearest constants, the difference of the two
+    nearest. Tier 4: further constants (up to six) and operand pairs."""
+    out = []
+    for i, _, _ in _probe_points(ctx):
+        ops = _names_near(ctx, i)
+        ks = [k for k in _consts_near(ctx, i) if k != '0']
+        made = set()
+
+        def put(tier, e):
+            if e not in made:
+                made.add(e); out.append((tier, _probe_edit(ctx, i, e), 'cmp ' + e.split(' ')[0]))
+        for e in _tests_near(ctx, i): put(1, e)
+        for x in ops[:2]: put(1, f'{x} == 0')
+        for x in ops[2:]: put(2, f'{x} == 0')
+        for x in ops[:2]:
+            for k in ks[:1]: put(2, f'{x} == {k}')
+        if len(ops) > 1: put(3, f'{ops[0]} - {ops[1]} == 0')
+        for x in ops:
+            for k in ks[:2]: put(3, f'{x} == {k}')
+        for x in ops:
+            for k in ks[2:6]: put(4, f'{x} == {k}')
+        for a in range(min(len(ops), 4)):
+            for b in range(a + 1, min(len(ops), 4)): put(4, f'{ops[a]} - {ops[b]} == 0')
+    return out
+
+
+def enum_probe_shift(ctx):
+    """Tier 1: at each point, the nearest constant shifted by the nearest local or parameter
+    (or, with none, the nearest global). Tier 1.5: each constant the function shares (used more
+    than once) at every eighth point, to learn which constants answer. Tier 2: each shared
+    constant at every point, shifted by the nearest local and the nearest global; the other
+    locals with the nearest constant. Tier 3: the next two near constants by each local, the
+    nearest by each global. The family is the constant."""
+    out = []
+    shared = _shared_consts(ctx)
+    for n, (i, _, _) in enumerate(_probe_points(ctx)):
+        ks = _consts_near(ctx, i, nonzero=True) or shared[:1] or [c for c in ctx.consts if c not in ('0', '1')][:1]
+        if not ks: continue
+        loc = _names_near(ctx, i, want_local=True)
+        glob = [x for x in _names_near(ctx, i) if x not in loc]
+        made = set()
+
+        def put(tier, k, x):
+            e = f'({k} << {x}) == 0'
+            if e not in made:
+                made.add(e); out.append((tier, _probe_edit(ctx, i, e), 'shift ' + k))
+        first = (loc or glob)[:1]
+        for x in first: put(1, ks[0], x)
+        if n % 8 == 0:
+            for x in first:
+                for k in shared: put(1.5, k, x)
+        for x in dict.fromkeys(first + glob[:1]):
+            for k in shared: put(2, k, x)
+        for x in loc[1:]: put(2, ks[0], x)
+        for x in loc:
+            for k in ks[1:3]: put(3, k, x)
+        for x in glob[:4]: put(3, ks[0], x)
+    return out
+
+
+def enum_probe_addr(ctx):
+    """Tier 3: at each point, the addresses of the two globals named nearest to it compared.
+    Tier 4: the nearest with each of the next two."""
+    out = []
+    gs = {w for w in ctx.ids if w in ctx.types.globals and w not in ctx.types.functions}
+    if len(gs) < 2: return out
+    for i, _, _ in _probe_points(ctx):
+        near = sorted(gs, key=lambda g: (min(abs(k - i) for k in ctx.ids[g]), g))[:4]
+        for n, b in enumerate(near[1:]):
+            out.append((3 if n == 0 else 4, _probe_edit(ctx, i, f'(const void *)&{near[0]} != (const void *)&{b}')))
+    return out
+
+
+def enum_probe_remove(ctx):
+    """Tier 0: each probe removed alone, and all of them."""
+    ps = find_probes(ctx)
+    out = []
+    for chosen in [[p] for p in ps] + ([ps] if len(ps) > 1 else []):
+        spans = []
+        for kind, n, s in chosen:
+            if kind == 'block': spans.append((n.start, n.end, []))
+            else:
+                e = ctx.cond_expr(n)
+                spans.append((e.start, e.kids[1].start, []))
+        out.append((0, Edit(spans, 'remove probe ' + '; '.join(' '.join(s.split())[:60] for _, _, s in chosen), meaning='probe')))
+    return out
+
+
 # any block that only declares one local and stores a side-effect-free value in it (the value is
 # never read): the stored-comparison probe however it is spelt (with or without the cast, the
 # value given at the declaration or after it)
@@ -5287,5 +5465,9 @@ RULES = [
     Rule('pad_local', 'generic', 0.5, r_pad_local),
 ]
 BY_ID = {r.id: r for r in RULES}
+r_probe_cmp.enumerate = enum_probe_cmp
+r_probe_shift.enumerate = enum_probe_shift
+r_probe_addr.enumerate = enum_probe_addr
+r_probe_remove.enumerate = enum_probe_remove
 MEANING = {'retype': 'type', 'volatile_read': 'same', 'const_type': 'type', 'global_type': 'type', 'callee_linkage': 'type',
            'pad_local': 'probe'}
