@@ -328,7 +328,6 @@ def cut_text(toks, tail, func, types, keep=None):
     keep = callees(toks, func, pair) if keep is None else keep
     spans = []
     depth = 0
-    t_best_sweep = 0.0
     i = 0
     n = len(toks)
     while i < n:
@@ -1634,6 +1633,7 @@ class Search:
         self.push_weights()
 
     depth = 0
+    t_best_sweep = 0.0
     win = (0, 0, 0)
     origin = None
     cpu = 0.0
