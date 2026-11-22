@@ -8,7 +8,7 @@ variants made, compiled and scored in a worker pool.
         [--dead-penalty N] [--move-penalty N] [--rebase MINUTES] [--cross P] [--simplify SHARE]
         [--no-reduce] [--no-focus] [--focus-cold P] [--focus-near LINES]
         [--no-sweep] [--sweep-max N] [--sweep-share F] [--pair-share F] [--pairs M] [--pair-removals R]
-        [--thirds T] [--sweep-only]
+        [--beam B] [--beam-share F] [--sweep-only]
         [--origin SHARE]
 
 First a sweep, so that an answer of one or two edits does not hang on the seed: every single
@@ -17,8 +17,10 @@ point with each operand near it against 0, the nearest constants, the function's
 constants, the nearest operand; for the other rules by draws with fixed seeds until 60 in a
 row give nothing new; at most --sweep-max per rule, 3000), compiled and scored; then the
 --pairs (40) best singles that changed the object, one per distinct object, are applied two at
-a time, and the --thirds (10) best pairs get each of those singles as a third edit. With --time
-the singles get --sweep-share of it (0.25) and the pairs --pair-share (0.15), the thirds 0.05,
+a time; then a beam: the --beam (10) best distinct pairs each get one of the best 60 singles as
+a third edit, the best of those a fourth, up to six, while a level betters the one before. With
+--time the singles get --sweep-share of it (0.25), the pairs --pair-share (0.15) and the beam
+--beam-share (0.15),
 probes in tiers so that a limit thins every part of the function alike. The per-rule results
 are printed and every result is in OUT/sweep.tsv. After the first tiers, the probe families
 (a shift probe's constant, a comparison's operand) of which a member improved the score are
@@ -872,7 +874,8 @@ class Search:
         self.sweep_max = arg(a, '--sweep-max', 3000, int)      # single edits per rule
         self.sweep_share = arg(a, '--sweep-share', 0.25, float) # of --time, for the single edits
         self.pair_share = arg(a, '--pair-share', 0.15, float)   # of --time, for the pairs
-        self.third_top = arg(a, '--thirds', 10, int)            # the best pairs given a third edit
+        self.beam = arg(a, '--beam', 10, int)                   # the best results of a level given one more edit
+        self.beam_share = arg(a, '--beam-share', 0.15, float)   # of --time, for the third and further edits
         self.pair_top = arg(a, '--pairs', 40, int)              # the best singles paired with each other
         self.pair_rem = arg(a, '--pair-removals', 300, int)     # the best singles paired with each removal
         self.p_origin = arg(a, '--origin', 0.15, float)         # share of jobs made from the original source
@@ -1234,7 +1237,7 @@ class Search:
         limited = self.tlimit < 1e8
         d_single = t_start + self.sweep_share * self.tlimit if limited else float('inf')
         d_pair = t_start + (self.sweep_share + self.pair_share) * self.tlimit if limited else float('inf')
-        d_third = d_pair + 0.05 * self.tlimit if limited else float('inf')
+        d_third = d_pair + self.beam_share * self.tlimit if limited else float('inf')
         # the workers list the singles, a rule per job (the compound rules take seconds on a
         # large function); one edit is kept once, for the first rule that makes it
         jobs = ([None] if self.simplify > 0 else []) + [r.id for r in self.rules]
@@ -1350,34 +1353,48 @@ class Search:
             print(f'  pairs: the {nt} best distinct singles two at a time, and {len(rem)} removals each with the best {len(wide)}: {len(pairs)} of {len(pl)} compiled in {time.time() - t1:.0f} s'
                   + ('' if len(res) >= len(pl) else f' (time for {len(res)})')
                   + f'; {sum(1 for x in pairs if x["k"] < x["parents"])} better than both their singles, {sum(1 for x in pairs if x["k"] < k0)} better than the start', flush=True)
-            # a third edit: the best --thirds distinct pairs, each with each of the best singles
-            thirds = []
-            if pairs and self.third_top > 0 and not any(x['r'].exact and not x['r'].neighbours for x in pairs):
+            # further edits, a beam: the best --beam distinct results of a level, each with each of
+            # the best 60 singles as one more edit, while a level betters the one before
+            thirds, prev, level = [], pairs, 2
+            ext = wide[:max(nt, 60)]
+            while (prev and self.beam > 0 and level < 6 and time.time() < d_third
+                   and not any(x['r'].exact and not x['r'].neighbours for x in prev)):
                 bp, objs = [], set()
-                for x in pairs:
+                for x in prev:
                     if x['ohash'] in objs or x['k'] >= k0: continue
                     objs.add(x['ohash']); bp.append(x)
-                    if len(bp) >= self.third_top: break
-                cand = [(p, x) for p in bp for x in top[:nt] if not any(m is x['moves'][0] for m in p['moves'])]
+                    if len(bp) >= self.beam: break
+                cand = [(p, x) for x in ext for p in bp if not any(m is x['moves'][0] for m in p['moves'])]
+                if not cand: break
                 t2 = time.time()
                 res = self.pump([p['moves'] + x['moves'] for p, x in cand], d_third)
+                cur = []
                 for n, (p, x) in enumerate(cand):
                     rr = res.get(n)
                     r = rr.get('r') if rr else None
                     if r is None or not r.ok: continue
-                    thirds.append({'rule': p['rule'] + '+' + x['rule'], 'tier': -2, 'desc': p['desc'] + ' | ' + x['desc'],
-                                   'moves': p['moves'] + x['moves'], 'k': rr['k'], 'r': r, 'ohash': rr['ohash'], 'h': rr.get('h'),
-                                   'd': rr.get('d'), 'simp': False, 'parents': p['k']})
-                if cand:
-                    print(f'  thirds: the {len(bp)} best distinct pairs each with a third of the best singles: {len(thirds)} of {len(cand)} '
-                          f'compiled in {time.time() - t2:.0f} s; {sum(1 for x in thirds if x["k"] < x["parents"])} better than their pair', flush=True)
+                    cur.append({'rule': p['rule'] + '+' + x['rule'], 'tier': -level, 'desc': p['desc'] + ' | ' + x['desc'],
+                                'moves': p['moves'] + x['moves'], 'k': rr['k'], 'r': r, 'ohash': rr['ohash'], 'h': rr.get('h'),
+                                'd': rr.get('d'), 'simp': False, 'parents': p['k']})
+                level += 1
+                cur.sort(key=lambda x: x['k'])
+                gain = bool(cur) and cur[0]['k'] < bp[0]['k']
+                print(f'  {level} edits: the {len(bp)} best distinct results of {level - 1} edits each with one of the best {len(ext)} singles: '
+                      f'{len(cur)} of {len(cand)} compiled in {time.time() - t2:.0f} s'
+                      + ('' if len(res) >= len(cand) else f' (time for {len(res)})')
+                      + f'; {sum(1 for x in cur if x["k"] < x["parents"])} better than what they extend'
+                      + (f', best {cur[0]["r"].text()}' if cur else ''), flush=True)
+                thirds += cur
+                if not gain: break
+                prev = cur
             with open(os.path.join(self.out, 'sweep.tsv'), 'a') as f:
                 for x in pairs + thirds:
-                    f.write(f'{"pair" if x["tier"] == -1 else "third"}\t{x["rule"]}\t\t{x["r"].text()}\t{x["k"]}\t{x["ohash"]}\t{" ".join(x["desc"].split())}\n')
+                    f.write(f'{1 - x["tier"]} edits\t{x["rule"]}\t\t{x["r"].text()}\t{x["k"]}\t{x["ohash"]}\t{" ".join(x["desc"].split())}\n')
             pairs += thirds
         allr = sorted(done + pairs, key=lambda x: x['k'])
         for x in allr[:8]:
-            print(f'    {("single", "pair  ", "third ")[min(2, int(-x["tier"]))] if x["tier"] < 0 else "single"} {x["r"].text():>24}  [{x["rule"]}] {x["desc"][:140]}', flush=True)
+            what = 'single ' if x['tier'] >= 0 else '%d edits' % (1 - x['tier'])
+            print(f'    {what} {x["r"].text():>24}  [{x["rule"]}] {x["desc"][:140]}', flush=True)
         self.swept = True
         self.counts['sweep_s'] = time.time() - t0
 
