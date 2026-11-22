@@ -1092,9 +1092,9 @@ class Search:
         p = {'bh': isl.bh, 'seed': self.rng.getrandbits(48), 'depth': self.depth, 'cross': cross, 'old': old,
              'thr': thr, 'bkey': self.best.key, 'hot': isl.hot if self.focus else None, 'nm': len(isl.moves),
              'low': self.low[0]}
-        if isl is self.anchor:
-            p['cross'] = None
-            if self.swept: p['steps'] = 2         # the single edits of the original were all tried
+        if isl is self.anchor: p['cross'] = None
+        if self.swept and isl.bh == self.origin.bh and not cross:
+            p['steps'] = 2                        # the single edits of the original were tried in the sweep
         if self.dead_penalty: p['front'] = {d: v[0] for d, v in self.front.items()}
         pending[nid] = Pending(isl.k, isl.bh, isl.moves, isl.trail, margin, False, None, None, time.time())
         self.send(('gen', nid, p), results)
