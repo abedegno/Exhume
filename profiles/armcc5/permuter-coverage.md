@@ -21,6 +21,9 @@ program does, or cannot be proved) or `probe` (adds dead code). Line numbers are
 - Now 82 have a rule: 35 new rules, and four older rules extended (`decl_order`, `const_type`,
   `expr_split`, `ptr_base`).
 - 6 are left: five uncovered, each with its reason, and one that is not a lever (the last section).
+- A second audit (the older tools, the other documents, the projects' lesson notes) added 19 rows:
+  12 more rules, among them `uniform` (one edit at every look-alike site), and seven older rules
+  extended. Its own section lists them and what it left.
 
 ## The levers
 
@@ -131,13 +134,86 @@ program does, or cannot be proved) or `probe` (adds dead code). Line numbers are
 | 81 | `#pragma O0` round one function | none | `func_pragma` |
 | 94, 256, 751 | the file's options line (`--no_data_reorder`, `--bss_threshold=N`) | none | `file_opts` (the workers compile such a variant with its own line) |
 
+## Second audit: the older tools, the other documents and the projects' lesson notes
+
+The same question put to the remaining sources of tested levers. The project notes are private:
+only the kind of edit is recorded here, in generic terms.
+
+Levers found per source (kinds of source edit, counted once per source; most were already in the
+tables above):
+
+| Source | Kinds found | Already in the tables | New rows below |
+|---|---|---|---|
+| `tools/armidioms.py` (its nine modes) | 9 | 6 | 3 |
+| `tools/armpermute.py` (the old permuter's moves) | 13 | 13 | 0 |
+| `tools/armoutline.py` (helper forms, `--sweep`) | 6 | 4 | 2 |
+| `tools/armbrute.py` (`--table` and `--pool` spellings), `armvariant.py`, `armreduce.py`, `armfixdb.py` | 8 | 8 | 0 |
+| other documents of this repository (`docs/`, the skills, `linker.md`) | 3 | 3 | 0 |
+| lesson notes of one firmware family (five notes files) | 58 | 44 | 14 |
+| notes, commit subjects and memory notes of two other trees | 70 | 61 | 9 (5 of them shared with the row above) |
+
+New rows:
+
+| Source | Lever | Before | Now |
+|---|---|---|---|
+| idiom tool | a literal held in a new function-scope local, set just before the statement or at the top of the body | partly (`const_local`: a block local) | `literal_local` |
+| idiom tool, notes | a literal held in a local the function already has, which is dead there | none | `literal_local` |
+| idiom tool | a dead `x = 0;` before any store to x | partly (`dup_store`: only a target with a constant store elsewhere) | `dead_zero` |
+| outline tool | a helper whose run-only locals are declared inside it; stored locals passed by address | partly (`outline_block`: by value and one returned) | `outline_block` (extended) |
+| notes | one later read of a local written as its value expression again; a second store taken from the source, not from the first target; one bound of a range test on a fresh read and the other on the copy | partly (`local_inline` removes the local at every use) | `copy_source` (and the reverse) |
+| notes | a statement under a test that is always true where it stands | none | `known_guard` (where the fact can be proved) |
+| notes | a range guard round a switch | none | `switch_guard` |
+| notes | a flag stored in each arm against the stored test (`x = (c);`) | partly (`flag_else`, `ternary`) | `bool_store` |
+| notes | how an accumulation starts (`id = 0; id \|= a;` against `id = a;`) | none | `accum_start` |
+| notes | grouping and term order of a sum of three or more terms | partly (`operand_order`: two operands) | `regroup` |
+| notes | other forms of the unread comparison: ahead of an if's test with a comma, `while (E) break;`, `if (E) goto L; L: ;`, stored in one of the function's own dead locals, an empty `switch (0)`; a call argument behind a comma | partly (removal of the comma form only) | `probe_forms` |
+| notes | a side effect on the stored value (`buf[i] = (c = 0, v);`) | none | `array_operand` (extended) |
+| notes | an unused extra parameter | none | `extra_param` |
+| notes | a store or load through a cast of the other sign (`*(short *)&g = v;`) | partly (`view_access`: same type, volatile, wider) | `view_access` (extended) |
+| notes | a constant written from a variable that holds a nearby constant (`dmin = cmin - 5;`) | none | `known_const` (extended) |
+| notes | a wider constant that is cut to the same stored value; a wrap written as a mask, a cast or a modulo | none | `wrap_form` |
+| notes | an identity helper round one value | none | `expr_helper` (extended) |
+| notes | a block that opens with a copy of one of the function's declaration lines and uses none of its names | partly (`pad_local`) | `pad_local` (extended) |
+| notes, the user's standing guidance | one idiom at every look-alike site (macro-like copy-paste), or at a run of them | partly (`everywhere` of some rules) | `uniform` (below) |
+
+Recorded as tried with no effect, and so given no rule: spellings of a constant (a suffix that
+does not change its type, an enum, a `static const`, a folded expression), spellings of an
+equality (`!(x - K)`, `(x ^ K) == 0`), the `register` keyword, a file-scope register binding,
+the file's prologue (order of declarations, headers, unused declarations: the `file_order` rule
+covers the one part that had an effect), line layout, storing a call's ignored result, an
+explicit run-time helper call for a conversion.
+
+Left uncovered from these sources:
+
+| Lever | Why |
+|---|---|
+| an object read through a parameter that points to it against the global itself | the rule would have to know that the two are one object; nothing in the file says so |
+| where a callee or a global is defined (this file or another, before or after), one aggregate against separate globals, an address written as a symbol | file and data ownership, as in the first audit; the map decides them |
+| a bit-field member store against a mask through a cast byte address; an aligned struct cast of a base against packed fields of a global at an odd address | need the bit and byte layout of the struct and the object's address |
+| a narrower or wider cast view of a struct field | `view_access` takes named scalar globals; a field needs its layout to be read back safely |
+| function-local statics, a pointer cursor over a global counter, a result through an out-parameter | recorded as ruled out in every case noted (the first changes storage); `outline_block` makes the out-parameter form for a helper |
+
+### One edit at every look-alike site
+
+`uniform` groups the function's statements (and runs of two) by token shape: keywords,
+operators, type names and called names as written, every other identifier by where it first
+appears in the statement, constants and one-token array indices abstracted. A group needs three
+members. It takes an edit that some rule makes inside one member and has the same rule make it
+at the other members, by steering the rule's own choice of site there, so the rule's
+preconditions are checked at each member; a member where the rule does not make the same edit
+is left alone and counted in the description (`at 5 of 6 look-alike sites (1 refused)`). It
+applies to every member, to a contiguous range of them, or to a random half. Its `enumerate`
+hook gives the sweep, for each group and each rule, the edits found at the group's first member
+made at all members.
+
 ## Sweep coverage
 
 A rule whose sites form a large structured space carries an `enumerate` hook, so the permuter's
 sweep lists every single edit instead of drawing: `known_const` (every literal and every read a
 known variable can stand for), `view_access`, `subexpr_local`, `outline_block` (every run of one to
 five statements), `cache_group` (every run), `probe_test`, `probe_elem`, `probe_ptr` (every second
-point), `array_operand` and `nop_form`. The other new rules have at most a few edits per site
+point), `array_operand`, `nop_form`, and from the second audit `dead_zero`, `literal_local`,
+`copy_source`, `known_guard`, `probe_forms` and `uniform`. The other new rules have at most a few edits per site
 and a few sites per function; the sweep's fixed-seed draws (until 60 in a row give nothing new)
 list them all.
 
