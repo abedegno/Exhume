@@ -106,6 +106,10 @@ def match_brackets(toks):
 _TYPEDEF = re.compile(r'\btypedef\b([^;{]*(?:\{(?:[^{}]|\{[^{}]*\})*\})?[^;]*?)\b(\w+)\s*(?:\[[^\]]*\])?\s*;', re.S)
 
 
+_DEFINE = re.compile(r'^[ \t]*#[ \t]*define[ \t]+(\w+)(\([^)\n]*\))?(.*)$', re.M)
+_VOLATILE = re.compile(r'\bvolatile\b[^;{}()=]*')
+
+
 def strip_comments(text):
     return re.sub(r'/\*.*?\*/|//[^\n]*', ' ', text, flags=re.S)
 
@@ -130,12 +134,20 @@ class TypeInfo:
         self.struct_fields = {}       # typedef name -> [(field, type, dims)]
         self.globals = {}
         self.functions = set()
+        self.macros = {}              # name -> (parameter text or None, body) of every #define read
+        self.volatiles = set()        # identifiers of any declaration that says volatile (an over-estimate)
+        self.header_ids = set()       # identifiers that occur in the headers (file_types): declared outside the file
 
     def is_type_word(self, w):
         return w in self.names or w in ('struct', 'union', 'enum') or w in QUALIFIERS
 
     def scan(self, text):
         t = strip_comments(text)
+        for m in _DEFINE.finditer(t.replace('\\\r\n', ' ').replace('\\\n', ' ')):
+            self.macros.setdefault(m.group(1), (m.group(2), m.group(3).strip()))
+        for m in _VOLATILE.finditer(t):
+            self.volatiles.update(re.findall(r'[A-Za-z_]\w*', m.group()))
+        self.volatiles -= KEYWORDS
         t = re.sub(r'^\s*#[^\n]*', ' ', t, flags=re.M)
         for m in _TYPEDEF.finditer(t):
             body, name = m.group(1), m.group(2)
@@ -212,6 +224,7 @@ def file_types(path, text, include_dirs=()):
         if p in seen: continue
         seen.add(p)
         ti.scan(t)
+        if len(seen) > 1: ti.header_ids.update(re.findall(r'[A-Za-z_]\w*', strip_comments(t)))
         for q in includes(p, t, include_dirs):
             if q not in seen:
                 with open(q, encoding='latin1') as f: todo.append((q, f.read()))
@@ -335,7 +348,12 @@ def is_decl(toks, n, types):
     if n.kind != 'stmt': return False
     w = toks[n.start][1]
     if w in ('return', 'break', 'continue', 'goto'): return False
-    if types.is_type_word(w): return True
+    if types.is_type_word(w):
+        if w in KEYWORDS or n.start + 1 >= n.end: return True
+        # a typedef name can also be a variable's name (`word = sum / count;`): a declaration goes on
+        # with a name, a * or more type words
+        nx = toks[n.start + 1]
+        return nx[0] == 'id' or nx[1] == '*' or (nx[1] == '(' and toks[n.start + 2][1] == '*')
     if toks[n.start][0] == 'id' and n.start + 1 < n.end:
         k = n.start + 1
         while toks[k][1] == '*': k += 1
