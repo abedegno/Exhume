@@ -1244,6 +1244,140 @@ def r_stmt_swap(ctx, rng, everywhere=False):
                 f'swap statements {sa[:30]} / {sb[:30]}')
 
 
+# ---------------------------------------------------------------- D32 loop form
+
+def _split_top(ctx, a, b, sep):
+    """Token ranges of a..b split at sep outside brackets."""
+    t, out, s, i = ctx.toks, [], a, a
+    while i < b:
+        w = t[i][1]
+        if w in ('(', '[', '{'): i = ctx.pair[i]
+        elif w == sep: out.append((s, i)); s = i + 1
+        i += 1
+    out.append((s, b))
+    return out
+
+
+def _elem_ids(ctx, a, b):
+    return {ctx.toks[i][1] for i in range(a, b) if ctx.toks[i][0] == 'id'}
+
+
+def _elem_writes(ctx, a, b):
+    """Identifiers an expression a..b stores to (None when it is not a plain store or step)."""
+    e = ctx.expr(a, b)
+    if e is None: return None
+    t, w = ctx.toks, set()
+    for x in permc.ewalk(e):
+        if x.kind == 'call': return None
+        if x.kind in ('assign', 'postfix') or (x.kind == 'unary' and x.op in ('++', '--')):
+            base = x.kids[0]
+            if base.kind != 'atom': return None
+            w.add(t[base.start][1])
+    return w or None
+
+
+def _independent(ctx, x, y):
+    wx, wy = _elem_writes(ctx, *x), _elem_writes(ctx, *y)
+    if wx is None or wy is None: return False
+    return not (wx & _elem_ids(ctx, *y)) and not (wy & _elem_ids(ctx, *x))
+
+
+def r_loop_form(ctx, rng, everywhere=False):
+    """for-header forms: the statement before a for into its init, the body's last statement into its
+    step, the reverse of both, the order of comma elements, and for against while."""
+    t = ctx.toks
+    cands = []
+    for blk in permc.blocks(ctx.root):
+        kids = blk.children
+        for k, n in enumerate(kids):
+            if n.kind not in ('for', 'while'): continue
+            prev = kids[k - 1] if k and kids[k - 1].kind == 'stmt' and ctx.stmt_expr(kids[k - 1]) is not None \
+                and _elem_writes(ctx, kids[k - 1].start, kids[k - 1].end - 1) else None
+            body = n.body
+            has_cont = any(t[i][1] == 'continue' for i in range(body.start, body.end))
+            last = None
+            if body.kind == 'block' and len(body.children) >= 2 and not has_cont:
+                c = body.children[-1]
+                if c.kind == 'stmt' and ctx.stmt_expr(c) is not None and _elem_writes(ctx, c.start, c.end - 1): last = c
+            lp, rp = n.cond
+            if n.kind == 'for':
+                parts = _split_top(ctx, lp + 1, rp, ';')
+                if len(parts) != 3: continue
+                init = [x for x in _split_top(ctx, *parts[0], ',') if x[0] < x[1]]
+                step = [x for x in _split_top(ctx, *parts[2], ',') if x[0] < x[1]]
+                if any(t[i][1] in ('int', 'char', 'short', 'long', 'unsigned') for i in range(*parts[0])): continue
+                ops = []
+                if prev: ops += ['init_in'] * 3
+                if last: ops += ['step_in'] * 3
+                if prev and last: ops += ['both_in'] * 3
+                if init: ops.append('init_out')
+                if step and not has_cont: ops.append('step_out')
+                if len(init) >= 2 and all(_independent(ctx, init[i], init[j]) for i in range(len(init)) for j in range(i)): ops.append('swap_init')
+                if len(step) >= 2 and all(_independent(ctx, step[i], step[j]) for i in range(len(step)) for j in range(i)): ops.append('swap_step')
+                if not has_cont and parts[1][0] < parts[1][1]: ops.append('to_while')
+                for o in ops: cands.append((o, n, prev, last, parts, init, step))
+            else:
+                ops = ['to_for']
+                if prev: ops.append('to_for_init')
+                if last: ops.append('to_for_step')
+                if prev and last: ops += ['to_for_both'] * 2
+                for o in ops: cands.append((o, n, prev, last, [(lp + 1, lp + 1), (lp + 1, rp), (rp, rp)], [], []))
+    if not cands: return None
+    op, n, prev, last, parts, init, step = rng.choice(cands)
+    body = n.body
+    S = lambda r: ctx.src(*r)
+    ini = [S(x) for x in init]; stp = [S(x) for x in step]
+    cond = S(parts[1])
+    pre = []                                    # statements put before the loop
+    a = n.start
+    body_txt = ctx.src(body.start, body.end)
+    ind = ctx.indent(n.start)
+
+    def body_without_last():
+        return ctx.src(body.start, last.start) + permc.render(t[last.end:body.end])
+
+    def body_plus(extra):
+        if body.kind == 'block':
+            inner = ctx.indent(body.children[-1].start) if body.children else ind + '    '
+            return ctx.src(body.start, body.end - 1) + '\n' + inner + extra + permc.render(t[body.end - 1:body.end])
+        return '{\n' + ind + '    ' + body_txt + '\n' + ind + '    ' + extra + '\n' + ind + '}'
+
+    def join(old, new, new_first):
+        if old and not all(_independent(ctx, x, new_rng) for x in old_rng): new_first = keep_order
+        return ([new] + old) if new_first else (old + [new])
+
+    kw = 'for'
+    if op in ('init_in', 'both_in', 'to_for_init', 'to_for_both'):
+        new_rng = (prev.start, prev.end - 1); old_rng = init; keep_order = True
+        ini = join(ini, S(new_rng), rng.random() < 0.5)
+        a = prev.start
+    if op in ('step_in', 'both_in', 'to_for_step', 'to_for_both'):
+        new_rng = (last.start, last.end - 1); old_rng = step; keep_order = True
+        stp = join(stp, S(new_rng), rng.random() < 0.5)
+        body_txt = body_without_last()
+    if op == 'init_out':
+        k = rng.randrange(len(ini)) if all(_independent(ctx, init[i], init[j]) for i in range(len(init)) for j in range(i)) else 0
+        if rng.random() < 0.5 or k: pre = [ini.pop(k)]
+        else: pre, ini = ini, []
+    if op == 'step_out':
+        indep = all(_independent(ctx, step[i], step[j]) for i in range(len(step)) for j in range(i))
+        if rng.random() < 0.5 and len(stp) > 1:
+            k = rng.randrange(len(stp)) if indep else 0
+            body_txt = body_plus(stp.pop(k) + ';')
+        else:
+            body_txt = body_plus(' '.join(x + ';' for x in stp)); stp = []
+    if op == 'swap_init': ini.reverse()
+    if op == 'swap_step': stp.reverse()
+    if op == 'to_while':
+        pre = ini; kw = 'while'
+        if stp: body_txt = body_plus(' '.join(x + ';' for x in stp))
+    head = ''.join(x + ';\n' + ind for x in pre)
+    if kw == 'while': text = head + f'while ({cond}) ' + body_txt
+    else: text = head + f'for ({", ".join(ini)}; {cond}; {", ".join(stp)}) ' + body_txt
+    return Edit([(a, n.end, permc.new(text, t[a][2]))], f'loop form {op} @{_line(ctx, n.start)}')
+
+
+
 # ---------------------------------------------------------------- D7 arms, nesting, test order
 
 NEG = {'==': '!=', '!=': '==', '<': '>=', '>=': '<', '>': '<=', '<=': '>'}
@@ -3005,6 +3139,7 @@ RULES = [
     Rule('helper_inline', 'B6 inverse', 2, r_helper_inline),
     Rule('normalise', 'compound', 1.5, r_normalise),
     Rule('size_and', 'A6 + compound', 1.5, r_size_and),
+    Rule('loop_form', 'D32', 4, r_loop_form),
 ]
 BY_ID = {r.id: r for r in RULES}
 MEANING = {'retype': 'type', 'volatile_read': 'same'}
