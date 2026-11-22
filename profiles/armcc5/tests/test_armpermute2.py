@@ -423,6 +423,102 @@ class SearchPartsTest(unittest.TestCase):
         self.assertEqual(sum(v for (r, k), v in st.items() if k == 'cold_kept'), 0)
 
 
+SWEEP_BODY = '''void f(uchar mode)
+{
+    uchar n;
+    n = status;
+    { uint z; z = (uint)(n == 9); }
+    if (mode == 'C') {
+        send(1, 300);
+        counter = 300;
+    } else {
+        send(2, n);
+    }
+    phase = n;
+}
+'''
+
+
+class SweepTest(unittest.TestCase):
+    """The systematic first stage: what the probe rules enumerate, and the list of single edits."""
+
+    def test_probe_enumeration(self):
+        ctx, text = ctx_for(SWEEP_BODY)
+        cmp_ = R.r_probe_cmp.enumerate(ctx)
+        points = {p[0] for p in R._probe_points(ctx)}
+        self.assertEqual(len(points), len(ctx.points()) - 2)          # not inside the probe the function has
+        t1 = [(ed.desc, fam) for tier, ed, fam in cmp_ if tier == 1]
+        # the test the function makes near a point is repeated there, in the arm and elsewhere
+        self.assertTrue(any(d.startswith("probe mode == 'C' @") for d, _ in t1))
+        self.assertEqual(len({d for d, f in t1 if d.startswith("probe mode == 'C' @")}), len({R._line(ctx, i) for i in points}))
+        self.assertIn('cmp mode', {f for _, f in t1})
+        self.assertTrue(all(tier in (1, 2, 3, 4) for tier, _, _ in cmp_))
+        # no probe reads the block local of the probe the function already has
+        self.assertFalse(any(' z ' in ed.desc or '<< z)' in ed.desc for _, ed, _ in cmp_ + R.r_probe_shift.enumerate(ctx)))
+        sh = R.r_probe_shift.enumerate(ctx)
+        # the shared constant (300, used twice) is tried with a local at a sample of the points
+        # first (tier 1.5), then at every point
+        self.assertIn('shift 300', {fam for tier, _, fam in sh if tier == 1.5})
+        self.assertGreater(len([1 for tier, ed, fam in sh if fam == 'shift 300' and tier == 2]), 4)
+        for tier, ed, fam in cmp_[:40] + sh[:40] + [x + (None,) for x in R.r_probe_addr.enumerate(ctx)[:10]]:
+            new = permc.render(R.apply(ctx.toks, ed.spans), ctx.tail)
+            self.assertIn('z = (unsigned int)(', new)
+            self.assertTrue(clang_ok(new)[0], ed.desc)
+        rm = R.r_probe_remove.enumerate(ctx)
+        self.assertEqual(len(rm), 1)
+        self.assertNotIn('n == 9', permc.render(R.apply(ctx.toks, rm[0][1].spans), ctx.tail))
+
+    def test_sweep_list(self):
+        """Every rule's single edits, the same whatever the seed; probes by tier after the first pass."""
+        import armpermute2 as A, types
+        ctx, text = ctx_for(SWEEP_BODY)
+        me = types.SimpleNamespace(origin_ctx=ctx, origin_toks=ctx.toks, simplify=0.25, rules=list(R.RULES), sweep_max=3000,
+                                   base_weights={r.id: r.weight for r in R.RULES})
+        a = A.Search.sweep_list(me)
+        b = A.Search.sweep_list(me)
+        self.assertEqual([(t, r, e.desc) for t, r, e, s_, f in a], [(t, r, e.desc) for t, r, e, s_, f in b])
+        self.assertEqual([t for t, *_ in a], sorted(t for t, *_ in a))
+        rules = {r for _, r, *_ in a}
+        self.assertTrue({'probe_cmp', 'probe_shift', 'probe_addr', 'local_cache', 'retype', 'normalise'} <= rules, rules)
+        texts = [A.norm_hash(R.apply(ctx.toks, e.spans)) for _, _, e, _, _ in a]
+        self.assertGreater(len(set(texts)), 0.9 * len(texts))
+        self.assertGreater(len(a), 150)
+        me.rules = [r for r in R.RULES if r.id == 'probe_remove']; me.simplify = 0     # --only is respected
+        self.assertEqual({r for _, r, *_ in A.Search.sweep_list(me)}, {'probe_remove'})
+        me.rules = [r for r in R.RULES if r.id == 'probe_cmp']; me.sweep_max = 7
+        self.assertEqual(len(A.Search.sweep_list(me)), 7)
+
+    def test_pair_of_neighbouring_singles_replays(self):
+        """Two singles of the original made side by side still apply one after the other (the
+        second's context was changed by the first: it is found with less of it)."""
+        import armpermute2 as A
+        ctx, text = ctx_for('void f(uchar c) { if ((c >= 0x60 && c <= 0x64) || (c >= 0x92 && c <= 0x96)) status = 1; }')
+        r = R.BY_ID['range_test']
+        singles = A.list_singles(ctx, r, 100, r.weight)
+        self.assertEqual(len(singles), 2)
+        moves = [A.make_move('range_test', ed.desc, ctx.toks, ed) for _, ed, _ in singles]
+        both = A.apply_all(ctx.toks, moves)
+        self.assertIsNotNone(both)
+        new = norm(permc.render(both, ctx.tail))
+        self.assertIn(norm('c - 0x60U <= 4'), new); self.assertIn(norm('c - 0x92U <= 4'), new)
+        self.assertTrue(clang_ok(permc.render(both, ctx.tail))[0])
+
+    def test_typedef_with_several_names(self):
+        ti = permc.TypeInfo()
+        ti.scan('typedef unsigned int uint, undefined4;\ntypedef unsigned char uchar, *puchar;\ntypedef struct { int a, b; } S;')
+        self.assertEqual((ti.typedefs['uint'], ti.typedefs['undefined4'], ti.typedefs['puchar']), ('unsigned int', 'unsigned int', 'unsigned char *'))
+        self.assertTrue({'uint', 'undefined4', 'uchar', 'puchar', 'S'} <= ti.names)
+        self.assertIn('{', ti.typedefs['S'])
+
+    def test_code_hash(self):
+        """A result's hash is of the function's bytes and changed neighbours, not of the object file."""
+        a = permscore.Result(True, False, 3, 4, 4, (), code=b'\x00\x20\x70\x47')
+        b = permscore.Result(True, False, 3, 4, 4, (), code=b'\x00\x20\x70\x47')
+        c = permscore.Result(True, False, 3, 4, 4, ('g',), code=b'\x00\x20\x70\x47')
+        self.assertEqual(a.chash, b.chash); self.assertNotEqual(a.chash, c.chash)
+        self.assertEqual(permscore.Result().chash, '')
+
+
 class LineRowsTest(unittest.TestCase):
     def test_line_program(self):
         """A DWARF 3 line program as armcc -g writes it (2-byte instructions, line base 0, range 6,
