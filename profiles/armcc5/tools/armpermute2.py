@@ -228,18 +228,25 @@ def struct_layouts(runner, cfg, src, text, toks, types, func, work):
 CTXN = 6
 
 
-def make_patch(toks, spans, words=None):
+def make_patch(toks, spans, words=None, cache=None):
     """[(tokens before, old tokens, tokens after, new tokens)] per span; the context grows until
-    it is found in one place only (repetitive code would otherwise be ambiguous on replay)."""
+    it is found in one place only (repetitive code would otherwise be ambiguous on replay).
+    cache: a dict for one token list, so that a span made again (the same site in another
+    subset of a helper's sites) is not searched for again."""
     words = words or [t[1] for t in toks]
     out = []
     for a, b, new in sorted(spans, key=lambda s: (s[0], s[1])):
-        n = CTXN
-        while True:
-            before, after = words[max(0, a - n):a], words[b:b + n]
-            if len(_find(words, before + words[a:b] + after)) == 1 or n >= 200: break
-            n *= 2
-        out.append((before, words[a:b], after, [tuple(x) for x in new]))
+        key = (a, b, tuple(x[1] for x in new)) if cache is not None else None
+        got = cache.get(key) if cache is not None else None
+        if got is None:
+            n = CTXN
+            while True:
+                before, after = words[max(0, a - n):a], words[b:b + n]
+                if len(_find(words, before + words[a:b] + after)) == 1 or n >= 200: break
+                n *= 2
+            got = (before, words[a:b], after, [tuple(x) for x in new])
+            if cache is not None: cache[key] = got
+        out.append(got)
     return out
 
 
@@ -278,11 +285,11 @@ def apply_patch(toks, patch):
         return None
 
 
-def make_move(rule, desc, toks, ed, words=None):
+def make_move(rule, desc, toks, ed, words=None, cache=None):
     """A move from an Edit on toks: one patch, or for a compound move one patch per step."""
     m = {'rule': rule, 'desc': desc}
     if getattr(ed, 'parts', None): m['seq'] = [make_patch(t, sp) for t, sp in ed.parts]
-    else: m['patch'] = make_patch(toks, ed.spans, words)
+    else: m['patch'] = make_patch(toks, ed.spans, words, cache)
     return m
 
 
@@ -825,15 +832,15 @@ class Gen:
                 rt = apply_all(self.origin_toks, p.get('rmoves') or [])
                 if rt is None: raise ValueError('the start does not replay from the original')
                 if len(self.root_ctx) > 24: self.root_ctx.clear()
-                self.root_ctx[root] = (rt, self.make_ctx(rt), [t[1] for t in rt])
-            rtoks, ctx, rwords = self.root_ctx[root]
+                self.root_ctx[root] = (rt, self.make_ctx(rt), [t[1] for t in rt], {})
+            rtoks, ctx, rwords, rcache = self.root_ctx[root]
             if p['rule'] is None: rid, items = 'normalise', simplify_singles(ctx)
             else:
                 r = next(x for x in self.rules if x.id == p['rule'])
                 rid, items = r.id, list_singles(ctx, r, p['max'], p['weight'])
             out['items'] = [(tier, rid, ed.desc, p['rule'] is None, fam,
                              hashlib.blake2b(repr(span_key(ed)).encode('latin1', 'replace'), digest_size=10).digest(),
-                             make_move(rid, ed.desc, rtoks, ed, rwords)) for tier, ed, fam in items]
+                             make_move(rid, ed.desc, rtoks, ed, rwords, rcache)) for tier, ed, fam in items]
             out['tg'] = time.perf_counter() - t0
             return out
         elif kind == 'moves':                      # a move list replayed on the original
@@ -1403,9 +1410,11 @@ class Search:
             if self.done(): break
             self.sweep_root(root, t_start if root is self.roots[0] else time.time(),
                             (self.sweep_share * T / n, self.pair_share * T / n, self.beam_share * T / n))
-        for root in self.debt:
+        nb = len(self.debt) if T == float('inf') else min(len(self.debt), max(1, int(self.debt_share * T // 45)))
+        if nb < len(self.debt): print(f'  bases without dead code: time for {nb} of {len(self.debt)} (45 s each at least; --debt-share, --time)', flush=True)
+        for root in self.debt[:nb]:
             if self.done(): break
-            sl = self.debt_share * T / len(self.debt)
+            sl = self.debt_share * T / nb
             self.sweep_root(root, time.time(), (0.7 * sl, 0.15 * sl, 0.15 * sl))
         self.t_best_sweep = self.t_best
 
@@ -1502,6 +1511,10 @@ class Search:
         print(f'  sweep: {len(recs)} single edits listed in {time.time() - t0:.1f} s '
               f'({sum(1 for x in recs if x["tier"] == 0)} in the first pass; by tier: '
               + ', '.join(f'{t:g}: {n}' for t, n in sorted(collections.Counter(x["tier"] for x in recs).items())) + ')', flush=True)
+
+        d_single = time.time() + spans[0]       # the singles' time starts when the list is in hand
+        d_pair = d_single + spans[1]
+        d_third = d_pair + spans[2]
 
         class Lazy(list):                      # the move lists of a selection of the singles
             def __getitem__(me, n):
