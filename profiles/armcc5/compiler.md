@@ -1471,7 +1471,13 @@ runs (26 to 56) and the discharge limit exact on one seed and at 2 or worse on t
 the responder was at 45 to 47 by the islands alone with focus and at 38, 49 and 52 without, so
 one run of six had found a better source (38 with 6 moves) than the sweep's 46. The cost is time on the cases an island found by luck in a second or two:
 the one-edit answers now take 3 to 40 seconds, because the sweep goes through the rules in
-turn. The islands after the sweep added nothing in these 300-second runs.
+turn. The islands after the sweep added nothing in these 300-second runs. With 30 workers and
+20 minutes on the responder the whole sweep ran (9,839 singles in 83 s, 2,487 pairs in 20 s, the
+beam in 8 s: 46 with 3 moves) and the islands then reached 40 with 5 moves within three minutes
+and nothing better after; 110 compiles a second (3.7 per worker, the workers' limit at 205 ms a
+compile, 26 ms generation and 36 ms scoring), the parent 0.13 ms per variant. An island still on
+the original after a sweep makes two edits at once: its single edits are all in the set of
+texts made, and counted as duplicates they had set off the escalation.
 
 Not done: a check of each new best against a second build of the same function where one
 exists.
