@@ -66,6 +66,8 @@ def clang_ok(text):
     return r.returncode == 0, r.stderr
 
 
+PAIR = 'typedef struct { ushort a; ushort b; ushort c[2]; } Pair;\nextern Pair pair;\n'
+
 # rule: (function body file text, substring the forward result must contain, inverse rule or None)
 CASES = {
     'probe_cmp': ('void f(void) { uchar n; n = status; if (n == 3) { send(1, n); } phase = n; }', 'z = (unsigned int)(', 'probe_remove'),
@@ -160,6 +162,48 @@ CASES = {
     'arrow_deref': ('void f(State *p) { p->mode = 1; }', '(*p).mode', 'arrow_deref'),
     'index_deref': ('void f(uchar n) { table[n] = 5; }', '*(table + n)', 'index_deref'),
     'pad_local': ('void f(void) { status = 1; }', 'pmt_pad0', None),
+    # the levers of compiler.md (permuter-coverage.md)
+    'known_const': ('void f(void) { if (status == 3) phase = 3; }', 'phase = status;', 'known_const'),
+    'formula_copy': ('void f(uchar n) { uchar len; ushort frames; if (n) { len = n; frames = (len - 1) / 8 + 1; } else { len = 5; frames = 1; } '
+                     'send(len, frames); }', 'len = 5; frames = (len - 1) / 8 + 1;', None),
+    'sink_assign': ('void f(void) { ushort prev; prev = state.level; counter++; if (status) send(1, prev); else send(2, prev); }',
+                    '{ prev = state.level; send(1, prev); } else { prev = state.level; send(2, prev); }', None),
+    'step_fold': ('void f(uchar *p) { uchar x; x = *p; p++; send(x, *p); }', 'x = *p++;', 'step_fold'),
+    'index_step': ('void f(uchar c) { state.limits[state.mode] = c; state.mode++; }', 'state.limits[state.mode++] = c;', 'index_step'),
+    'loop_step': ('void f(void) { uchar i; i = 8; do { send(1, i); i--; } while (i != 0); }', 'while (--i != 0)', 'loop_step'),
+    'early_exit': ('void f(void) { if (status) { phase = 1; return; } else { phase = 2; } }', '{ phase = 1; return; } phase = 2;', 'early_exit'),
+    'clamp_form': ('void f(ushort a) { ushort v; if (a > 100) v = 100; else v = a; send(1, v); }', 'v = a; if (v > 100) v = 100;', 'clamp_form'),
+    'chain_tail': ('void f(void) { if (status == 1) { phase = 1; counter = 0; } else if (status == 2) { phase = 2; counter = 0; } '
+                   'else { phase = 3; counter = 0; } }', 'else { phase = 3; } counter = 0;', 'chain_tail'),
+    'view_access': ('void f(void) { send(status, 100); }', '(*(volatile uchar *)&status)', 'view_access'),
+    'narrow_operand': ('void f(ushort x) { table[0] = x << 8 | status; }', '(ushort)(x << 8) | status', 'narrow_operand'),
+    'cast_neg': ('void f(void) { short v; v = (short)-counter; send(1, v); }', '-(short)counter', 'cast_neg'),
+    'mask_form': ('void f(void) { ushort v; v = table[0]; v &= 0x1fbe; send(1, v); }', 'v &= ~0x41; v &= ~0xe000;', None),
+    'via_target': ('void f(ushort v) { int w; w = v * 102 / 100; send(1, w); }', 'w = v * 102; w = w / 100;', 'via_target'),
+    'subexpr_local': ('void f(void) { ushort v; v = (state.level + 2731 + 5) / 10; send(1, v); }',
+                      '{ int pmt_x0 = state.level + 2731; v = (pmt_x0 + 5) / 10; }', None),
+    'expr_helper': ('void f(ushort v) { counter = counter * 8 + v; }', 'counter = pmt_ex0() + v;', None),
+    'addr_helper': ('void f(uchar i) { table[i & 7] = 5; }', '*pmt_ad0(i) = 5;', 'addr_helper'),
+    'outline_block': ('void f(void) { status = 1; phase = 2; }', 'static __forceinline void pmt_fn0(void) { status = 1; phase = 2; }', 'outline_block'),
+    'cache_group': ('void f(void) { ushort a; ushort b; a = state.level + 1; b = table[2] + state.level; send(a, b); }',
+                    'ushort pmt_g0_0 = state.level;', None),
+    'scope_init': ('void f(void) { ushort k = 7; if (status) { send(1, k); k = 2; send(2, k); } }', '{ ushort k = 7; send(1, k);', 'scope_init'),
+    'union_split': ('void f(void) { send(state.level >> 8, state.level & 0xff); }', 'send(pmt_un0.b[1], pmt_un0.b[0]);', None),
+    'repeat_test': ('extern volatile uchar flags[8];\nvoid f(void) { if (flags[0] != 0 || flags[4] != 0) status = 1; }',
+                    'flags[0] != 0 || flags[0] != 0 || flags[4] != 0', 'repeat_test'),
+    'index_split': ('void f(uchar *p) { status = p[0x47]; }', '(p + 0x40)[0x7]', 'index_split'),
+    'cmp_diff': ('void f(ushort a, ushort b) { if (a == b) status = 0; }', 'a - b == 0', 'cmp_diff'),
+    'packed_struct': ('#define __packed\n' + PAIR + 'void f(void) { pair.a = pair.b; }', 'typedef __packed struct', 'packed_struct'),
+    'struct_array': (PAIR + 'void f(uchar i) { pair.a = pair.b + pair.c[i & 1]; }', 'pair[0] = pair[1] + pair[2 + (i & 1)];', None),
+    'field_type': (PAIR + 'void f(void) { pair.a = pair.b; }', 'short b;', 'field_type'),
+    'signature_type': ('extern ushort get(uchar which);\nvoid f(uchar n) { status = get(n); }', 'extern uint get(uchar which);', None),
+    'probe_test': ('void f(uchar n) { uchar i; for (i = 0; i < n; i++) { send(i, n); } }', 'if (i == 0) continue;', 'probe_test'),
+    'probe_elem': ('void f(void) { uchar i; for (i = 0; i < 4; i++) { table[i] = counter; } }', '&table[i + 1] != 0', 'probe_remove'),
+    'probe_ptr': ('void f(void) { status = 1; phase = 2; counter = 3; }', 'const void *pmt_q0 = (const void *)&', None),
+    'array_operand': ('void f(uchar idx, ushort val) { table[idx] = val; }', '(pmt_ac0 = 0, table)[idx] = val;', 'array_operand'),
+    'nop_form': ('void f(void) { if (status) phase = 1; counter = 2; }', 'if (status && 1)', None),
+    'func_pragma': ('void f(void) { status = 1; }\n', '#pragma O0', 'func_pragma'),
+    'file_opts': ('/* opts: --cpu Cortex-M3 -O1 */\nvoid f(void) { status = 1; }', '#define PMT_FILE_OPTS "--no_data_reorder"', None),
 }
 
 STRUCT = '''typedef struct { uchar a; uchar b; uchar c; ushort d; } Rec;
@@ -816,6 +860,36 @@ BEHAVE['stress'] = [
     'memcpy(other, bytes, 4); i = 4; p[i & 3] = v; return (p[0] << 8) + bytes[i]; }',
 ]
 BEHAVE['byte_read'].append(BEHAVE['arg_local'][-1])
+# ground for the rules made from compiler.md's levers: known values, a step after its use, clamps, an
+# early return, masks, runs a helper can take, loops and a switch for the dead tests
+BEHAVE['levers'] = [
+    'void f(uchar *p) { uchar n; uchar i; ushort t; n = 0; status = 0; send(n, 0); p[n] = 1; n++; p[n] = 2; n++; state.mode = 1; '
+    'if (status == 2) { phase = 2; send(status, state.mode); } t = table[1]; for (i = 4; i != 0; i--) { t += table[i]; if (t > 500) t = 500; } '
+    'table[0] = t; switch (phase) { case 1: counter = 1; break; case 3: counter = phase + 2; send(3, counter); break; } send(n, status); }',
+    'ushort f(ushort a) { ushort v; ushort prev; uchar k; prev = state.level; k = status; if (a > 100) v = 100; else v = a; '
+    'if (k == 1) { send(1, prev); counter = v; } else if (k == 2) { send(2, v); counter = v; } else { phase = prev; counter = v; } '
+    'if (v > 50) { table[1] = v; return v; } else { table[2] = prev; } do { v--; send(4, v); } while (v > 48); return prev + v; }',
+    'void f(void) { ushort v; int w; uchar b; v = table[0]; v &= 0x1fbe; v |= 0x30; b = status; w = v * 102 / 100; w = w + b; '
+    'table[1] = (v << 8 | b) + (w >> 2); state.level = (table[2] + 2731 + 5) / 10; send(state.level >> 8, state.level & 0xff); '
+    'if ((b & 0xf0) == 0x10) counter = (uint)w - b; phase = (uchar)-w; }',
+    'void f(uchar idx, ushort val) { uchar i; ushort sum; table[idx & 7] = val; sum = 0; for (i = 0; i < 4; i++) { sum += table[i]; } '
+    'state.limits[idx & 3] = sum; state.flags = 1; state.mode = state.flags + 1; counter = counter * 8 + sum; '
+    'table[2] = state.limits[1] + state.level; table[3] = state.limits[1] - state.level; send(state.mode, table[3]); }',
+    'void f(uchar n) { uchar i; uchar *q; q = (uchar *)&state; for (i = 0; i < n; i++) { if (i == 3) { send(i, 3); continue; } '
+    'else { send(i, *q); } q++; if (i > 5) break; } if (n > 2) { status = n; } else { phase = n; } }',
+    # a value a call may change, a use in a loop, a store between the read and its use
+    'uchar bump(void) { status++; return status; }\nvoid f(void) { ushort p; uchar k; p = state.level; k = status; send(bump(), k); '
+    'state.level = p + 1; while (counter < 3) { send(k, p); k = status; counter++; } if (status == 1) { bump(); phase = status; } '
+    'table[status & 3] = p; status++; send(status, 0); }',
+    # a known variable that the statement itself steps or a call beside the literal changes; a step with two reads
+    'uchar bump(void) { status++; return status; }\nvoid f(uchar *p) { uchar n; uchar x; n = 0; status = 0; send(bump(), 0); send(n++, 0); '
+    'send(n, status); x = *p + p[1]; p++; send(x, *p); x = phase ? *p : 3; p++; send(x, p[0]); }',
+]
+for _r in ('known_const', 'formula_copy', 'sink_assign', 'step_fold', 'index_step', 'loop_step', 'early_exit', 'clamp_form', 'chain_tail',
+           'view_access', 'narrow_operand', 'cast_neg', 'mask_form', 'via_target', 'subexpr_local', 'expr_helper', 'addr_helper',
+           'outline_block', 'cache_group', 'scope_init', 'union_split', 'index_split', 'cmp_diff', 'probe_test', 'probe_elem',
+           'probe_ptr', 'array_operand', 'nop_form', 'func_pragma', 'decl_order', 'expr_split', 'ptr_base'):
+    BEHAVE[_r] = BEHAVE.get(_r, []) + BEHAVE['levers']
 BEHAVE['local_split'] = BEHAVE['local_reuse'] = BEHAVE['local_merge']
 BEHAVE['sub_neg'] = BEHAVE['arrow_deref'] = BEHAVE['index_deref'] = BEHAVE['factor']
 OLD_RULES = ['probe_cmp', 'probe_shift', 'probe_addr', 'probe_remove', 'probe_move', 'local_inline', 'local_cache', 'getter', 'pointer_direct',
@@ -841,8 +915,9 @@ def variants(ctx, rule, seeds, test=None, deep=None):
     out, seen = [], set()
     base = tuple(t[1] for t in ctx.toks)
     fn = R.BY_ID[rule].fn
-    for seed in range(seeds):
-        ed = fn(ctx, random.Random(seed), everywhere=(seed % 2 == 0))
+    listed = [it[1] for it in fn.enumerate(ctx)][:max(seeds // 4, 10)] if hasattr(fn, 'enumerate') else []     # what the sweep would list
+    for seed in range(seeds + len(listed)):
+        ed = fn(ctx, random.Random(seed), everywhere=(seed % 2 == 0)) if seed < seeds else listed[seed - seeds]
         if ed is None: continue
         toks = R.apply(ctx.toks, ed.spans)                  # an overlap raises: a rule's bug
         k = tuple(t[1] for t in toks)
@@ -880,9 +955,10 @@ def top_level_declarations(text):
     while i < len(toks):
         w = toks[i][1]
         if w == '{': cur = []; i = pair[i] + 1; continue
+        if toks[i][0] == 'pp' and w.startswith('#pragma'): i += 1; continue        # (a pragma declares nothing)
         cur.append(w)
         if w == ';' or toks[i][0] == 'pp':
-            if '(' not in cur: out.append(' '.join(cur))
+            out.append(' '.join(cur))                           # (a prototype too: a function's body went at its {)
             cur = []
         i += 1
     return '\n'.join(out)
@@ -893,14 +969,14 @@ def top_level_declarations(text):
 LOOSE_BUNDLE = {'macro_body', 'macro_expand', 'macro_fold', 'file_order'}
 
 
-def bundle(texts, loose=False):
+def bundle(texts, loose=False, single=False):
     """One C text holding several variants of a PRELUDE + body file, the functions each defines renamed
     with its number: (text, [first line of each variant]); None when a variant does not start with the
     PRELUDE (an edit above the function's file part) or declares a type."""
     parts, lines, line = [PRELUDE], [], PRELUDE.count('\n') + 1
     decls = set()
     for k, text in enumerate(texts):
-        if not text.startswith(PRELUDE) or 'typedef' in text[len(PRELUDE):]: return None
+        if not text.startswith(PRELUDE) or ('typedef' in text[len(PRELUDE):] and not single): return None
         body = text[len(PRELUDE):]
         decls.add(top_level_declarations(body))
         if len(decls) > 1 and not loose: return None        # a declaration edited: the variants cannot share a file
@@ -921,7 +997,7 @@ def clang_errors(paths, args):
     return out
 
 
-SYN_ARGS = ['--target=arm-none-eabi', '-std=gnu99', '-D__forceinline=__inline__', '-D__weak=']         # armcc's keywords, for clang
+SYN_ARGS = ['--target=arm-none-eabi', '-std=gnu99', '-D__forceinline=__inline__', '-D__weak=', '-D__packed=__attribute__((packed))']         # armcc's keywords, for clang
 
 
 def stub_includes(d):
@@ -1034,12 +1110,12 @@ void *t_memcpy(void *d, const void *s, unsigned int n) { unsigned char *a = d; c
 STATES = 30         # states of the globals each variant is run from
 
 
-def host_program(ctx, texts, loose=False):
+def host_program(ctx, texts, loose=False, single=False):
     """A host C program that runs every variant (of one PRELUDE + body file) over STATES states of the
     globals and prints, per variant and seed, the calls made, the value returned and the globals. The
     pointers passed point into the globals themselves, so a rule that assumes a store through a pointer
     cannot reach a named object shows up."""
-    b = bundle(texts, loose)
+    b = bundle(texts, loose, single)
     if b is None: return None
     g = ctx.types.globals
     names = sorted(n for n, v in g.items() if v[2] and n not in ctx.types.functions)
@@ -1065,20 +1141,33 @@ def host_program(ctx, texts, loose=False):
     return ''.join(out)
 
 
+HOST_DEFS = ['-D__forceinline=__inline__', '-D__packed=__attribute__((packed))', '-D__weak=', '-Dabs=t_abs', '-Dmemcpy=t_memcpy']
+
+
 def behaviour(ctx, text, outs, d, tag):
     """[(description, variant text)] of the variants that do not behave as text does; None when the
     variants cannot share one program (an edit above the function's part of the file)."""
     texts = [text] + [n for _, n, _ in outs]
+
+    def run(prog, name, count):
+        src, exe = os.path.join(d, name + '.c'), os.path.join(d, name)
+        with open(src, 'w') as f: f.write(prog)
+        r = subprocess.run([CLANG, '-O0', '-w', '-std=gnu99'] + HOST_DEFS + [src, '-o', exe], capture_output=True, text=True)
+        if r.returncode: raise AssertionError(f'{name}: the host program does not compile:\n{r.stderr[:1500]}')
+        out = subprocess.run([exe], capture_output=True, text=True, timeout=60)
+        parts = re.split(r'^== \d+\n', out.stdout, flags=re.M)[1:]
+        if out.returncode or len(parts) != count: raise AssertionError(f'{name}: the host program failed (exit {out.returncode})')
+        return parts
     prog = host_program(ctx, texts, tag.rsplit('_', 1)[0] in LOOSE_BUNDLE)
-    if prog is None: return None
-    src, exe = os.path.join(d, tag + '.c'), os.path.join(d, tag)
-    with open(src, 'w') as f: f.write(prog)
-    r = subprocess.run([CLANG, '-O0', '-w', '-std=gnu99', '-D__forceinline=__inline__', '-Dabs=t_abs', '-Dmemcpy=t_memcpy', src, '-o', exe],
-                       capture_output=True, text=True)
-    if r.returncode: raise AssertionError(f'{tag}: the host program does not compile:\n{r.stderr[:1500]}')
-    run = subprocess.run([exe], capture_output=True, text=True, timeout=60)
-    parts = re.split(r'^== \d+\n', run.stdout, flags=re.M)[1:]
-    if run.returncode or len(parts) != len(texts): raise AssertionError(f'{tag}: the host program failed (exit {run.returncode})')
+    if prog is not None: parts = run(prog, tag, len(texts))
+    else:
+        # the variants cannot share a file (a type or a declaration edited): one program each, with the
+        # globals as that variant declares them
+        if not all(x.startswith(PRELUDE) for x in texts): return None
+        parts = []
+        for k, x in enumerate(texts):
+            cx, _ = ctx_for(x[len(PRELUDE):], ctx.func)
+            parts += run(host_program(cx, [x], single=True), f'{tag}_{k}', 1)
     return [(outs[k - 1][2].desc, outs[k - 1][1]) for k in range(1, len(texts)) if parts[k] != parts[0]]
 
 
@@ -1099,18 +1188,25 @@ class BehaviourTest(unittest.TestCase):
 
     def check(self, rules, known=()):
         bad, n, jobs = [], 0, []
+        bodies = {}                                         # one program per function: the variants of every rule that lists it
         for rule in rules:
             if rule not in CASES: continue
-            for j, body in enumerate([CASES[rule][0]] + BEHAVE.get(rule, [])):
-                ctx, text = ctx_for(body)
-                outs = [o for o in variants(ctx, rule, self.SEEDS) if o[2].meaning != 'type'][:24]
-                if outs: jobs.append((rule, ctx, text, outs, f'{rule}_{j}'))
-        with tempfile.TemporaryDirectory() as d:
-            for (rule, ctx, text, outs, tag), res in zip(jobs, run_programs(jobs, d)):
-                self.assertIsNotNone(res, f'{rule}: its variants cannot be put in one host program')
-                n += len(outs)
+            for body in [CASES[rule][0]] + BEHAVE.get(rule, []): bodies.setdefault(body, []).append(rule)
+        for j, (body, rs) in enumerate(bodies.items()):
+            ctx, text = ctx_for(body)
+            outs = []
+            for rule in rs:
                 if rule in known: continue
-                bad += [f'{rule} ({desc}):\n    {" ".join(new[len(PRELUDE):].split())[:500]}' for desc, new in res]
+                class Named:
+                    def __init__(self, ed, rule=rule): self.desc, self.meaning = f'{rule} ({ed.desc})', ed.meaning
+                outs += [(sd, new, Named(ed)) for sd, new, ed in variants(ctx, rule, self.SEEDS) if ed.meaning != 'type'][:16]
+            tag = rs[0] if len(rs) == 1 and rs[0] in LOOSE_BUNDLE else 'body'
+            if outs: jobs.append((rs, ctx, text, outs, f'{tag}_{j}'))
+        with tempfile.TemporaryDirectory() as d:
+            for (rs, ctx, text, outs, tag), res in zip(jobs, run_programs(jobs, d)):
+                self.assertIsNotNone(res, f'{", ".join(rs)}: the variants cannot be put in a host program')
+                n += len(outs)
+                bad += [f'{desc}:\n    {" ".join(new[len(PRELUDE):].split())[:500]}' for desc, new in res]
         return bad, n, len(jobs)
 
     def test_new_rules(self):
@@ -1193,6 +1289,43 @@ class RefusalTest(unittest.TestCase):
         self.none('byte_read', 'void f(short *p) { counter = p[0] << 8 | p[1]; }', lambda n: '+' in n[len(PRELUDE):])     # | is not + for a short
         self.none('memcpy_loop', 'extern void *memcpy(void *, const void *, unsigned int);\n'
                                  'void f(void) { uchar i; for (i = 0; i < 4; i++) table[i] = table[i]; }')
+
+    def test_levers(self):
+        # a known value ends at a call (for a global) and does not enter a loop that changes it
+        self.none('known_const', 'void f(void) { status = 0; send(1, 2); phase = 0; }', lambda n: 'phase = status' in n)
+        self.none('known_const', 'void f(void) { uchar n; n = 0; while (counter < 3) { send(n, 7); n++; counter++; } }', lambda n: 'send(0, 7)' in n)
+        self.none('known_const', 'void f(uchar *p) { status = 0; *p = 1; phase = 0; }', lambda n: 'phase = status' in n)
+        # an assignment is not moved past a store to what it reads, out of its block, or into a loop
+        self.none('sink_assign', 'void f(void) { ushort p; p = state.level; state.level = 3; send(1, p); }')
+        self.none('sink_assign', 'void f(ushort v) { ushort r; r = 1; if (v > 100) { r = v; status = 1; } counter = 2; send(1, r); }')
+        self.none('sink_assign', 'void f(void) { ushort p; p = state.level; counter++; while (counter < 3) { send(1, p); counter++; } }')
+        # a step is folded only into the one read of the variable
+        self.none('step_fold', 'void f(uchar *p) { uchar x; x = *p + p[1]; p++; send(x, *p); }', lambda n: '*p++ + p[1]' in n or '*p + p++[1]' in n)
+        self.none('step_fold', 'void f(uchar *p) { uchar x; x = status ? *p : 0; p++; send(x, 0); }')
+        # only + - * | & ^ << carry a narrowing; a read a store beside it changes is not hoisted
+        self.none('narrow_operand', 'void f(ushort x) { table[0] = (x << 8) / 3; }', lambda n: '(ushort)(x << 8)' in n)
+        self.none('cache_group', 'void f(void) { ushort a; ushort b; a = state.level; state.level = 4; b = state.level; send(a, b); }')
+        self.none('subexpr_local', 'uchar bump(void) { status++; return status; }\nvoid f(void) { send(bump(), status + 300); }')
+        self.none('outline_block', 'void f(void) { if (status) return; phase = 1; }', lambda n: 'return; }' in n.split('void f')[0])
+        self.none('via_target', 'void f(ushort v) { uint w; w = v * 102 / 100; send(1, w); }')
+        self.none('struct_array', 'typedef struct { ushort a; uchar b; } Mix;\nextern Mix mix;\nvoid f(void) { mix.a = mix.b; }')
+        outs, _ = run_rule('clamp_form', 'void f(int a) { uchar v; if (a > 100) v = 100; else v = a; send(1, v); }')
+        self.assertTrue(outs and all(ed.meaning == 'type' for _, _, ed in outs))
+        outs, _ = run_rule('packed_struct', '#define __packed\ntypedef struct { uchar a; ushort b; } Mix;\nextern Mix mix;\nvoid f(void) { mix.a = mix.b; }')
+        self.assertTrue(outs and all(ed.meaning == 'type' for _, _, ed in outs))
+
+    def test_enumerations_apply(self):
+        """Every edit a rule lists for the sweep applies to the text it was listed for and changes it."""
+        n = 0
+        for r in R.RULES:
+            if not hasattr(r.fn, 'enumerate'): continue
+            for body in [CASES[r.id][0]] + BEHAVE['levers']:
+                ctx, _ = ctx_for(body)
+                for it in r.fn.enumerate(ctx):
+                    toks = R.apply(ctx.toks, it[1].spans)
+                    self.assertNotEqual([t[1] for t in toks], [t[1] for t in ctx.toks], f'{r.id}: {it[1].desc}')
+                    n += 1
+        self.assertGreater(n, 300)
 
     def test_includes_are_added(self):
         outs, _ = run_rule('memcpy_loop', 'extern ushort copy[8];\nvoid f(void) { uchar i; for (i = 0; i < 8; i++) copy[i] = table[i]; }')
