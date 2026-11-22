@@ -28,7 +28,14 @@ Thumb-2 length rule and only branches, literal loads and adr are decoded (no cap
 are cached by object hash. Neighbours: a function of the unit that the base build placed exactly
 and whose code (raw bytes and relocations) differs in the variant is placed at its own map
 address and compared with the image; one that no longer matches is reported, so a declaration
-edit that breaks a neighbour is seen."""
+edit that breaks a neighbour is seen.
+
+Source lines of the differing instructions (hot_lines, for the permuter's focused site choice):
+MDK-Lite's armcc refuses -S, --asm and --interleave ("not available with your license"), so the
+lines come from a second compile of the same text with -g: the object's .debug_line programs are
+read in-process (line_rows) and each differing instruction of the object's FUNC takes the line
+of the last row at or before it. The mapping is only used when FUNC places to the same bytes
+from the -g object as from the plain one."""
 import difflib, hashlib, os, struct, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXHUME = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
@@ -150,6 +157,97 @@ def diff_count(exp, got):
             if (a is None) != (b is None) or (a is not None and pair.get(a) != b):
                 ops.append(('replace', i1 + k, i1 + k + 1, j1 + k, j1 + k + 1))
     return sum(max(i2 - i1, j2 - j1) for _, i1, i2, j1, j2 in ops), ops
+
+
+def _uleb(d, p):
+    v = sh = 0
+    while True:
+        c = d[p]; p += 1
+        v |= (c & 0x7F) << sh; sh += 7
+        if not c & 0x80: return v, p
+
+
+def _sleb(d, p):
+    v = sh = 0
+    while True:
+        c = d[p]; p += 1
+        v |= (c & 0x7F) << sh; sh += 7
+        if not c & 0x80:
+            return (v - (1 << sh) if c & 0x40 else v), p
+
+
+def _cstr(d, p):
+    e = d.index(b'\0', p)
+    return d[p:e].decode('latin1'), e + 1
+
+
+def line_rows(o, raw):
+    """{code section index: sorted [(offset, line, file name)]} from every .debug_line section
+    of an object compiled with -g (DWARF 2 and 3 line programs; a DW_LNE_set_address takes its
+    section and base from the relocation on its operand)."""
+    out = {}
+    for idx, sec in o.sections.items():
+        if sec.name != '.debug_line' or sec.type != 'SHT_PROGBITS': continue
+        d = raw[sec.offset:sec.offset + sec.size]
+        rel = {r.offset: r for r in o.relocs.get(idx, [])}
+        p = 0
+        while p + 10 <= len(d):
+            length, ver, hlen = struct.unpack_from('<IHI', d, p)
+            end, prog = p + 4 + length, p + 10 + hlen
+            if ver not in (2, 3) or end > len(d): break
+            min_inst, is_stmt, line_base, line_range, op_base = struct.unpack_from('<BBbBB', d, p + 10)
+            oplen = d[p + 15:p + 15 + op_base - 1]
+            q = p + 15 + op_base - 1
+            while d[q]: _, q = _cstr(d, q)                 # include directories
+            q += 1
+            files = ['']
+            while d[q]:
+                name, q = _cstr(d, q)
+                for _ in range(3): _, q = _uleb(d, q)
+                files.append(name)
+            q = prog
+            target, addr, line, f = None, 0, 1, 1
+
+            def row():
+                if target is not None:
+                    out.setdefault(target, []).append((addr, line, files[f] if f < len(files) else ''))
+            while q < end:
+                op = d[q]; q += 1
+                if op >= op_base:
+                    adj = op - op_base
+                    addr += (adj // line_range) * min_inst; line += line_base + adj % line_range
+                    row()
+                elif op == 0:
+                    n, q = _uleb(d, q)
+                    sub = d[q]
+                    if sub == 1:                             # end of sequence
+                        target, addr, line, f = None, 0, 1, 1
+                    elif sub == 2:                           # set address: the operand is relocated
+                        r = rel.get(q + 1)
+                        sym = o.symbols.get(r.sym) if r is not None else None
+                        add = struct.unpack_from('<I', d, q + 1)[0]
+                        if sym is not None and isinstance(sym.sec, int):
+                            target, addr = sym.sec, (sym.value & ~1) + add
+                        else:
+                            target, addr = None, add
+                    elif sub == 3:                           # define file
+                        name, _ = _cstr(d, q + 1); files.append(name)
+                    q += n
+                elif op == 1: row()
+                elif op == 2:
+                    v, q = _uleb(d, q); addr += v * min_inst
+                elif op == 3:
+                    v, q = _sleb(d, q); line += v
+                elif op == 4:
+                    f, q = _uleb(d, q)
+                elif op == 8: addr += ((255 - op_base) // line_range) * min_inst
+                elif op == 9:
+                    addr += struct.unpack_from('<H', d, q)[0]; q += 2
+                else:
+                    for _ in range(oplen[op - 1] if op - 1 < len(oplen) else 0): _, q = _uleb(d, q)
+            p = end
+    for rows in out.values(): rows.sort(key=lambda r: r[0])
+    return out
 
 
 class Result:
@@ -377,6 +475,50 @@ class Target:
     def _read(raw):
         o, _ = orcobj.read(raw=raw)
         return o
+
+    def diff_offsets(self, raw):
+        """(offsets from FUNC's start of the object's instructions that differ from the image, FUNC's
+        placed bytes). An instruction the image has and the object lacks gives the object's
+        instructions on both sides of the gap."""
+        o = self._read(raw)
+        code, data, at = self.place_function(o)
+
+        def word(a):
+            k = a - at
+            return struct.unpack_from('<I', code, k)[0] if 0 <= k <= len(code) - 4 else None
+        gr = rows_of(code, at, data, word, self.fn_mask)
+        n, ops = diff_count(self.exp, normalise(gr, self.fn_mask))
+        out = set()
+        for _, i1, i2, j1, j2 in ops:
+            for j in (range(j1, j2) if j2 > j1 else (j1 - 1, j1)):
+                if 0 <= j < len(gr): out.add(gr[j][0] - at)
+        return sorted(out), code
+
+    def hot_lines(self, raw, raw_g, src_name=None):
+        """Sorted source lines the differing instructions of FUNC come from, or None when they
+        cannot be had: raw is the object scored, raw_g the same text compiled with -g, whose
+        FUNC must place to the same bytes (so the line rows are those of the code scored).
+        src_name: only rows of the file of this base name count (not a header's inline code)."""
+        try:
+            offs, code = self.diff_offsets(raw)
+            og = self._read(raw_g)
+            funcs = self._functions(og)
+            code_g, _, _ = self.place_function(og, funcs)
+            if code_g != code: return None
+            idx, off, end = funcs[self.func]
+            rows = [r for r in line_rows(og, raw_g).get(idx, []) if off <= r[0] < end]
+        except Exception:
+            return None
+        if not rows: return None
+        import bisect
+        starts = [r[0] for r in rows]
+        lines = set()
+        for x in offs:
+            k = bisect.bisect_right(starts, off + x) - 1
+            if k < 0: continue
+            _, line, name = rows[k]
+            if src_name is None or os.path.basename(name.replace('\\', '/')) == src_name: lines.add(line)
+        return sorted(lines)
 
     def listing_diff(self, raw):
         """Human-readable differing tokens (for --diff)."""
