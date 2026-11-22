@@ -606,18 +606,27 @@ BEHAVE = {
                     'void f(void) { uchar a; a = status; again: send(a, 1); counter++; a = phase + counter; if (counter < 3) goto again; }',
                     'void f(void) { uchar a; uchar b; a = status; again: send(a, 1); counter++; b = phase; send(b, 2); if (counter < 3) goto again; }'],
     'embed_assign': ['void f(void) { uchar k; ushort t; k = phase; if (k > 2) status = k; t = table[k & 7]; send(k, t); t = read_byte(); '
-                     'switch (t) { case 1: phase = 9; break; default: phase = t; } k = status; send(read_byte(), k); }'],
+                     'switch (t) { case 1: phase = 9; break; default: phase = t; } k = status; send(read_byte(), k); }',
+                     # a store that must stay where it is: evaluated only sometimes, or after another call
+                     'void f(void) { uchar k; k = read_byte(); if (status && k) counter = 1; send(k, 0); k = read_byte(); send(read_byte(), k); '
+                     'k = 0; if (phase && (k = read_byte()) > 3) counter = k; send(k, 1); }'],
     'abs_form': ['extern int abs(int);\nvoid f(void) { short v; int w; v = (short)table[0]; w = (int)counter - 3; send(1, abs(v)); '
                  'if (w < 0) w = -w; counter = w; v = v < 0 ? -v : v; table[1] = v; }'],
     'expr_split': ['void f(void) { ushort s; uchar b; s = table[0]; s += table[1] + table[2] - table[3]; b = status; b = b | 4; '
                    'b |= phase << 1; counter = s; counter -= b + 1; state.level = table[4] + s - b; phase = b; }',
-                   'void f(ushort *p) { table[1] = p[0] + table[1] + p[2]; p[1] = table[0] | p[1] | 3; table[2] += 1; table[2] += p[2]; }'],
+                   'void f(ushort *p) { table[1] = p[0] + table[1] + p[2]; p[1] = table[0] | p[1] | 3; table[2] += 1; table[2] += p[2]; }',
+                   # floats do not regroup, and a float is not an int
+                   'void f(void) { float s; float x; x = table[0] / 8.0f; s = x + 0.3f; s += x * 3 + 0.1f; s += 1e9f; s -= 1e9f; '
+                   'counter = (uint)(s * 16); state.level = (ushort)(x * 100.0f - s * 100.0f + s * 0.5f); }'],
     'return_local': ['uchar f(ushort v) { uchar r; r = 0xff; if (v > 1000) return 1; if (status) { r = phase; return r; } return v; }'],
     'ptr_base': ['void f(void) { ushort *p; uchar *q; p = &table[status + 1]; *p = 7; q = (uchar *)&state; send(1, *(table + 2)); '
                  'p = table; p += 2; send(2, *p); send(3, *&table[phase & 3]); send(4, *q); }'],
     'byte_read': ['ushort f(uchar *p) { ushort v; v = (p[2] << 8) + p[3]; send(1, p[0] * 256 | p[1]); return v + (status << 8 | phase); }',
                   'void f(short *p) { ushort hi; int lo; hi = table[0]; lo = (short)table[1]; counter = hi << 8 | lo; state.level = p[0] * 256 + p[1]; }'],
-    'arg_local': ['void f(uchar *p) { send(p[0], table[1] + 1); send(status + 300, counter); counter = read_byte() + 1; send(1, read_byte()); }'],
+    'arg_local': ['void f(uchar *p) { send(p[0], table[1] + 1); send(status + 300, counter); counter = read_byte() + 1; send(1, read_byte()); }',
+                  # a read that must not move before the call beside it
+                  'uchar bump(void) { status++; return status; }\nvoid f(void) { send(bump(), status + 300); '
+                  'counter = bump() + (table[status & 1] << 8 | phase); }'],
     'setter': ['void f(uchar n) { status = n + 300; table[n & 7] = counter; state.mode = 2; table[2] = 1; table[3] = 2; }'],
     'memcpy_loop': ['extern void *memcpy(void *, const void *, unsigned int);\nextern ushort copy[8];\nextern uchar bytes[8];\n'
                     'void f(uchar *p) { uchar i; memcpy(copy, table, 16); memcpy(bytes, p, 4); i = 4; send(i, bytes[1]); '
@@ -646,6 +655,7 @@ BEHAVE['stress'] = [
     'ushort f(uchar *p) { uchar i; ushort v; for (i = 0; i < 8; i++) bytes[i] = other[i]; v = bytes[0] << 8 | bytes[1]; '
     'memcpy(other, bytes, 4); i = 4; p[i & 3] = v; return (p[0] << 8) + bytes[i]; }',
 ]
+BEHAVE['byte_read'].append(BEHAVE['arg_local'][-1])
 BEHAVE['local_split'] = BEHAVE['local_reuse'] = BEHAVE['local_merge']
 BEHAVE['sub_neg'] = BEHAVE['arrow_deref'] = BEHAVE['index_deref'] = BEHAVE['factor']
 OLD_RULES = ['probe_cmp', 'probe_shift', 'probe_addr', 'probe_remove', 'probe_move', 'local_inline', 'local_cache', 'getter', 'pointer_direct',
@@ -746,7 +756,7 @@ def clang_errors(paths, args):
     return out
 
 
-SYN_ARGS = ['--target=arm-none-eabi', '-std=gnu99', '-D__forceinline=__inline__']
+SYN_ARGS = ['--target=arm-none-eabi', '-std=gnu99', '-D__forceinline=__inline__', '-D__weak=']         # armcc's keywords, for clang
 
 
 def stub_includes(d):
@@ -907,6 +917,13 @@ def behaviour(ctx, text, outs, d, tag):
     return [(outs[k - 1][2].desc, outs[k - 1][1]) for k in range(1, len(texts)) if parts[k] != parts[0]]
 
 
+def run_programs(jobs, d):
+    """behaviour() of each job (rule or None, ctx, text, outs, tag), three host compiles at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(3) as ex:
+        return list(ex.map(lambda j: behaviour(j[1], j[2], j[3], d, j[4]), jobs))
+
+
 @unittest.skipUnless(CLANG, 'needs clang')
 class BehaviourTest(unittest.TestCase):
     """The rules that claim the same meaning (or add dead code only), run as programs: input and
@@ -916,20 +933,20 @@ class BehaviourTest(unittest.TestCase):
     SEEDS = int(os.environ.get('EXHUME_PERM_SEEDS', '200'))
 
     def check(self, rules, known=()):
-        bad, n, built = [], 0, 0
+        bad, n, jobs = [], 0, []
+        for rule in rules:
+            if rule not in CASES: continue
+            for j, body in enumerate([CASES[rule][0]] + BEHAVE.get(rule, [])):
+                ctx, text = ctx_for(body)
+                outs = [o for o in variants(ctx, rule, self.SEEDS) if o[2].meaning != 'type'][:24]
+                if outs: jobs.append((rule, ctx, text, outs, f'{rule}_{j}'))
         with tempfile.TemporaryDirectory() as d:
-            for rule in rules:
-                if rule not in CASES: continue
-                for j, body in enumerate([CASES[rule][0]] + BEHAVE.get(rule, [])):
-                    ctx, text = ctx_for(body)
-                    outs = [o for o in variants(ctx, rule, self.SEEDS) if o[2].meaning != 'type'][:24]
-                    if not outs: continue
-                    res = behaviour(ctx, text, outs, d, f'{rule}_{j}')
-                    self.assertIsNotNone(res, f'{rule}: its variants cannot be put in one host program')
-                    n += len(outs); built += 1
-                    if rule in known: continue
-                    bad += [f'{rule} ({desc}):\n    {" ".join(new[len(PRELUDE):].split())[:500]}' for desc, new in res]
-        return bad, n, built
+            for (rule, ctx, text, outs, tag), res in zip(jobs, run_programs(jobs, d)):
+                self.assertIsNotNone(res, f'{rule}: its variants cannot be put in one host program')
+                n += len(outs)
+                if rule in known: continue
+                bad += [f'{rule} ({desc}):\n    {" ".join(new[len(PRELUDE):].split())[:500]}' for desc, new in res]
+        return bad, n, len(jobs)
 
     def test_new_rules(self):
         bad, n, built = self.check(NEW_RULES)
@@ -950,24 +967,24 @@ class BehaviourTest(unittest.TestCase):
             def __init__(self, desc): self.desc = desc
         rules = [r for r in R.RULES if r.id not in ('retype', 'const_type', 'global_type', 'callee_linkage', 'sized_extern', 'ptr_index', 'size_and')]
         chains = int(os.environ.get('EXHUME_PERM_CHAINS', '10'))
-        bad, n = [], 0
+        bad, n, jobs = [], 0, []
+        for bi, body in enumerate(sorted({b for bs in BEHAVE.values() for b in bs})):
+            ctx0, text = ctx_for(body)
+            outs = []
+            for c in range(chains):
+                rng = random.Random(bi * 1000 + c)
+                ctx, trail = ctx0, []
+                for step in range(5):
+                    r = rng.choice(rules)
+                    ed = r.fn(ctx, rng, everywhere=rng.random() < 0.3)
+                    if ed is None or ed.meaning == 'type': continue
+                    ctx = R.remake(ctx, R.apply(ctx.toks, ed.spans))
+                    trail.append(f'{r.id} ({ed.desc})')
+                new = permc.render(ctx.toks, ctx.tail)
+                if trail and new.startswith(PRELUDE): outs.append((c, new, Made(' / '.join(trail))))
+            if outs: jobs.append((None, ctx0, text, outs, f'chain{bi}'))
         with tempfile.TemporaryDirectory() as d:
-            for bi, body in enumerate(sorted({b for bs in BEHAVE.values() for b in bs})):
-                ctx0, text = ctx_for(body)
-                outs = []
-                for c in range(chains):
-                    rng = random.Random(bi * 1000 + c)
-                    ctx, trail = ctx0, []
-                    for step in range(5):
-                        r = rng.choice(rules)
-                        ed = r.fn(ctx, rng, everywhere=rng.random() < 0.3)
-                        if ed is None or ed.meaning == 'type': continue
-                        ctx = R.remake(ctx, R.apply(ctx.toks, ed.spans))
-                        trail.append(f'{r.id} ({ed.desc})')
-                    new = permc.render(ctx.toks, ctx.tail)
-                    if trail and new.startswith(PRELUDE): outs.append((c, new, Made(' / '.join(trail))))
-                if not outs: continue
-                res = behaviour(ctx0, text, outs, d, f'chain{bi}')
+            for (_, ctx0, text, outs, tag), res in zip(jobs, run_programs(jobs, d)):
                 if res is None: continue
                 n += len(outs)
                 bad += [f'{desc}:\n    {" ".join(new[len(PRELUDE):].split())[:500]}' for desc, new in res]

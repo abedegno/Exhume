@@ -789,7 +789,7 @@ def r_local_cache(ctx, rng, everywhere=False):
             if e is not None and n.kind != 'while': es = reads(ctx, e)
         es = [x for x in es if resolve_type(ctx, ctx.type_of(x)) and not ctx.type_of(x).endswith('*') or
               (ctx.type_of(x) or '').endswith('*')]
-        es = [x for x in es if ctx.type_of(x)]
+        es = [x for x in es if ctx.type_of(x) and _hoist_safe(ctx, e, x)]
         if es: cands.append((n, es))
     if not cands: return None
     n, es = rng.choice(cands)
@@ -798,7 +798,8 @@ def r_local_cache(ctx, rng, everywhere=False):
         # both operands of a comparison in the condition (one rule in the catalogue's evidence)
         e = ctx.cond_expr(n)
         cmp_ = [x for x in permc.ewalk(e) if x.kind == 'bin' and x.op in ('<', '>', '<=', '>=', '==', '!=')
-                and cacheable(ctx, x.kids[0]) and cacheable(ctx, x.kids[1]) and ctx.type_of(x.kids[0]) and ctx.type_of(x.kids[1])]
+                and cacheable(ctx, x.kids[0]) and cacheable(ctx, x.kids[1]) and ctx.type_of(x.kids[0]) and ctx.type_of(x.kids[1])
+                and _hoist_safe(ctx, e, x.kids[0]) and _hoist_safe(ctx, e, x.kids[1])]
         if cmp_:
             c = rng.choice(cmp_)
             names = [ctx.fresh('pmt_a'), None]
@@ -811,7 +812,7 @@ def r_local_cache(ctx, rng, everywhere=False):
     x = rng.choice(es)
     text = ctx.src(x.start, x.end)
     same = [y for y in es if ctx.src(y.start, y.end) == text]
-    use = same if rng.random() < 0.5 else [x]
+    use = same if rng.random() < 0.5 and not _fx(ctx, x.start, x.end).vol else [x]       # (each read of a volatile stays a read)
     ty = resolve_type(ctx, ctx.type_of(x))
     nm = ctx.fresh('pmt_c')
     body = _replace_spans(ctx, n.start, n.end, [(y.start, y.end, nm) for y in use])
@@ -826,6 +827,29 @@ def r_local_cache(ctx, rng, everywhere=False):
         spans = [ctx.insert_at(top, f'{ty} {nm};'),
                  (n.start, n.end, permc.new(f'{nm} = {text}; ' + body, t[n.start][2]))]
     return Edit(spans, f'cache {text[:40]} in a function local @{_line(ctx, n.start)}')
+
+
+def _hoist_safe(ctx, root, x):
+    """Reading x before the statement of expression root is the same as reading it in place: no call,
+    store or step elsewhere in root (other than the operators x is an operand of, which run after it)
+    can change what x reads. (`send(bump(), g)` may call bump before it reads g.)"""
+    T = None
+    for a in permc.ewalk(root):
+        if a.kind in ('assign', 'call', 'postfix') or (a.kind == 'unary' and a.op in ('++', '--')):
+            if (a.start <= x.start and x.end <= a.end) or (x.start <= a.start and a.end <= x.end): continue
+            if T is None: T = _fx(ctx, x.start, x.end)
+            if not _store_indep(_fx(ctx, a.start, a.end), T): return False
+    return True
+
+
+def _has_float(ctx, e):
+    """e mentions a float constant or a float variable (so it may not be an integer expression)."""
+    t = ctx.toks
+    for x in permc.ewalk(e):
+        if x.kind == 'atom' and x.op == 'num' and not t[x.start][1].lower().startswith('0x') and re.search(r'[.eEfF]', t[x.start][1]): return True
+        if x.kind in ('atom', 'index', 'member') and (ctx.type_of(x) or '').replace('const ', '').strip() in ('float', 'double'): return True
+        if x.kind == 'cast' and ctx.src(x.op[0], x.op[1]) in ('float', 'double'): return True
+    return False
 
 
 def _replace_spans(ctx, a, b, reps):
@@ -1816,10 +1840,11 @@ def r_shift_mul(ctx, rng, everywhere=False):
                     if k is not None and 0 < k < 31: cands.append((x, 'mul', k))
                 if x.kind == 'bin' and x.op == '*':
                     k = permc.const_value(x.kids[1], t)
-                    if k and k > 1 and k & (k - 1) == 0: cands.append((x, 'shl', k.bit_length() - 1))
+                    if k and k > 1 and k & (k - 1) == 0 and not _has_float(ctx, x.kids[0]): cands.append((x, 'shl', k.bit_length() - 1))
                 if x.kind == 'assign' and x.op in ('<<=', '*='):
                     k = permc.const_value(x.kids[1], t)
-                    if k is not None and (x.op == '<<=' and 0 < k < 31 or x.op == '*=' and k > 1 and k & (k - 1) == 0):
+                    if k is not None and (x.op == '<<=' and 0 < k < 31 or x.op == '*=' and k > 1 and k & (k - 1) == 0
+                                          and not _has_float(ctx, x.kids[0])):
                         cands.append((x, 'asg', k))
     if not cands: return None
     x, kind, k = rng.choice(cands)
