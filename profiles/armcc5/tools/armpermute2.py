@@ -9,7 +9,8 @@ variants made, compiled and scored in a worker pool.
         [--no-reduce] [--no-focus] [--focus-cold P] [--focus-near LINES]
         [--no-sweep] [--sweep-max N] [--sweep-share F] [--pair-share F] [--pairs M] [--pair-removals R]
         [--beam B] [--beam-share F] [--sweep-only]
-        [--origin SHARE] [--flat-score] [--seed-source FILE]... [--seed-factor F]
+        [--origin SHARE] [--flat-score] [--seed-source FILE]... [--seed-dir DIR] [--seed-factor F]
+        [--debt-bases N] [--debt-share F] [--resweep LEVELS]
 
 First a sweep, so that an answer of one or two edits does not hang on the seed: every single
 edit of the original source is listed (for the probe rules by enumeration: each insertion
@@ -49,10 +50,23 @@ instructions. So a lower count at the wrong size is never progress.
 The parent does no parsing in the loop: it costs a fraction of a millisecond per variant
 (printed at the end, with the workers' generation time), so the workers are never short of jobs.
 
+Bases without dead code: a source matched with probes can be a dead end, since the probes fit
+the code around them. So each dead construct of the given source (a probe, a comma probe in a
+condition, a dead or repeated store) is removed, one at a time, each kind together and all
+together; every removal that compiles and changes FUNC's code is a base with its own sweep
+(singles, pairs, beam), however much worse it scores at first (--debt-bases, 16; they share
+--debt-share of --time, 0.3). When a sweep's best has half its start's count or less, the
+sweep is made again from that best (--resweep levels, 1). The rules that send several sites
+through one helper or local (index_helper, setter, getter, addr_helper, expr_helper,
+local_cache, cache_group, arg_local, uniform) are also listed at every subset of their sites
+(all subsets up to 8 sites; of more, the runs of neighbours and a sample).
+
 Other starts: each --seed-source FILE is another complete text of the same source file (the
 function as a sibling release has it, an older commit, a hand variant). It is compiled and
 scored at the start, and kept when its count is within --seed-factor (2) times the best start's
-plus 5. A kept one gets an equal part of the sweep's time and its own islands (the islands go
+plus 5. --seed-dir DIR takes every *.c of a folder; without it, <tree>/variants/FUNC is looked
+for beside exhume.toml. A run leaves OUT/variants/: the best text of each distinct residue (set
+of structural differences left), as candidates for that folder. A kept one gets an equal part of the sweep's time and its own islands (the islands go
 to the starts in turn); every result that descends from it has a first move `seed` that names
 the file, in best.txt and in the logs.
 
@@ -513,6 +527,38 @@ def span_key(ed):
     return tuple((a, b, tuple(t[1] for t in new)) for a, b, new in spans)
 
 
+SUBSET_RULES = ('index_helper', 'setter', 'getter', 'addr_helper', 'expr_helper', 'local_cache', 'cache_group', 'arg_local', 'uniform')
+
+
+def site_subsets(ctx, r, ed):
+    """[Edit] of an Edit made at several sites (reads or stores sent through one helper or local),
+    made at some of them only: its spans that replace code in FUNC's body are the sites; what
+    it inserts and what it writes outside the body (the helper, the local's declaration) stays.
+    Every non-empty proper subset of up to 8 sites; of more, every run of neighbouring sites and
+    a fixed sample of 120 others."""
+    if getattr(ed, 'parts', None): return []
+    keep, sites = [], []
+    for sp in ed.spans:
+        a, b, new = sp
+        ins = b == a + 1 and len(new) > 1 and new[-1][1] == ctx.toks[a][1]
+        (keep if (a <= ctx.lb or a > ctx.rb or ins or b == a) else sites).append(sp)
+    n = len(sites)
+    if n < 2 or not keep: return []
+    sites.sort(key=lambda x: x[0])
+    if n <= 8:
+        masks = range(1, (1 << n) - 1)
+    else:
+        runs = {((1 << (j - i)) - 1) << i for i in range(n) for j in range(i + 1, n + 1)} - {(1 << n) - 1}
+        rng = random.Random(f'sites:{r.id}:{ed.desc}')
+        masks = sorted(runs | {rng.randrange(1, (1 << n) - 1) for _ in range(120)})
+    out = []
+    for m in masks:
+        idx = [k for k in range(n) if m >> k & 1]
+        e = R.Edit(keep + [sites[k] for k in idx], f'{ed.desc} [sites {",".join(str(k + 1) for k in idx)} of {n}]', meaning=ed.meaning)
+        out.append(e)
+    return out
+
+
 def list_singles(ctx, r, sweep_max, weight):
     """[(tier, Edit, family)] of the single edits rule r can make on ctx, each once: what its
     enumeration lists (permrules: `fn.enumerate(ctx)`, the probe rules), lowest tier first; for
@@ -526,6 +572,19 @@ def list_singles(ctx, r, sweep_max, weight):
         seen.add(key)
         out.append((tier, ed, fam))
         return True
+    def subsets():
+        """After a helper-type rule's edits: each of them at every subset of its sites (tier 2,
+        one family with the whole edit, so that the subsets go first when the whole improved)."""
+        if r.id not in SUBSET_RULES: return out
+        for n, (tier, ed, fam) in enumerate(list(out)):
+            subs = site_subsets(ctx, r, ed)
+            if not subs: continue
+            fam = fam or f'sites of {r.id}: {ed.desc}'
+            out[n] = (tier, ed, fam)
+            for e in subs:
+                if len(out) >= sweep_max: return out
+                add(2, e, fam)
+        return out
     en = getattr(r.fn, 'enumerate', None)
     if en is not None:
         try:
@@ -535,7 +594,7 @@ def list_singles(ctx, r, sweep_max, weight):
         for it in items:
             if len(out) >= sweep_max: break
             add(it[0], it[1], it[2] if len(it) > 2 else None)
-        return out
+        return subsets()
     miss = seed = 0
     first = max(10, min(120, int(15 * weight)))
     while miss < 60 and len(out) < sweep_max:
@@ -548,7 +607,7 @@ def list_singles(ctx, r, sweep_max, weight):
         seed += 1
         if ed is not None and add(0 if len(out) < first else 2.5, ed): miss = 0
         else: miss += 1
-    return out
+    return subsets()
 
 
 def simplify_singles(ctx):
@@ -761,9 +820,11 @@ class Gen:
             toks, out['trail'], made = m
             nm = p['nm'] + len(made)
         elif kind == 'list':                       # the single edits of the original by one rule, as moves
-            root = p.get('root', 0)                # 0 the original, n the n-th seed source
+            root = p.get('root', 0)                # 0 the original; any other start by the moves that make it
             if root not in self.root_ctx:
-                rt = self.origin_toks if not root else SEED_TOKS[root - 1]
+                rt = apply_all(self.origin_toks, p.get('rmoves') or [])
+                if rt is None: raise ValueError('the start does not replay from the original')
+                if len(self.root_ctx) > 24: self.root_ctx.clear()
                 self.root_ctx[root] = (rt, self.make_ctx(rt), [t[1] for t in rt])
             rtoks, ctx, rwords = self.root_ctx[root]
             if p['rule'] is None: rid, items = 'normalise', simplify_singles(ctx)
@@ -917,6 +978,10 @@ class Search:
         self.beam_share = arg(a, '--beam-share', 0.15, float)   # of --time, for the third and further edits
         self.pair_top = arg(a, '--pairs', 40, int)              # the best singles paired with each other
         self.pair_rem = arg(a, '--pair-removals', 300, int)     # the best singles paired with each removal
+        self.debt_max = arg(a, '--debt-bases', 16, int)        # bases made by removing the source's dead constructs
+        self.debt_share = arg(a, '--debt-share', 0.3, float)  # of --time, for the sweeps of those bases together
+        self.resweep = arg(a, '--resweep', 1, int)             # sweeps again from a sweep's best when it halved the count
+        self.residues = {}                                     # structural signature -> (key, text, score, moves, lines)
         self.p_origin = arg(a, '--origin', 0.15, float)         # share of jobs made from the original source
         self.focus_cold = arg(a, '--focus-cold', 0.25, float)
         self.focus_near = arg(a, '--focus-near', 3, int)
@@ -1029,6 +1094,7 @@ class Search:
             a.root, a.strict, a.anchor = root, True, True
             self.anchors.append(a)
         self.swept = set()                  # the base hashes of the starts whose single edits were swept
+        self.debt = self.debt_roots() if self.sweep_on and '--resume' not in self.a else []
         self.front = {}                     # dead-code edits added -> (key, text, result)
         self.push_weights()
         if '--resume' in self.a: self.load_state()
@@ -1040,6 +1106,10 @@ class Search:
         (2) times the best start's plus 5. A kept one gets a share of the sweep and its own
         islands; what descends from it carries a first move `seed` naming the file."""
         files = [self.a[i + 1] for i, x in enumerate(self.a) if x == '--seed-source' and i + 1 < len(self.a)]
+        # a folder of them: --seed-dir DIR, or by default <tree>/variants/FUNC beside exhume.toml
+        import glob
+        sdir = arg(self.a, '--seed-dir') or os.path.join(self.cfg.root, 'variants', self.func)
+        files += [p for p in sorted(glob.glob(os.path.join(sdir, '*.c'))) if p not in files]
         factor = arg(self.a, '--seed-factor', 2.0, float)
         cands = []
         for path in files:
@@ -1056,6 +1126,7 @@ class Search:
                 permc.find_function(toks, self.func)
             except Exception as e:
                 print(f'  seed source {path}: {type(e).__name__}: {e}', flush=True); continue
+            if norm_hash(toks) in {norm_hash(self.origin_toks)} | {norm_hash(c[5]) for c in cands}: continue      # the same text again
             cands.append((path, name, text, raw, r, toks))
         best = min([self.base_result.diff or 0] + [c[4].diff for c in cands]) if cands else 0
         out = []
@@ -1103,7 +1174,7 @@ class Search:
 
     def gc_bases(self, pending):
         """Delete the base files no island, home or waiting job names."""
-        live = {p.bh for p in pending.values()} | {self.best.bh} | {x.bh for x in self.roots}
+        live = {p.bh for p in pending.values()} | {self.best.bh} | {x.bh for x in self.roots}      # (a debt base's file is not needed: the workers replay it)
         for isl in self.islands:
             live.add(isl.bh)
             if isl.home: live.add(isl.home.bh)
@@ -1323,29 +1394,96 @@ class Search:
         return out
 
     def sweep(self, t_start):
-        """The systematic first stage, for each start in turn (the original, then each seed
-        source kept), each with an equal part of the sweep's time."""
+        """The systematic first stage: for each start in turn (the original, then each seed
+        source kept), each with an equal part of the sweep's time; then for each base made by
+        removing dead constructs of the original (debt_roots), which share --debt-share."""
+        T = self.tlimit if self.tlimit < 1e8 else float('inf')
+        n = len(self.roots)
         for root in self.roots:
-            if self.best.result.exact and not self.best.result.neighbours: break
-            self.sweep_root(root, t_start if root is self.roots[0] else time.time(), 1.0 / len(self.roots))
+            if self.done(): break
+            self.sweep_root(root, t_start if root is self.roots[0] else time.time(),
+                            (self.sweep_share * T / n, self.pair_share * T / n, self.beam_share * T / n))
+        for root in self.debt:
+            if self.done(): break
+            sl = self.debt_share * T / len(self.debt)
+            self.sweep_root(root, time.time(), (0.7 * sl, 0.15 * sl, 0.15 * sl))
+        self.t_best_sweep = self.t_best
 
-    def sweep_root(self, root, t_start, part):
+    def done(self):
+        return self.best.result.exact and not self.best.result.neighbours
+
+    def debt_roots(self):
+        """Bases made by removing what the original carries as dead code, one construct at a time
+        (each probe, each dead or repeated store), all of one kind together and all together
+        (permrules' probe_remove and remove_dead). A source matched with probes can be a dead end:
+        its probes fit the code around them, and the real source is reached from the text
+        without them, which scores worse at first. Each removal that compiles and changes
+        FUNC's code is a base with its own sweep, however it scores (at most --debt-bases)."""
+        if self.debt_max <= 0: return []
+        ctx, toks = self.origin_ctx, self.origin_toks
+        eds, seen = [], set()
+
+        def add(rule, ed):
+            key = span_key(ed) if ed is not None else None
+            if key is not None and key not in seen:
+                seen.add(key); eds.append((rule, ed))
+        try:
+            for it in R.r_probe_remove.enumerate(ctx): add('probe_remove', it[1])
+        except Exception:
+            pass
+        try:
+            for nd in R.dead_stores(ctx) + R.repeated_stores(ctx):
+                add('remove_dead', R.Edit([(nd.start, nd.end, [])], 'remove the dead store ' + ' '.join(ctx.src(nd.start, nd.end).split())[:60], meaning='probe'))
+        except Exception:
+            pass
+        for k in range(24):
+            try:
+                add('remove_dead', R.r_remove_dead(ctx, random.Random(f'debt:{k}'), everywhere=k % 2 == 0))
+            except Exception:
+                pass
+        out, objs = [], {self.origin.ohash}
+        words = [t[1] for t in toks]
+        for rule, ed in eds:
+            if len(out) >= self.debt_max: break
+            try:
+                nt = R.apply(toks, ed.spans)
+            except ValueError:
+                continue
+            text = permc.render(nt, self.tail)
+            raw, log = self.compile(text)
+            if raw is None: continue
+            r = self.target.score(raw)
+            if not r.ok or r.chash in objs: continue
+            objs.add(r.chash)
+            isl = Island(-30 - len(out), text, r, [(rule, ed.desc)], self.key_of(r, self.dead_delta(nt), 1), r.chash)
+            isl.moves, isl.h, isl.bh = [make_move(rule, ed.desc, toks, ed, words)], norm_hash(nt), self.put_base(text)
+            isl.ridx, isl.name = 100 + len(out), 'the base without dead code: ' + ed.desc[:110]
+            self.seen.add(isl.h)
+            out.append(isl)
+        if out:
+            print(f'  bases without dead code: {len(out)} (each swept as a start, whatever it scores):', flush=True)
+            for x in out: print(f'    {x.result.text():>28}  {x.trail[0][1][:130]}', flush=True)
+        return out
+
+    def sweep_root(self, root, t_start, spans, depth=0):
         """The sweep of one start. Singles: every single edit of it (sweep_list) is compiled and
         scored. Pairs: the best --pairs singles that changed the object (one per distinct
         object, improving ones first) are applied two at a time; then the beam. The best result
         becomes the best; the start's islands that are not strict start from the best distinct
-        results, its strict ones stay on the start. An exact result ends the run."""
+        results, its strict ones stay on the start. When the best result has half the start's
+        count or less, the sweep is made again from it (--resweep levels, half the time each).
+        An exact result ends the run. spans: the seconds for singles, pairs and the beam."""
         t0 = time.time()
-        limited = self.tlimit < 1e8
-        P = list(root.moves)                   # the seed move of a seed source, before every move list
-        if len(self.roots) > 1: print(f'  sweep of {root.name} (start {root.result.text()}):', flush=True)
-        d_single = t_start + part * self.sweep_share * self.tlimit if limited else float('inf')
-        d_pair = d_single + part * self.pair_share * self.tlimit if limited else float('inf')
-        d_third = d_pair + part * self.beam_share * self.tlimit if limited else float('inf')
+        P = list(root.moves)                   # the moves that make this start, before every move list
+        if len(self.roots) + len(self.debt) > 1 or depth:
+            print(f'  sweep of {root.name} (start {root.result.text()}):', flush=True)
+        d_single = t_start + spans[0]
+        d_pair = d_single + spans[1]
+        d_third = d_pair + spans[2]
         # the workers list the singles, a rule per job (the compound rules take seconds on a
         # large function); one edit is kept once, for the first rule that makes it
         jobs = ([None] if self.simplify > 0 else []) + [r.id for r in self.rules]
-        asyncs = [self.pool.pool.apply_async(permrun._worker_gen, (('list', n, {'rule': rid, 'max': self.sweep_max, 'root': root.ridx,
+        asyncs = [self.pool.pool.apply_async(permrun._worker_gen, (('list', n, {'rule': rid, 'max': self.sweep_max, 'root': root.ridx, 'rmoves': P,
                   'weight': self.base_weights.get(rid, 1.0)}),)) for n, rid in enumerate(jobs)]
         items, seen = [], set()
         for a in asyncs:
@@ -1371,16 +1509,28 @@ class Search:
         k0, o0 = root.key, root.ohash
         # first the first pass and the probes' first tiers; then the rest, the families (a shift
         # probe's constant, a comparison's operand) of which a member improved the score first
-        early = [n for n, x in enumerate(recs) if x['tier'] < 2]
+        # a base without dead code is not swept to put probes back first: its first stage is the
+        # first pass alone, and the probe tiers come after the site subsets
+        debt = any(root is x for x in self.debt)
+        early = [n for n, x in enumerate(recs) if x['tier'] < (1 if debt else 2)]
         got = self.pump(Lazy(early), d_single)
         res = {early[n]: rr for n, rr in got.items()}
-        fams = {}
+        fams, whole = {}, {}
         for n, rr in res.items():
             f, r = recs[n]['fam'], rr.get('r')
-            if f and r is not None and r.ok and rr['k'] < k0: fams[f] = min(fams.get(f, rr['k']), rr['k'])
-        late = [n for n, x in enumerate(recs) if x['tier'] >= 2]
-        late.sort(key=lambda n: (0, fams[recs[n]['fam']]) if recs[n]['fam'] in fams else (1,))
-        if fams: print('  sweep: families tried first after the first tiers: ' + ', '.join(sorted(fams, key=fams.get)[:12]), flush=True)
+            if not f or r is None or not r.ok: continue
+            whole[f] = min(whole.get(f, rr['k']), rr['k'])
+            if rr['k'] < k0: fams[f] = min(fams.get(f, rr['k']), rr['k'])
+        late = [n for n, x in enumerate(recs) if x['tier'] >= (1 if debt else 2)]
+
+        def rank(n):
+            x = recs[n]
+            f = x['fam']
+            if f in fams: return (0, fams[f])                              # a member improved the start
+            if f in whole and f.startswith('sites of '): return (1, whole[f])   # site subsets: the families whose whole edit scored best first
+            return (2, x['tier']) if debt else (2,)
+        late.sort(key=rank)
+        if fams: print('  sweep: families tried first after the first tiers: ' + ', '.join(sorted(fams, key=fams.get)[:12])[:400], flush=True)
         if not any(rr.get('r') is not None and rr['r'].ok and rr['r'].exact and not rr['r'].neighbours for rr in res.values()):
             got = self.pump(Lazy(late), d_single)
             res.update({late[n]: rr for n, rr in got.items()})
@@ -1403,7 +1553,7 @@ class Search:
             done.append(x)
         el = time.time() - t0
         print(f'  sweep: {len(done)} of {len(recs)} singles compiled in {el:.0f} s'
-              + ('' if len(res) >= len(recs) else f' (time for {len(res)}: --sweep-share {self.sweep_share:g} of --time; the rest not tried)')
+              + ('' if len(res) >= len(recs) else f' (time for {len(res)}: {spans[0]:.0f} s of --time; the rest not tried)')
               + f'; {sum(1 for x in done if x["ohash"] != o0)} changed the object, {sum(1 for x in done if x["k"] < k0)} improved', flush=True)
         print('  sweep rule         listed  compiled  failed  changed  improved  best')
         for rid, st in sorted(per.items(), key=lambda kv: (kv[1]['best'][0] if 'best' in kv[1] else (9,), kv[0])):
@@ -1518,13 +1668,32 @@ class Search:
             if x['ohash'] in objs: continue
             objs.add(x['ohash']); seeds.append(x)
         even = [i for i in self.islands if i.root is root and not i.strict]
+        got = []
         for n, x in enumerate(seeds):
             isl = fetch(x, -1)
             if isl is None: continue
+            got.append(isl)
             if isl.key < self.best.key:
                 if self.new_best(isl.text, isl.result, isl.key, isl.ohash, isl.trail, isl.moves, isl.h, isl.hot, x['rule'], x['desc']) is None:
                     isl = self.best
             if n < len(even): even[n].take(isl)
+            elif not any(i.root is root for i in self.islands):
+                # a base with no islands of its own: its result takes the worst island that is
+                # not strict, when it is better than that
+                worst = max((i for i in self.islands if not i.strict), key=lambda i: i.key, default=None)
+                if worst is not None and isl.key < worst.key: worst.take(isl)
+        bs = min((x for x in done), key=lambda x: x['k'], default=None)
+        print(f'  {"sweep" if root is self.origin else "base"} result: start {root.result.text()}; best single '
+              + (bs['r'].text() if bs else '-') + '; best after pairs and beam ' + (allr[0]['r'].text() if allr else '-')
+              + (f'  [{allr[0]["rule"]}] {allr[0]["desc"][:100]}' if allr else ''), flush=True)
+        # again from the best, when it is a different place: half the start's count or less
+        if (depth < self.resweep and got and not self.done() and got[0].result.ok and root.result.ok
+                and got[0].key < k0 and got[0].result.diff * 2 <= root.result.diff):
+            child = got[0]
+            self.nchild += 1
+            child.ridx, child.name = 1000 + self.nchild, f'the best of the sweep before ({len(child.moves)} moves)'
+            self.seen.add(child.h)
+            self.sweep_root(child, time.time(), tuple(x / 2 for x in spans), depth + 1)
         # restarts of the even islands go to a normalised form of the original, as before
         simp, objs = [], set()
         for x in done:
@@ -1537,7 +1706,6 @@ class Search:
             if n >= len(seeds):                # no better start: the simplified form, as before
                 even[n].take(home)
                 print(f'  simplify-first island {even[n].k}: {x["desc"][:160]}', flush=True)
-        self.t_best_sweep = self.t_best
 
     def consider(self, p, res):
         """One result from a worker: statistics, then whether the island keeps the variant and
@@ -1666,8 +1834,11 @@ class Search:
             self.best = b
             if '--no-reduce' not in self.a: self.reduce_moves()
             self.write_best()
-            print(f'  new best {self.best.result.text()}  ({len(self.best.moves)} moves)  [{rules}] {desc[:150]}', flush=True)
-            self.history.append((time.time() - self.t_run, self.counts['compiled'], self.best.result.text(), len(self.best.moves)))
+            rb = self.best.result
+            pen = 0 if rb.exact else self.best.key[-1] - rb.key()[-1]       # what the dead-code and move penalties add to the key
+            what = rb.text() + (f' +{pen:.2f} in penalties' if pen > 0.005 else '')
+            print(f'  new best {what}  ({len(self.best.moves)} moves)  [{rules}] {desc[:150]}', flush=True)
+            self.history.append((time.time() - self.t_run, self.counts['compiled'], what, len(self.best.moves)))
             return None
         finally:
             self.t_best += time.perf_counter() - t0
@@ -1676,6 +1847,27 @@ class Search:
         if res.get('sdiff') is not None and res.get('h'):
             if len(self.sdiffs) > 300: self.sdiffs.clear()
             self.sdiffs[res['h']] = res['sdiff']
+            if res.get('text') is not None and res.get('k') is not None and res.get('r') is not None:
+                # the residue: which instructions are structurally wrong, without their addresses
+                sig = tuple(' '.join(x.split(' ', 2)[::2]) for x in res['sdiff'])
+                old = self.residues.get(sig)
+                if old is None or res['k'] < old[0]:
+                    self.residues[sig] = (res['k'], res['text'], res['r'].text(), len(res.get('moves') or ()), res['sdiff'])
+
+    def write_variants(self):
+        """OUT/variants/: the best text of each distinct residue (the set of structural
+        differences left), the 24 best of them: near-misses that fail in another place than the
+        best does, as candidates for a tree's variants/FUNC folder of seed sources."""
+        rows = sorted(self.residues.values(), key=lambda v: v[0])[:24]
+        if not rows: return
+        d = os.path.join(self.out, 'variants')
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'index.txt'), 'w') as idx:
+            for n, (k, text, score, nm, lines) in enumerate(rows):
+                name = f'{n:02d}_{score.split()[0]}.c'
+                with open(os.path.join(d, name), 'w', encoding='latin1') as f: f.write(text)
+                idx.write(f'{name}: {score}\n' + ''.join(f'    {x}\n' for x in lines) + '\n')
+        print(f'variants: {len(rows)} sources with distinct structural residues in {d}')
 
     def set_low(self, r, text, nm):
         self.low = (r.key(), r.text(), nm)
@@ -1746,6 +1938,8 @@ class Search:
         self.push_weights()
 
     depth = 0
+    nchild = 0
+    debt = ()
     t_best_sweep = 0.0
     t_run = 0.0
     win = (0, 0, 0)
@@ -1940,6 +2134,7 @@ class Search:
             last = self.history[-1]
             print(f'  since the last one: {el - last[0]:.0f} s and {c["compiled"] - last[1]} compiles without a new best')
         self.write_yield()
+        self.write_variants()
         with open(os.path.join(self.out, 'rules.json'), 'w') as f:
             json.dump({k: dict(v) for k, v in self.stats.items()}, f, indent=1)
 

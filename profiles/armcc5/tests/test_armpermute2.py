@@ -582,6 +582,28 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(A.norm_hash(A.apply_all(base.toks, [m, mv])), A.norm_hash(R.apply(seed.toks, ed.spans)))
         self.assertEqual(len({A.move_sig(m), A.move_sig(mv)}), 2)
 
+    def test_site_subsets(self):
+        """A helper made for several sites is also listed at every subset of them."""
+        import armpermute2 as A
+        ctx, text = ctx_for('void f(void) { table[0] = 1; table[1] = status; table[2] = 3; send(table[3], table[4]); }')
+        r = R.BY_ID['index_helper']
+        out = A.list_singles(ctx, r, 3000, r.weight)
+        whole = [(t, e, f) for t, e, f in out if 'set helper' in e.desc and '[sites' not in e.desc]
+        self.assertTrue(whole)
+        subs = [(t, e, f) for t, e, f in out if e.desc.startswith(whole[0][1].desc + ' [sites')]
+        self.assertTrue(subs and len(subs) % 6 == 0, len(subs))       # the proper subsets of three sites, per form of the helper
+        self.assertEqual({t for t, _, _ in subs}, {2}); self.assertEqual({f for _, _, f in subs}, {whole[0][2]})
+        one = next(e for _, e, _ in subs if e.desc.endswith('[sites 2 of 3]'))
+        new = permc.render(R.apply(ctx.toks, one.spans), ctx.tail)
+        self.assertIn('table[0] = 1; pmt_set0(1, status); table[2] = 3;', ' '.join(new.split()))
+        for _, e, _ in subs: self.assertTrue(clang_ok(permc.render(R.apply(ctx.toks, e.spans), ctx.tail))[0], e.desc)
+        # more than 8 sites: the runs of neighbours and a sample, not all 1022
+        body = 'void f(void) { ' + ' '.join(f'table[{k % 8}] = {k};' for k in range(10)) + ' }'
+        ctx, text = ctx_for(body)
+        ed = next(e for e in (R.r_index_helper(ctx, random.Random(k)) for k in range(20)) if e and 'set helper' in e.desc)
+        n = len(A.site_subsets(ctx, r, ed))
+        self.assertTrue(54 <= n <= 54 + 120, n)
+
     def test_typedef_with_several_names(self):
         ti = permc.TypeInfo()
         ti.scan('typedef unsigned int uint, undefined4;\ntypedef unsigned char uchar, *puchar;\ntypedef struct { int a, b; } S;')
@@ -626,6 +648,16 @@ class TrustKeyTest(unittest.TestCase):
         self.assertEqual(self.counts(want, copy)[1], 0)
         swap = self.code(0x78c1, 0x7001, 0x3101, 0x4770)            # two instructions in the other order: structure
         self.assertGreater(self.counts(want, swap)[1], 0)
+        # ... and one difference, not two: an instruction that is only displaced counts once
+        def moved(w, g):
+            e = permscore.normalise_struct(permscore.struct_rows(permscore.rows_of(w, 0, set(), lambda x: None)))
+            o = permscore.normalise_struct(permscore.struct_rows(permscore.rows_of(g, 0, set(), lambda x: None)))
+            return permscore.diff_count(e, o)[0], permscore.struct_count(e, o)[0]
+        long_ = self.code(0x78c1, 0x3101, 0x7001, 0xb240, 0x2805, 0x4770)
+        self.assertEqual(moved(long_, self.code(0x78c1, 0x7001, 0x3101, 0xb240, 0x2805, 0x4770)), (2, 1))      # neighbours swapped
+        self.assertEqual(moved(long_, self.code(0x3101, 0x7001, 0xb240, 0x78c1, 0x2805, 0x4770)), (2, 1))      # one moved three places
+        self.assertEqual(moved(long_, self.code(0x78c1, 0x3101, 0x7001, 0xb240, 0xb249, 0x2805, 0x4770)), (1, 1))  # an extra one stays one
+        self.assertEqual(moved(long_, self.code(0x78c1, 0x3101, 0x7001, 0xb2c0, 0x2805, 0x4770)), (1, 1))      # another instruction stays one
         # one wrong instruction outranks any number of ties; the old count says the opposite
         a = permscore.Result(True, False, 3, 8, 8, (), code=b'a', struct=0)
         b = permscore.Result(True, False, 1, 8, 8, (), code=b'b', struct=1)
