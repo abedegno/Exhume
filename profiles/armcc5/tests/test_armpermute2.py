@@ -510,6 +510,20 @@ class SweepTest(unittest.TestCase):
         self.assertIn(norm('c - 0x60U <= 4'), new); self.assertIn(norm('c - 0x92U <= 4'), new)
         self.assertTrue(clang_ok(permc.render(both, ctx.tail))[0])
 
+    def test_seed_source_move(self):
+        """What descends from a seed source replays from the original: the seed move puts the
+        seed's whole text in place, the later moves are patches on it."""
+        import armpermute2 as A
+        base, _ = ctx_for('void f(void) { status = 1; phase = 2; }')
+        seed, _ = ctx_for('static void put(uchar v) { status = v; }\nvoid f(void) { put(1); phase = 2; counter = 3; }')
+        A.SEED_TOKS.append(seed.toks)
+        m = {'rule': 'seed', 'desc': 'seed source x.c (4)', 'seed': len(A.SEED_TOKS) - 1}
+        self.assertIs(A.apply_all(base.toks, [m]), seed.toks)
+        ed = next(e for e in (R.r_stmt_swap(seed, random.Random(k)) for k in range(40)) if e)
+        mv = A.make_move('stmt_swap', ed.desc, seed.toks, ed)
+        self.assertEqual(A.norm_hash(A.apply_all(base.toks, [m, mv])), A.norm_hash(R.apply(seed.toks, ed.spans)))
+        self.assertEqual(len({A.move_sig(m), A.move_sig(mv)}), 2)
+
     def test_typedef_with_several_names(self):
         ti = permc.TypeInfo()
         ti.scan('typedef unsigned int uint, undefined4;\ntypedef unsigned char uchar, *puchar;\ntypedef struct { int a, b; } S;')

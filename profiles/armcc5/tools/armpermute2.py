@@ -1942,22 +1942,24 @@ class Search:
 
     def write_yield(self):
         """OUT/yield.json: per rule, what its variants gave per compile (changed the code,
-        improved an island, entered a best). OUT/weights.json: the run's weights scaled by each
-        rule's rate of improvements against the average rate (between a quarter and four times;
-        a rule with fewer than 30 compiles keeps its weight), in the form --weights loads."""
-        tot_c = sum(s['compiled'] for s in self.stats.values()) or 1
-        avg = (sum(s['improved'] + 2 * s['new_best'] for s in self.stats.values()) + 1) / tot_c
+        improved an island, entered a best, improved the start as a single edit of the sweep).
+        OUT/weights.json: the run's weights scaled by each rule's rate of such gains per compile
+        against the average rate (between a quarter and four times; a rule with fewer than 30
+        compiles keeps its weight), in the form --weights loads."""
+        def gains(s): return s['improved'] + 2 * s['new_best'] + s['sweep_improved']
+        tot_c = sum(s['compiled'] + s['sweep'] for s in self.stats.values()) or 1
+        avg = (sum(gains(s) for s in self.stats.values()) + 1) / tot_c
         y, w = {}, {}
         for r in self.rules:
             s = self.stats[r.id]
             n = s['compiled']
-            rate = (s['improved'] + 2 * s['new_best']) / n if n else 0.0
+            m = n + s['sweep']                 # compiles of the rule's variants, the sweep's singles among them
             y[r.id] = {'compiled': n, 'changed_code': n - s['noop'], 'improved': s['improved'], 'accepted': s['accepted'],
                        'new_best': s['new_best'], 'improved_per_compile': round(s['improved'] / n, 5) if n else None,
-                       'sweep_singles': s['sweep'], 'sweep_improved': s['sweep_improved']}
+                       'sweep_singles': s['sweep'], 'sweep_improved': s['sweep_improved'],
+                       'gains_per_compile': round(gains(s) / m, 5) if m else None}
             base = self.base_weights.get(r.id, r.weight)
-            f = min(4.0, max(0.25, (rate + avg * 30 / n) / (avg + avg * 30 / n))) if n >= 30 else 1.0
-            if s['sweep'] >= 30 and not s['sweep_improved'] and not s['improved']: f = min(f, 0.5)
+            f = min(4.0, max(0.25, (gains(s) / m + avg * 30 / m) / (avg + avg * 30 / m))) if m >= 30 else 1.0
             w[r.id] = round(base * f, 3)
         with open(os.path.join(self.out, 'yield.json'), 'w') as f: json.dump(y, f, indent=1)
         with open(os.path.join(self.out, 'weights.json'), 'w') as f: json.dump(w, f, indent=1)
