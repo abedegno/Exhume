@@ -132,6 +132,24 @@ class Wine:
         return data, log
 
 
+def tree_env(root):
+    """{KEY: VALUE} of the optional permuter.env in a tree's root (beside its exhume.toml): lines KEY=VALUE (# for
+    comments, `export ` allowed). It names the compiler the tree is built with
+    (EXHUME_ARMCC_LINUX, EXHUME_ARMCC_MAPPINGS, EXHUME_ARMCC_EXEC), so that one run can score
+    against trees built with different compilers."""
+    out = {}
+    p = os.path.join(root, 'permuter.env')
+    if os.path.isfile(p):
+        with open(p) as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln.startswith('export '): ln = ln[7:].strip()
+                if ln and not ln.startswith('#') and '=' in ln:
+                    k, v = ln.split('=', 1)
+                    out[k.strip()] = v.strip().strip('"\'')
+    return out
+
+
 def make_runner(kind, cfg, args):
     if kind == 'native':
         return Native(args.get('armcc_home'), args.get('mappings'), args.get('exec'))
@@ -146,19 +164,26 @@ def make_runner(kind, cfg, args):
 _W = {}
 
 
-def _worker_init(runner, target, opts, stem, work, gen=None):
+def _worker_init(runner, target, opts, stem, work, gen=None, also=()):
     os.makedirs(work, exist_ok=True)
     wd = os.path.join(work, f'w{os.getpid()}')
     os.makedirs(wd, exist_ok=True)
     runner.start(wd)
     _W.update(runner=runner, target=target, opts=opts, src=os.path.join(wd, stem + '.c'),
-              obj=os.path.join(wd, stem + '.o'), wd=wd, gen=gen)
+              obj=os.path.join(wd, stem + '.o'), wd=wd, gen=gen, also=[])
+    for k, a in enumerate(also):                # the other targets of a run (--also): each its own compiler and scorer
+        d = os.path.join(wd, f'also{k + 1}')
+        os.makedirs(d, exist_ok=True)
+        a['runner'].start(d)
+        _W['also'].append(dict(runner=a['runner'], target=a['target'], opts=a['opts'], src=os.path.join(d, a['stem'] + '.c'),
+                               obj=os.path.join(d, a['stem'] + '.o')))
     import atexit
     atexit.register(_worker_exit)
 
 
 def _worker_exit():
     try:
+        for a in _W.get('also', ()): a['runner'].stop()
         _W['runner'].stop()
         shutil.rmtree(_W['wd'], ignore_errors=True)
     except Exception:
@@ -191,6 +216,20 @@ def worker_score(text):
     return raw, r, r.chash or hashlib.blake2b(raw[0x34:], digest_size=12).hexdigest(), tc, time.perf_counter() - t1, ''
 
 
+def worker_score_also(k, text):
+    """(Result or None, object bytes, seconds compile, seconds score, log) of text compiled with the k-th other
+    target's compiler and scored against that target's image."""
+    a = _W['also'][k]
+    with open(a['src'], 'w', encoding='latin1') as f: f.write(text)
+    t0 = time.perf_counter()
+    raw, log = a['runner'].compile(a['src'], a['obj'], a['opts'])
+    t1 = time.perf_counter()
+    if raw is None: return None, None, t1 - t0, 0.0, log[-1500:]
+    r = a['target'].score(raw)
+    r.code = b''
+    return r, raw, t1 - t0, time.perf_counter() - t1, ''
+
+
 def _worker_job(job):
     """job (key, text) -> (key, Result or None, object hash, seconds compile, seconds score, log)."""
     key, text = job
@@ -207,10 +246,10 @@ def _worker_gen(job):
 
 
 class Pool:
-    def __init__(self, runner, target, opts, stem, jobs, work, gen=None):
+    def __init__(self, runner, target, opts, stem, jobs, work, gen=None, also=()):
         ctx = mp.get_context('fork')
         self.work = work
-        self.pool = ctx.Pool(jobs, _worker_init, (runner, target, opts, stem, work, gen))
+        self.pool = ctx.Pool(jobs, _worker_init, (runner, target, opts, stem, work, gen, also))
 
     def imap(self, jobs):
         return self.pool.imap_unordered(_worker_job, jobs)

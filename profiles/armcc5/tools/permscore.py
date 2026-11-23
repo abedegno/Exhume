@@ -415,6 +415,68 @@ class Result:
         return s
 
 
+class Combo:
+    """One candidate scored against several builds at once (the permuter's --also): the results
+    of the same source, or of the source carried to a sibling tree's text, under each target.
+    It answers as a Result does. key: exact on all; then the right size and unchanged
+    neighbours on all; then the structural counts summed; then the register counts summed
+    (each later target's counts times its weight). A fit that only compensates under one
+    compiler rarely holds under the other, so the sum tells the two apart.
+    parts: one Result per target, the primary first; None for a target that was not compiled
+    (the primary was too far from its base to be worth a second compile: such a result is never
+    kept). carried: for each later target, False when the candidate's edit could not be put
+    into that tree's text, so that its result is the one of the base the edit was made on; or
+    (carried, hunks) for a whole text of which only some hunks had a place in that tree's."""
+    __slots__ = ('parts', 'carried', 'weights')
+
+    def __init__(self, parts, carried=None, weights=None):
+        self.parts = list(parts)
+        self.carried = list(carried) if carried is not None else [True] * (len(self.parts) - 1)
+        self.weights = list(weights) if weights is not None else [1.0] * len(self.parts)
+
+    ok = property(lambda s: s.parts[0] is not None and s.parts[0].ok)
+    whole = property(lambda s: all(p is not None and p.ok for p in s.parts))
+    exact = property(lambda s: all(p is not None and p.ok and p.exact for p in s.parts))
+    neighbours = property(lambda s: tuple(sorted({n for p in s.parts if p is not None and p.ok for n in p.neighbours})))
+    size_ok = property(lambda s: all(p is not None and p.ok and p.size_ok for p in s.parts))
+    size = property(lambda s: s.parts[0].size)
+    want_size = property(lambda s: s.parts[0].want_size)
+    error = property(lambda s: s.parts[0].error)
+    diff = property(lambda s: sum(p.diff for p in s.parts if p is not None and p.ok))
+    struct = property(lambda s: sum(p.struct for p in s.parts if p is not None and p.ok))
+    chash = property(lambda s: hashlib.blake2b(' '.join(p.chash if p is not None and p.ok else '-' for p in s.parts).encode(), digest_size=12).hexdigest()
+                     if s.ok else '')
+
+    def key(self):
+        if not self.ok: return (3, 0, 0, 10 ** 9)
+        if not self.whole: return (2, 10 ** 6, 0, 10 ** 6)             # a target not compiled, or not scored: never kept
+        if self.exact and not self.neighbours: return (0, 0, 0, 0)
+        st = rest = 0
+        for p, w in zip(self.parts, self.weights):
+            s1 = 0 if Result.flat else p.struct
+            st += w * s1; rest += w * (p.diff - s1)
+        return (1 if self.size_ok and not self.neighbours else 2, sum(abs(p.size - p.want_size) for p in self.parts), st, rest)
+
+    def text(self):
+        if not self.ok: return 'FAILED ' + self.parts[0].error
+        if len(self.parts) == 1: return self.parts[0].text()
+        if self.exact and not self.neighbours: return 'EXACT'
+        def num(p, f): return '?' if p is None else 'x' if not p.ok else f(p)
+        s = '+'.join(num(p, lambda p: 'EXACT' if p.exact else str(p.diff)) for p in self.parts)
+        if not Result.flat:
+            s += (' (structure ' + '+'.join(num(p, lambda p: str(p.struct)) for p in self.parts)
+                  + ', registers ' + '+'.join(num(p, lambda p: str(p.diff - p.struct)) for p in self.parts) + ')')
+        for n, p in enumerate(self.parts):
+            if p is None or not p.ok: continue
+            if not p.size_ok: s += f' size{"" if n == 0 else " of target %d" % (n + 1)} {p.size:#x}/{p.want_size:#x}'
+            if p.neighbours: s += f' neighbours changed{"" if n == 0 else " in target %d" % (n + 1)}: ' + ','.join(p.neighbours)
+        for n, c in enumerate(self.carried):
+            if not c: s += f' [target {n + 2}: edit not carried]'
+            elif c is not True: s += f' [target {n + 2}: {c[0]} of {c[1]} hunks carried]'
+        if any(p is None for p in self.parts): s += ' [second target not compiled: the first is too far from its base]'
+        return s
+
+
 class Target:
     """What one function is scored against (see the module docstring)."""
 
