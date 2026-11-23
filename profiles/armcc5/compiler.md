@@ -1627,5 +1627,53 @@ had improved the base. The sweep made again from that 4 found a clear before a s
 edit, after 26 s: exact. (Another exact source than the one found by hand, which has the
 helper at three stores and the clear at another byte; several exist.)
 
-Not done: a check of each new best against a second build of the same function where one
-exists.
+Seventh round: one candidate against two builds. The same function exists in two releases
+built with different compiler versions, from what is very probably one source. A candidate that
+fits one image by luck will rarely fit the other, so `--also CONFIG:SRC[:FUNC]` gives a run a
+second target: another tree's exhume.toml, its text of the source file and the function's name
+there. Each target has its own compiler (a `permuter.env` in the tree's root with
+EXHUME_ARMCC_LINUX and EXHUME_ARMCC_MAPPINGS, then `--also-env KEY=VALUE` after its `--also`,
+over the environment), its own image and scorer, in every worker.
+
+- The two texts need not be equal. A candidate is a move list; each move is replayed on the
+  other tree's text as a patch, where its context is found. A candidate with a move that has no
+  place there is scored on the primary alone: the other text stays as the candidate's base has
+  it, with that base's result, and the score is marked `[target 2: edit not carried]`. A whole
+  text (a seed source, a resumed island) is carried hunk by hunk, and the mark says how many
+  hunks had a place.
+- The key is exact on both; the right size on both; the structural counts summed; the register
+  counts summed (`--also-weight` scales the second); then the penalties. Scores print as
+  `29+29 (structure 0+0, registers 29+29)`; best.c and best.also1.c are the two texts.
+- The second compile is made only when the primary result is within `--also-margin` (6)
+  differing instructions of its base's, and a sixth of that in structure, at a size no worse.
+- The start line is the check of the set-up: the empty edit must give each tree its known
+  score.
+
+Checked on a 5.6 KB function that two releases share (compilers 5.06 update 3 and update 6):
+
+- A function exact in both trees, broken in copies of both by the same edit (two statements in
+  the other order: 6+6, structure 4+4): the two-target run restored exact on both after 4
+  seconds, one move, and wrote both texts.
+- The two trees' own best sources of the function had drifted apart: each tree's search had
+  left its own edits in (seven hunks between them, one of which is the releases' real
+  difference, a constant). From such a pair an edit near a drifted hunk does not carry, and a
+  whole text carries only in part. So the run was made from one source under both: the first
+  tree's text of the function put into the second tree's file, with the constant. Then every
+  edit of the function carries (4% of all variants did not: edits at file scope, where the
+  files differ).
+- What it showed is that for this function the two compilers answer alike. The first tree's
+  earlier descent (33, 32, 30, 29, 26 differing instructions) scores 33, 32, 30, 29 and 26 under
+  the second compiler too: those steps were not fits to one image, and the second tree gained
+  three instructions from the first tree's source. Of 3,174 swept results at the right size
+  under both, 3,170 had the same counts and the same structure on the two builds; the four that
+  differed were pairs with a probe. From the sources as the trees had them, of 83 single edits
+  that changed a count, 76 moved both the same way, 7 moved one only, none moved them opposite
+  ways. A second build by a near compiler version therefore adds little discrimination here:
+  it confirms, it does not separate.
+- Cost: a quarter of the variants were compiled for both (25%), 72% were too far on the primary
+  to be worth it. A 30-minute run on 6 workers from 26+26 (29,167 variants: 7,889 singles and
+  2,301 pairs of the original, a base without dead code, the islands) found nothing better.
+- The 15 solved cases without `--also` are unchanged.
+
+Not done: hot lines from the second target (the focus uses the primary's); a cut file with a
+second target.
