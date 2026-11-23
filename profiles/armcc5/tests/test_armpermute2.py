@@ -957,6 +957,9 @@ NEW_RULES = [r.id for r in R.RULES if r.id not in OLD_RULES]
 # Old rules whose output is not the same program on the synthetic cases (found by the behaviour test;
 # each is described in a comment where it is listed): they are left out of the old-rule check.
 KNOWN_UNSOUND = {}
+# A real project tree for the property and timing tests, named by the environment only (a private
+# tree is never named here): EXHUME_PERM_REAL_TREE (the folder holding exhume.toml),
+# EXHUME_PERM_REAL_UNIT (a source file, relative to it) and EXHUME_PERM_REAL_FUNCS (comma list).
 REAL_TREE = os.path.expanduser(os.environ.get('EXHUME_PERM_REAL_TREE', '/nonexistent'))
 REAL_UNIT = os.path.join(REAL_TREE, os.environ.get('EXHUME_PERM_REAL_UNIT', 'missing.c'))
 REAL_FUNCS = [f for f in os.environ.get('EXHUME_PERM_REAL_FUNCS', '').split(',') if f] or ['missing']
