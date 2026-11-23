@@ -1155,3 +1155,525 @@ the end with no edit at all, because the vendor had built the same source earlie
 - **Make byte checks strict.** A checker that learns which symbol each address is must allow one
   address per symbol and no address shared by two symbols. One checker let `__aeabi_ui2f` take
   both its own address and `__aeabi_i2f`'s, and so passed a function with the wrong signedness.
+
+## The fast permuter (armpermute2.py)
+
+`armpermute2.py` is a second, faster permuter, written after the hand sweeps and `armpermute.py`
+stopped finding the last functions of a firmware. It searches the same way the Nintendo
+decompilation projects do: many islands of random source edits, real compiles, keep what scores
+no worse. What makes it worth running for hours is the cost per variant and the rules.
+
+Measured on a 32-core x86 host with the Linux build of the same compiler (ARM Compiler 5.06u3
+for Linux, run with `ARM_TOOL_VARIANT=mdk_lite` and `ARM_PRODUCT_PATH` set to an MDK mappings
+folder), one 12 KB source unit:
+
+- process start 7 ms, whole unit 250 ms, the unit cut after the function 180 ms, one function
+  alone 140 ms; 100 copies of a function in one file cost 157 ms each, so batching gains nothing
+  natively (under Wine it did, because Wine's start-up was the cost). Code generation is the
+  cost: one compiler process per variant per core, work files in /dev/shm.
+- armcc reads the source in 4 KB pieces while it parses, but it parses the whole file before it
+  generates any code (the last source read comes about 45 ms into a 250 ms compile). So a
+  compile paused at the function's first line and forked per variant (the Borland permuter's
+  snapshot) would save only the parse of what comes before, not the code generation; it was not
+  built. What does save time is ending the file right after the function ('prefix' cut), since
+  the code generation of the functions after it is skipped; the start-up check decides.
+- fromelf costs 12 ms. The permuter does not run it: `orcobj.py` reads the object in-process.
+  MDK-Lite's objects are ELF with the section headers and the global symbols shuffled (the file
+  starts `\xf7ORC`); each record's byte permutation comes from a SHA-1 of a key built from the
+  section header offset or the symbol count (the module docstring has the details). On 257
+  objects it gives the same sections, symbols and relocations as `fromelf --text -v -r -s`,
+  except for assembler objects' unnamed section symbol.
+- Scoring (`permscore.py`) is in the worker: the function's bytes are placed at its map address
+  with every relocation applied (calls and literals that name a mapped function go to its map
+  address), and compared with the image. 0 means equal bytes. Otherwise the count is
+  instruction-aligned like fnscore's, with branch targets as indexes, but bl targets and literal
+  values are compared, not masked, and pc-relative displacements are dropped. On one tree's 967
+  functions it agreed with fnscore wherever fnscore was right; where they differed, fnscore had
+  masked a literal or call that really differed, or miscounted a one-instruction loop. The
+  first version took a renamed row's placeholder alias in place of the source's own at: pin for
+  the same name; the link prefers the pin, and so must a scorer. Cost: 0.5 ms when the bytes are
+  equal, 1-13 ms otherwise (2,800 instructions), results cached by object hash.
+- Mutation is a tokenizer, a statement tree and a small expression parser (`permc.py`), no C
+  parser library: 0.1-0.5 ms per rule, 4-5 ms per variant including the second parse of a
+  two-edit move, the rendering and the duplicate check (in the parent at first; in the workers
+  since the third round, below).
+- Throughput: 60 variants a second with 16 workers on the 12 KB unit (3.7 per worker), 130 a
+  second on a smaller unit. Between a third and a half of the compiled variants give an object
+  already seen: most single edits do not change the code.
+
+The rules (`permrules.py`) are the kinds of edit that produced matches, taken from the history of
+several trees rather than generic defaults, each usable both ways: dead uses in the forms that
+survive to allocation (a comparison stored in a block local, a shift of a constant compared with
+0, two addresses compared) and their removal or move; a local caching a global, member or
+element and its inverse (reading it at each use, at one site or at every site read once); value
+getters as `static __forceinline`; record pointer to direct access; statement order; arm swap,
+nesting and test order; initialiser at declaration; a constant through a narrow local; redundant
+stores (repeated, dead before another, or the value a test or case label just established);
+if-chain to switch; goto chain against `||`; chained stores; `x[n++]`; `++n` in the test; range
+tests; bit tests; select forms; shift against multiply; a cast to the target's own type; case-
+label edits; scope and declaration order (weighted low: they decided small functions only);
+sized extern arrays from the map (sizeof read from one probe compile); unprototyped definitions;
+plus a few generic decomp-permuter passes. Weights follow how often each kind decided a match.
+
+Lessons from proving it on solved cases:
+
+- Keep some islands strict (they accept only improvements) and send restarts back to the
+  original source every other time. Islands that accept equal scores collect neutral edits, and
+  a one-edit answer from the original was tried more than once on top of such edits without
+  scoring 0.
+- Neighbours must be judged against the image, not against the base build: when the function's
+  size changes, every later function's raw bytes change too (armcc resolves calls within a
+  section without relocations).
+- The search often finds a different exact source than the one a person found: a cached
+  local in place of a dead comparison, a chained store in place of a dead shift. Reduce each hit
+  (it does this itself, with armreduce's hunk reduction) and check it with match.py; prefer the
+  form that also fits the vendor's style elsewhere.
+
+Regression on solved cases (one firmware, functions matched by hand earlier; the source before
+each match recovered from history; budget 10-15 minutes on 15 workers; "exact" means equal bytes
+at the map address by the scorer, the same comparison objplace makes; every recorded answer was
+itself checked to score exact under the scorer first, and two did not, because a data address
+pinned later in the history differed):
+
+| function kind | start | result | variants | seconds | what the search used | the recorded answer |
+|---|---|---|---|---|---|---|
+| CAN sender | 2 | exact | 66 | 1 | chained store | dead shift probe |
+| byte receiver A | 8 | exact | 200 | 3 | stored comparison of two locals | dead shift probe |
+| byte receiver B | 8 | exact | 531 | 9 | getter, `++` out of a test, dead shift probe | dead shift probe |
+| current measurement | 7 | exact | 480 | 16 | two getters, stored comparison, block-local cache | stored comparison |
+| update check (size +6) | 36 | exact | 809 | 10 | comma probe removed, dead shift, dead store, int temporary | comma probe removed, dead shift |
+| receive task (size -4) | 3 | exact | 663 | 5 | cached selector, arm swap, dead shift | redundant store of the state |
+| CAN receiver | 20 | exact | 131 | 2 | if chain to switch | if chain to switch |
+| charge limit | 11 | exact | 35 | 1 | block-local cache | cache both operands |
+| discharge limit (size +2) | 21 | exact | 338 | 11 | dead shift probe | stored comparison |
+| protocol task | 29 | exact | 403 | 7 | range tests, arm swap, getter | arm swap, range tests |
+| CAN receiver 2 | 8 | 1 (= the answer's floor) | 59,000 | 900 | stored comparison | local inlined at four sites (also 1) |
+| register write | 2 | 2 (answer: 1) | 100,000 | 900 | none | int temporary used for the store and the call |
+| holding registers | 2 | 2 | 91,000 | 900 | none | sized arrays, locals removed across blocks, else-if |
+| summary update | 4 | 2 | 55,000 | 900 | stored comparison | sized array, goto chains to `||`, locals removed |
+
+Ten of the fourteen found an exact source, most in seconds; three of the first runs failed until
+the search was changed (strict islands, restarts to the original, redundant stores in nested
+blocks, probes at block tops and with nearby constants), and then found them in 5-10 seconds. The
+misses are the multi-edit structural rewrites (sizes plus restructuring plus locals removed across
+blocks). The search found a different source from the recorded one in seven of ten cases, and
+often a dead-code one: the permuter will fit probes where a person found a natural form, so its
+results are evidence of where the tie is, not the vendor's source. `armpermute2.py` keeps a
+Pareto front of score against the number of dead-code constructs added (best_dead+N.c).
+
+After the regression, three more changes, measured on the misses and on the real target: a
+bandit over the logged outcomes (a rule's weight is scaled by how often its variants change the
+code at all) and a tabu list of (rule, site) moves that twice left the code unchanged; inlining
+across stores to other named objects (two named objects cannot alias; only a store through a
+pointer, or to an object the value reads, blocks it) plus an "every local at once" move; and a
+dead-code penalty (`--dead-penalty N`: each dead construct added costs N instructions in the
+ordering). The misses stayed misses. On a 5.6 KB function stuck at 60 by hand, 40 minutes of search
+reached 47 at the right size, but only with seven dead constructs added (stored comparisons, an
+address comparison, an unused local, a pointer store): a fit, not the source; by then 82% of
+submissions were duplicate texts. With the dead-code penalty at 3 the search reached 49 with
+no dead code added (inline getters for two call arguments, two reads through locals): the
+penalty turns the search from fitting probes towards the natural forms. For runs of many hours
+the search escalates by itself: when more than 60% of 3,000 generated variants are duplicate
+texts it goes one level deeper (moves of up to six edits), takes a new seed and a new random mix
+of rule weights, and sends half the islands back to the original; every new best is kept with
+its edit list in OUT/best/, time-stamped.
+
+Cut files did not help on this unit: the file cut after the function, and the file with the
+other bodies stubbed (callees kept), both gave other code for the function (sizes differ), so
+armcc's code for a function depends on more of the file than its callees; the start-up check
+rejects them and the whole unit is compiled.
+
+Second round: structural moves, moves as patches, simplify-first islands. The three misses
+were rewrites of several edits that only pay off together, so the rules gained general moves of
+those kinds and compound moves that apply a whole normalising pass in one step:
+
+- common value temporary: `L = E; f(L);` (or E computed again) against `{ T t = E; L = t;
+  f(t); }`, with the type chosen (int, unsigned int, L's type), the store through a cast pointer
+  optionally written plainly; and its inverse;
+- a group of locals inlined at every use (a run of locals assigned one after another, every
+  such run, every local read once), with the declarations left unused removed, a multi-name
+  declaration losing just those names; inlining now sees through function-like macros of the
+  file whose bodies call nothing;
+- remove every dead construct in one move (probes, dead stores to locals and parameters,
+  repeated stores, unused locals, casts to the operand's own type);
+- `else { if }` against `else if`;
+- a pointer local set to a struct object or field and moved by arithmetic (`p = (T *)&G[0];
+  p += K; x = p[1];`) replaced at each read by the field at that offset, from struct layouts
+  read by one probe compile (`__INTADDR__` offsets and sizeof of each field of the structs the
+  function's globals have); the inverse puts one object's fields behind a pointer local;
+- a goto chain to the else arm against `&&` (the then-arm form already went to `||`); consecutive
+  ifs with one idempotent body against `||`; `X = J; if (c) X = K;` against an if/else;
+- one helper for every occurrence of a pattern: every `A[K]` read (or only those that are call
+  arguments) through `get(k)`, every `A[K] = E;` through `set(k, v)`, and the inverse that
+  writes out any one-statement forceinline helper at its calls;
+- normalise: a random selection (or all) of the passes above in one move, and size-and: every
+  sizeable extern sized together with one structural move;
+- unsized extern arrays placed by at: lines take a size from the gap to the next known address.
+
+Each applied rule step is kept as a patch (its span edits with six tokens of context each), so an
+island's state is its list of moves. That gives crossover (another island's moves replayed on an
+island where their context is found) and a reduction of every new best over its moves before it
+is written: each move is left out in turn in parallel, then all that could go together, else one
+by one. Moves stay whole, so a compound move is never cut into a partial edit (line-hunk
+reduction can do that). A run resumed from an older state gets moves from the token hunks of
+each island's difference from the original. A share of the islands (at least two) starts from
+normalised forms of the base with different inlining choices, and returns there on restarts.
+
+The dead-code penalty now counts more kinds, weighted: stored comparisons, unused locals and
+pointer stores 1; casts to the same type and rule-made helpers or locals used for one read 0.5;
+dead stores to locals and parameters and repeated stores 0.25 (a redundant store has been the
+vendor's real code, so it only breaks ties; a redundant store that survives reduction of a best
+is listed in the best's notes as a candidate real feature). The report line shows the best score
+with no penalised construct added. The redundant-store rule no longer puts a dead store before a
+store whose value has a call (the call could read it), nor a store after a test past a store
+through a pointer.
+
+Regression after this round (same cases, 10 workers): the three misses were found, two exact in
+about a second (the simplify-first islands: sized arrays, pointer arithmetic to fields, goto
+chains to tests, locals inlined) and the third at its recorded answer's floor after 90 seconds
+(the common temporary). Of four earlier hits rerun, three were found again in 1-46 seconds; the
+fourth (a five-edit combination of probes, a dead store and a temporary) was missed in two
+15-minute tries (1 and 41); the first version missed it on its first run and found it on its
+second, by luck of the seed. The parent's cost per variant rose from 6 to 21 ms with the
+compound moves, and the rule set is a fifth larger, so such combinations are rarer per variant. The first test of the new moves also showed two traps: block locals of the
+same name (every probe declares its own `z`) must not be taken for one local, and a variant's
+move list must be the one it was generated from, not its island's current one.
+
+Third round: generation in the workers, focused site choice, parsimony. A 9-hour run of
+655,000 variants on a 5.6 KB function ran at 21 variants a second on 13 workers that could have
+compiled 50 (the one parent made every variant, 21 ms each), and its best needed 111 moves after
+reduction: drift, not structure. The one real fix found since, by hand, was a small local
+difference in the instruction diff (two statements moved into a `for` header).
+
+- The parent no longer parses or edits anything in the loop. A job is the name of a base text
+  (the parent writes each island base once to a folder in the RAM directory, named by its hash),
+  a seed, the island's key and what the island would still accept. The worker parses a base once
+  (kept by hash), applies the rules under the seed, compiles, scores, and sends back the score,
+  size, trail and the text's hash; the text and its moves come back only when the island, the
+  best or the Pareto front may keep it. The set of texts already made is a table of 64-bit
+  hashes in shared memory (made before the pool forks), so a worker drops a duplicate before it
+  compiles it; the tabu moves and the rules' bandit weights are shared the same way. Reduction
+  over moves sends move lists, not texts. Measured on one Mac under Wine with 4 workers, same
+  function, same options (compile 0.76-0.80 s there, so the workers were the limit both times):
+  the parent's main thread went from 5.9 ms to 0.11 ms per variant and the parent process's CPU
+  from 6.9 ms to 0.4-0.5 ms per variant; throughput 4.1-4.6 a second before, 4.5-4.6 after;
+  generation now costs 5-7 ms per variant of worker time, beside the compile. The parent's limit is now
+  some thousands of variants a second, so the worker count sets the rate.
+- Wine: the compiler's messages go to a file. With a pipe, a background process of the prefix
+  (services.exe) could inherit it and hold it open after armcc ended, and the first compile then
+  waited for the 120-second limit. The parent's own compiles share one prefix, stopped at the end.
+- Focus. MDK-Lite's armcc refuses `-S`, `--asm` and `--interleave` ("Option not available with
+  your license"), so the source lines come from debug information instead: the same text
+  compiled once more with `-g`, and the `.debug_line` programs read in-process
+  (`permscore.line_rows`). Checked on a real 64 KB unit: the code section and its relocations
+  are byte for byte the same with `-g` as without, and the line of every one of 4,281 listing
+  rows agrees with `fromelf --text -c --interleave=line_numbers` on the same object (fromelf is
+  not run by the tool). The tool checks again at each use: the lines are taken only when the
+  function places to the same bytes from the `-g` object. Each differing instruction of the
+  variant's function (for an instruction the image has and the variant lacks, its neighbours)
+  gives a hot line. This is done for the start, and in the worker for each variant that improves
+  its island or the best (about one compile in a hundred); a neutral variant an island keeps
+  inherits the base's hot lines, carried to their new numbers by a line diff. An edit with a
+  span within `--focus-near` lines (3) of a hot line is always kept; any other is kept with
+  probability `--focus-cold` (0.25). Exempt: compound moves, edits with no span in the
+  function's body (externs, helper definitions) and edits that only change locals' declarations
+  (type, order, split); a span that lies wholly in declarations is not judged, so inlining a
+  local is judged by its uses. `--no-focus` turns it off. On the function above (score 52, 14
+  hot lines of 374) a quarter of the edits the rules proposed were at hot lines, 7% exempt and
+  two thirds elsewhere, of which a quarter were kept.
+- Parsimony. Each move in a variant's list costs `--move-penalty` (0.15) differing instructions
+  in the acceptance key, as the dead-code penalty does per construct: of two sources with the
+  same code the shorter list wins, a neutral edit is no longer equal to its base (a strict island
+  refuses it; a drifting island takes it only by its temperature), and reduction drops every
+  move that does not pay for itself. An island that has given no new best for `--rebase` minutes
+  (10) starts again from the best as reduced. Because the best is now the best for its length,
+  the lowest count seen whatever its length is kept apart (`lowest.c`).
+- Regression after this round, on the Mac (4 workers, Wine): the redundant-store case
+  (start 3, wrong size) exact after 60 variants in 27 seconds, reduced to the one recorded
+  edit.
+
+Fourth round: a sweep first, so that an answer of one or two edits does not hang on the seed.
+A regression of 15 solved cases over three seeds on the 32-core host (6 workers, 300 s) found ten
+cases in seconds whatever the seed, but two whose answer was one probe or two edits were found
+on one seed in 2 seconds and missed on the others after thousands of compiles. What the misses
+showed:
+
+- A start of the wrong size is left at once. Any right-size result ranks above a wrong-size one,
+  so the first right-size variant became the best (23 or 46 differing instructions against the
+  start's 21 at two bytes too many) and every island went to it. The answer was one probe from
+  the original, and after the first seconds the original was reached only by restarts: two or
+  three in 300 seconds, and for the even islands those went to the normalised form (which has
+  the original's own probe removed), not to the original.
+- A random draw of a probe picks a point, an operand and a constant: about one draw in 3,000
+  gave any one of the exact forms.
+- The object hash that told "the code did not change" was of the object file, which holds the
+  path it was compiled at, so it differed from worker to worker: the bandit's no-change counts,
+  the tabu list and the duplicate-object count only worked when the same worker happened to
+  compile both. The hash is now of the function's placed bytes and the changed neighbours.
+- At a wrong size the instruction diff is of shifted code, and the hot lines from it mean
+  little. A base of the wrong size now has no hot lines.
+- `typedef unsigned int uint, undefined4;` registered only the last name, so in a file whose
+  `uint` came from such a line no global of that type was known to any rule.
+
+The sweep (on by default; `--no-sweep`): before the islands start, the workers list every single
+edit of the original, a rule per job, each edit once. The probe rules enumerate (`fn.enumerate`
+in permrules): a stored comparison at each insertion point that repeats each test made near it
+(`model == 'C'` again in the arm that tested it: the form most recorded probes had) and
+compares the two nearest operands with 0 (tier 1), then the other operands and the nearest
+constants (tiers 2 to 4); a shift of the nearest constant by the nearest local at each point
+(tier 1), of each constant the function uses more than once at every eighth point (tier 1.5) and
+at every point (tier 2); address comparisons of the nearest globals (tiers 3, 4); each existing
+probe removed. Every other rule is drawn with fixed seeds until 60 draws in a row give nothing
+new, its first 15 x weight edits in the first pass and the rest after the probes' second tier.
+The singles are compiled in that order (within a tier a fixed shuffle, so a time limit thins
+every part of the function alike); after tier 1.5 the probe families (a shift's constant, a
+comparison's operand) of which a member improved the score go first. Then pairs: the 40 best
+singles that changed the code, one per distinct code, two at a time, and each removal (a probe,
+the dead constructs, a normalised form) with the best 300, because a removal alone often scores
+no better than the start; then a beam: the 10 best distinct pairs each with one of the best 60
+singles as a third edit, the best of those with a fourth, up to six, while a level betters the
+one before. A pair is replayed from the two singles' patches; a patch whose context was changed
+by the other edit is found with less context (four, then three tokens a side).
+With `--time` the singles get a quarter of it, the pairs 15% and the beam 15%. The results are
+printed per rule and written to OUT/sweep.tsv. The best becomes the best, the even islands
+start from the best distinct results, the odd ones stay on the original, and 15% of all later
+jobs (`--origin`) are made from the original with two edits at once. Dead-code and move
+penalties apply to sweep results as to any other; `--only` and `--skip` choose its rules.
+
+The end-of-run line now names both orders: `best 23 after 301 s, 1 moves; start 21 size
+0x2e4/0x2e2; lowest count seen 22 with 63 moves`, and says when a right-size best has a higher
+count than a wrong-size start.
+
+Regression after this round, on the 32-core host with the native compiler (15 solved cases, the
+source before each match; seeds 7, 11 and 23; 6 workers, 300 s, five cases at a time). The sweep
+does not use the seed, so the three seeds gave the same result and, within a second or two, the
+same time in every case:
+
+| case | start | result on each seed | found by | singles listed, compiled |
+|---|---|---|---|---|
+| CAN receiver | 20 | exact, 4 s | single: if chain to switch | 7,966, 41 |
+| CAN receiver 2 | 8 | 1 (the recorded answer's floor) | single | 8,731, 2,521 |
+| charge limit | 11 | exact, 7 s | single: repeated store | 7,683, 37 |
+| update check (size +6) | 36 | exact, 77 s | pair: a shift of the shared constant 0x4f, the comma probe removed (the first pair tried) | 9,251, 3,174 |
+| current measurement | 7 | exact, 36 s | single: dead shift probe | 3,107, 509 |
+| discharge limit (size +2) | 21 | exact, 40 s | single: a nearby test repeated | 5,163, 594 |
+| byte receivers A and B | 8 | exact, 5 s | single: store inside the test | 4,972 and 4,769, 96 |
+| summary update | 4 | exact, 6 s | single: normalise | 6,107, 24 |
+| holding registers | 2 | exact, 8 s | single: normalise | 8,216, 26 |
+| register write | 2 | 1 (the recorded answer's floor) | single: common temporary | 11,226, 4,973 |
+| Modbus task (size -4) | 3 | exact, 3 s | single: dead store | 4,301, 130 |
+| CAN sender | 2 | exact, 7 s | single: local inlined | 7,838, 26 |
+| protocol task | 29 | exact, 98 s | third edit of the beam: arm swap and two range tests | 2,263, 2,255 |
+| 5.6 KB responder | 60 | 46 with 3 moves | third edit of the beam: loop header, common temporary, getter | 9,885, 1,756 |
+
+Before the sweep the same matrix (with and without focus) had the update check missed in all six
+runs (26 to 56) and the discharge limit exact on one seed and at 2 or worse on the other two;
+the responder was at 45 to 47 by the islands alone with focus and at 38, 49 and 52 without, so
+one run of six had found a better source (38 with 6 moves) than the sweep's 46. The cost is time on the cases an island found by luck in a second or two:
+the one-edit answers now take 3 to 40 seconds, because the sweep goes through the rules in
+turn. The islands after the sweep added nothing in these 300-second runs. With 30 workers and
+20 minutes on the responder the whole sweep ran (9,839 singles in 83 s, 2,487 pairs in 20 s, the
+beam in 8 s: 46 with 3 moves) and the islands then reached 40 with 5 moves within three minutes
+and nothing better after; 110 compiles a second (3.7 per worker, the workers' limit at 205 ms a
+compile, 26 ms generation and 36 ms scoring), the parent 0.13 ms per variant. An island still on
+the original after a sweep makes two edits at once: its single edits are all in the set of
+texts made, and counted as duplicates they had set off the escalation.
+
+Fifth round: a key that can be trusted, other starts, edits outside the function.
+
+- The plain count of differing instructions could be bought. A two-hour run took a 5.6 KB
+  function from 53 to 30 with honest edits, but on the way its best was a 38 that retyped a
+  temporary to `signed char`: an `sxtb` the image does not have (and other behaviour), while
+  about fifteen register ties elsewhere fell into place. Probes had done the same earlier. The
+  scorer now also counts the structural difference: the same aligned diff over instructions
+  with their registers masked (capstone decodes each distinct encoding once per worker:
+  mnemonic without its width suffix and without the flag suffix a narrow encoding forces, the
+  operand kinds, immediates, memory offsets, shifts; a literal load keeps its value, a call
+  its target; `b` and `b.w` are one kind, as are the two widths of a conditional branch; a
+  two-operand ALU form is its three-operand one; sp and pc stay themselves; push and pop lose
+  their register lists; a register-to-register `mov` is left out as a tie the allocator did not
+  make). An instruction the image does not have, lacks, or has in another place is structure;
+  literal pools and pc-relative displacements are in neither count, so what only moved because
+  the size changed upstream is not structure. The acceptance key is now exact; right size;
+  the structural count; then the rest of the plain count (register ties) with the dead-code and
+  move penalties. Scores print as `30 (structure 4, registers 26)`, best.txt lists the structural
+  differences, and `--flat-score` gives the old key. Under the new key the bests of that run
+  read: the start 53 (7 + 46); the honest 38 before the retype (4 + 34); the retyped 38 (5 +
+  33), which is now worse than the one it replaced; a 43 on the way had been 13 + 30; the final
+  30 is 4 + 26. On the same function's older source the old key's 46 and 40 are 6 + 40 and 5 +
+  35, and the new key's best after 300 seconds is 52 = 1 + 51 against a start of 10 + 50: one
+  structural difference left, which best.txt names (`ldrh` in the image where the source's
+  code has `ldr`). Scoring costs more (two aligned diffs: 28 ms a variant on that function
+  before, 43 to 50 ms now, on a loaded host, beside a 200 ms compile).
+  A 20-minute run with the new key from that run's 53 source (6 workers, dead-code penalty 3)
+  ended at 47 = 1 + 46 with the same one structural difference left; 329 variants that retyped
+  something to `signed char` were compiled, 16 were kept by an island for a while, none became
+  a best.
+- Other starts. `--seed-source FILE` (repeatable) gives another complete text of the same
+  source file: the function as a sibling release has it, an older commit, a hand variant. It is
+  compiled and scored at the start and kept when its count is within `--seed-factor` (2) times
+  the best start's plus 5; a kept one gets an equal part of the sweep's time and its own islands
+  (the islands go to the starts in turn, every second island of a start strict), and every
+  result that descends from it has a first move `seed` naming the file. First use: a function
+  whose committed source scored 2 with a comma probe, and a probe-free variant with a helper
+  that scored 4. With the variant as a seed source the sweep found an exact source in 51 seconds
+  on 6 workers: the variant plus one redundant store, a single edit that years of hand and
+  random search from the probe source had not reached (to be confirmed by match.py).
+- Edits outside the function body (`permmacro.py`, registered at the end of permrules):
+  `macro_body` rewrites the body of a function-like macro the function invokes, so every
+  invocation at once (do-while(0) against a plain block, two statements against a comma
+  expression, `x[i++] = v;` against `x[i] = v; i++;`: these keep the meaning; statement order,
+  a block-local temporary for a parameter against its direct use, a parameter's parentheses:
+  marked 'type', since what they do depends on the arguments at every invocation in the file);
+  `macro_expand` writes one invocation out as the preprocessor would, so that site can be
+  edited alone, and `macro_fold` turns a run of tokens that is exactly an expansion back into
+  the invocation; `file_order` swaps two file-scope declarations of globals the function names
+  ('same' for two extern declarations; 'type' when a definition is among them, because the
+  order of definitions is the order of the objects in their section: the scorer takes a data
+  section's address from one symbol's map row and the others by their offsets in the variant's
+  own section, so a reordered section shows as wrong literals, but the object layout itself is
+  only checked by match.py).
+- The end of a run lists the time and compile count of each new best ("is it still
+  descending?") and writes OUT/yield.json (per rule: compiles, how many changed the code,
+  improved an island, entered a best) and OUT/weights.json (the run's weights scaled by each
+  rule's rate of improvements against the average, a quarter to four times), which a later run
+  loads with `--weights`.
+
+Regression with the new key (the same 15 cases, seeds 7, 11 and 23, 6 workers, 300 s, one case
+at a time on a host busy with other runs; the three seeds agree but for the last row, the
+sweep not using the seed).
+No case that was exact is lost and the times are within a second or two, three on the largest
+unit, of the fourth round's:
+
+| case | start (structure + registers) | result | fourth round |
+|---|---|---|---|
+| CAN receiver | 20 (0 + 20) | exact, 4-5 s | exact, 4 s |
+| CAN receiver 2 | 8 (1 + 7) | 1 (1 + 0) | 1 |
+| charge limit | 11 (0 + 11) | exact, 7 s | exact, 7 s |
+| update check (size +6) | 36 (20 + 16) | exact, 78 s | exact, 77 s |
+| current measurement | 7 (0 + 7) | exact, 37-38 s | exact, 36 s |
+| discharge limit (size +2) | 21 (17 + 4) | exact, 42-43 s | exact, 40 s |
+| byte receivers A and B | 8 (0 + 8) | exact, 5-6 s | exact, 5 s |
+| summary update | 4 (4 + 0) | exact, 6 s | exact, 6 s |
+| holding registers | 2 (2 + 0) | exact, 9 s | exact, 8 s |
+| register write | 2 (2 + 0) | 1 (1 + 0) | 1 |
+| Modbus task (size -4) | 3 (2 + 1) | exact, 3 s | exact, 3 s |
+| CAN sender | 2 (2 + 0) | exact, 7 s | exact, 7 s |
+| protocol task | 29 (29 + 0) | exact, 100 s | exact, 98 s |
+| 5.6 KB responder | 60 (10 + 50) | 52, 51, 51 (structure 1), 3 moves | 46 (6 + 40), 3 moves |
+
+The responder is the one case where the two keys choose differently: of the start's ten
+structural differences the old key's 46 keeps six, the new key's 51 or 52 one, at a cost of ten
+or eleven register ties.
+
+Sixth round: the way out of a probe-matched source. A function whose committed source scored 2
+with a comma probe was three steps from exact: the probe removed (2 to 88), three stores through
+a `set(i, v)` helper (88 to 4), one clear before a set (4 to 0). From the committed source the
+sweep found nothing in 9,533 singles and 2,421 pairs: the first step makes everything worse, the
+second is a helper at some of its sites only, and the third pays only after both.
+
+- Bases without dead code. Each dead construct of the given source is removed (each probe, the
+  comma probe of a condition, each dead or repeated store, alone; each kind together; all
+  together), and every removal that compiles and changes the function's code is a start with
+  its own sweep of singles, pairs and beam, whatever it scores (`--debt-bases`, 16; together
+  they get `--debt-share` of `--time`, 0.3). Such a sweep is not there to put probes back: its
+  first stage is the first pass of every rule, then the site subsets, and the probe tiers last.
+- Site subsets. A rule that sends several sites through one helper or local (index_helper,
+  setter, getter, addr_helper, expr_helper, local_cache, cache_group, arg_local, uniform) was
+  tried at one site or at all. The sweep now lists each such edit at every subset of its sites
+  too (all subsets up to 8 sites; of more, every run of neighbouring sites and a fixed sample of
+  120), found from the edit itself: its spans that replace code in the function's body are the
+  sites, what it inserts and what it writes outside the body stays. The subsets of the edits
+  whose whole form scored best go first.
+- Again from the best. When a sweep's best has half its start's count or less, the sweep is
+  made again from that best (`--resweep`, one level, half the time).
+- In the structural count an instruction that is only displaced (two neighbours in the other
+  order, or one moved up to 16 places with the rest in order) is one difference, not a missing
+  one and an extra one: the flat count had made the better source of that function (two
+  transpositions, 4) look worse than the probe-matched one (2).
+- A folder of starts: `--seed-dir DIR`, by default `<tree>/variants/FUNC`, each `*.c` in it a
+  seed source; and every run leaves OUT/variants/, the best text of each distinct residue (set
+  of structural differences left), as candidates for that folder.
+
+Regression with these defaults (the same 15 cases and conditions as the fifth round's; the rule
+set had meanwhile grown from 84 to 131 rules, and with the site subsets a function lists 17,000
+to 18,000 single edits where it listed 9,000 to 10,000). No exact case is lost; the times are a
+few seconds longer:
+
+| case | start (structure + registers) | result | fifth round |
+|---|---|---|---|
+| CAN receiver | 20 (0 + 20) | exact, 7-8 s | exact, 4-5 s |
+| CAN receiver 2 | 8 (1 + 7) | 1 (1 + 0) | 1 (1 + 0) |
+| charge limit | 11 (0 + 11) | exact, 7-8 s | exact, 7 s |
+| update check (size +6) | 36 (18 + 18) | exact, 83-84 s | exact, 78 s |
+| current measurement | 7 (0 + 7) | exact, 42-43 s | exact, 37-38 s |
+| discharge limit (size +2) | 21 (9 + 12) | exact, 49 s | exact, 42-43 s |
+| byte receivers A and B | 8 (0 + 8) | exact, 6 s | exact, 5-6 s |
+| summary update | 4 (2 + 2) | exact, 6 s | exact, 6 s |
+| holding registers | 2 (1 + 1) | exact, 9-11 s | exact, 9 s |
+| register write | 2 (2 + 0) | 1 (1 + 0) | 1 (1 + 0) |
+| Modbus task (size -4) | 3 (2 + 1) | exact, 4 s | exact, 3 s |
+| CAN sender | 2 (1 + 1) | exact, 7 s | exact, 7 s |
+| protocol task | 29 (26 + 3) | exact, 102 s | exact, 100 s |
+| 5.6 KB responder | 60 (7 + 53) | 52 on each seed (structure 1), 3 moves | 52, 51, 51 (structure 1) |
+
+(Some starts read differently from the fifth round's because a displaced instruction now counts
+once.) And the function this round was built for, from its committed probe source with the
+compiler of its own tree, 6 workers, `--time 2400`: exact after 676 seconds, three moves. The original's sweep found nothing (18,297 singles in
+458 s, 2,428 pairs in 60 s, none better than the start). The first base, the comma probe
+removed (start 88 = 30 + 58 at the wrong size), found in 108 s of singles a `set` helper for the
+buffer at 11 of its 28 stores: 4 = 2 + 2, its site subsets tried first because the whole helper
+had improved the base. The sweep made again from that 4 found a clear before a set, a single
+edit, after 26 s: exact. (Another exact source than the one found by hand, which has the
+helper at three stores and the clear at another byte; several exist.)
+
+Seventh round: one candidate against two builds. The same function exists in two releases
+built with different compiler versions, from what is very probably one source. A candidate that
+fits one image by luck will rarely fit the other, so `--also CONFIG:SRC[:FUNC]` gives a run a
+second target: another tree's exhume.toml, its text of the source file and the function's name
+there. Each target has its own compiler (a `permuter.env` in the tree's root with
+EXHUME_ARMCC_LINUX and EXHUME_ARMCC_MAPPINGS, then `--also-env KEY=VALUE` after its `--also`,
+over the environment), its own image and scorer, in every worker.
+
+- The two texts need not be equal. A candidate is a move list; each move is replayed on the
+  other tree's text as a patch, where its context is found. A candidate with a move that has no
+  place there is scored on the primary alone: the other text stays as the candidate's base has
+  it, with that base's result, and the score is marked `[target 2: edit not carried]`. A whole
+  text (a seed source, a resumed island) is carried hunk by hunk, and the mark says how many
+  hunks had a place.
+- The key is exact on both; the right size on both; the structural counts summed; the register
+  counts summed (`--also-weight` scales the second); then the penalties. Scores print as
+  `29+29 (structure 0+0, registers 29+29)`; best.c and best.also1.c are the two texts.
+- The second compile is made only when the primary result is within `--also-margin` (6)
+  differing instructions of its base's, and a sixth of that in structure, at a size no worse.
+- The start line is the check of the set-up: the empty edit must give each tree its known
+  score.
+
+Checked on a 5.6 KB function that two releases share (compilers 5.06 update 3 and update 6):
+
+- A function exact in both trees, broken in copies of both by the same edit (two statements in
+  the other order: 6+6, structure 4+4): the two-target run restored exact on both after 4
+  seconds, one move, and wrote both texts.
+- The two trees' own best sources of the function had drifted apart: each tree's search had
+  left its own edits in (seven hunks between them, one of which is the releases' real
+  difference, a constant). From such a pair an edit near a drifted hunk does not carry, and a
+  whole text carries only in part. So the run was made from one source under both: the first
+  tree's text of the function put into the second tree's file, with the constant. Then every
+  edit of the function carries (4% of all variants did not: edits at file scope, where the
+  files differ).
+- What it showed is that for this function the two compilers answer alike. The first tree's
+  earlier descent (33, 32, 30, 29, 26 differing instructions) scores 33, 32, 30, 29 and 26 under
+  the second compiler too: those steps were not fits to one image, and the second tree gained
+  three instructions from the first tree's source. Of 3,174 swept results at the right size
+  under both, 3,170 had the same counts and the same structure on the two builds; the four that
+  differed were pairs with a probe. From the sources as the trees had them, of 83 single edits
+  that changed a count, 76 moved both the same way, 7 moved one only, none moved them opposite
+  ways. A second build by a near compiler version therefore adds little discrimination here:
+  it confirms, it does not separate.
+- Cost: a quarter of the variants were compiled for both (25%), 72% were too far on the primary
+  to be worth it. A 30-minute run on 6 workers from 26+26 (29,167 variants: 7,889 singles and
+  2,301 pairs of the original, a base without dead code, the islands) found nothing better.
+- The 15 solved cases without `--also` are unchanged.
+
+Not done: hot lines from the second target (the focus uses the primary's); a cut file with a
+second target.
