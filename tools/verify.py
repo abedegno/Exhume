@@ -443,7 +443,8 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
         base, size, rows, org = CFG.load_targets(seg)
     FARHINT.clear(); FARHINT.update(CFG.far_hints)
     segs = o['segs']
-    code = next(i for i, s in enumerate(segs) if s and s[2] and CFG.is_code_class(s[1]))
+    # a file of data only has no code segment at all under Borland C++ 2.0 (make20 MSGS.C)
+    code = next((i for i, s in enumerate(segs) if s and s[2] and CFG.is_code_class(s[1])), None)
     datas = next(i for i, s in enumerate(segs) if s and s[0] == '_DATA')
     bss = next((i for i, s in enumerate(segs) if s and s[0] == '_BSS'), None)
     fars = {i for i, s in enumerate(segs) if s and s[1] == 'FAR_DATA'}
@@ -696,6 +697,13 @@ def main(argv=None, on_names=None, *, bounded_resident_prefix=False, code_frame_
                     problems.append(f'_DATA+{at:X}: points into _BSS, whose base is not known')
                 elif word(exe, here) != (min(bss_bases) + add) & 0xFFFF:
                     problems.append(f'_DATA+{at:X}: points to DS:{word(exe, here):X}, expected DS:{(min(bss_bases) + add) & 0xFFFF:X}')
+            elif tm == 0 and ti == bss and loc == 3:
+                # make20: a far pointer from this file's _DATA into its own _BSS (compact model)
+                internal += 1
+                if len(bss_bases) != 1:
+                    problems.append(f'_DATA+{at:X}: points into _BSS, whose base is not known')
+                elif word(exe, here) != (min(bss_bases) + add) & 0xFFFF or word(exe, here + 2) != CFG.dgroup_para:
+                    problems.append(f'_DATA+{at:X}: far pointer {word(exe, here + 2):04X}:{word(exe, here):04X}, expected {CFG.dgroup_para:04X}:{(min(bss_bases) + add) & 0xFFFF:04X}')
             elif tm == 0 and ti == datas and loc == 3:
                 # cpp20: a far pointer from this file's _DATA into its own _DATA (DGROUP is resident)
                 internal += 1
