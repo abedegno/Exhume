@@ -11,6 +11,7 @@ variants made, compiled and scored in a worker pool.
         [--beam B] [--beam-share F] [--sweep-only]
         [--origin SHARE] [--flat-score] [--seed-source FILE]... [--seed-dir DIR] [--seed-factor F]
         [--debt-bases N] [--debt-share F] [--resweep LEVELS]
+        [--also CONFIG:SRC[:FUNC] [--also-env KEY=VALUE]...]... [--also-weight W] [--also-margin N]
 
 First a sweep, so that an answer of one or two edits does not hang on the seed: every single
 edit of the original source is listed (for the probe rules by enumeration: each insertion
@@ -69,6 +70,28 @@ for beside exhume.toml. A run leaves OUT/variants/: the best text of each distin
 of structural differences left), as candidates for that folder. A kept one gets an equal part of the sweep's time and its own islands (the islands go
 to the starts in turn); every result that descends from it has a first move `seed` that names
 the file, in best.txt and in the logs.
+
+Two builds at once: --also CONFIG:SRC[:FUNC] (repeatable) names another tree that has the same
+function: its exhume.toml, its text of the source file (a path, or one relative to that
+exhume.toml), and the function's name there when it differs. A candidate is then scored
+against both images, each text compiled with its own tree's compiler: the compiler of a tree
+comes from a `permuter.env` in the tree's root (lines KEY=VALUE: EXHUME_ARMCC_LINUX,
+EXHUME_ARMCC_MAPPINGS, EXHUME_ARMCC_EXEC; also read for the primary tree), then from the
+--also-env KEY=VALUE pairs that follow its --also, over this process's environment. The two
+texts need not be equal: a candidate is a list of moves, and each move is replayed on the other
+tree's text as a patch, put where its context is found. A candidate with a move that does not
+carry is scored on the primary alone: the other tree's text stays as the candidate's base has
+it, with that base's result, and the score says so. The key is exact on all targets; the right
+size on all; the structural counts summed; the register counts summed (--also-weight scales
+the other targets' counts, 1); then the penalties. Scores print per target: `29+29 (structure
+0+0, registers 29+29)`. The start line shows each tree's own start score, which checks the
+set-up: the empty edit must give each tree the score it is known to have. The other target is
+compiled only when the primary result is within --also-margin (6) differing instructions, and
+a sixth of that in structural differences, of its base's primary result, at a size no worse: a
+variant that is plainly worse costs one compile (a margin of 1000 compiles every variant twice). The sweep, the bases without dead code, seed sources (each carried to the other
+text by the token hunks of its difference from the original), reduction and resume all score
+both; hot lines and the clang screen are the primary's; a cut file is not used. best.c is the
+primary's text and best.alsoN.c the N-th other tree's.
 
 The key (trust): a result is ordered by exact; then right size with unchanged neighbours; then
 its structural difference (differing instructions with the registers masked: an instruction
@@ -294,6 +317,54 @@ def make_move(rule, desc, toks, ed, words=None, cache=None):
 
 
 SEED_TOKS = []           # the tokens of each --seed-source text (set before the workers fork)
+
+
+ALSO_SEED = []           # per other target (--also): each seed source's tokens as carried to that tree's text, or None
+
+
+def also_apply(k, toks, moves):
+    """A move list replayed on the k-th other target's tokens (its tree's text of the same
+    file): each patch where its context is found there, a seed source as it was carried to that
+    text at the start. None when a move does not carry."""
+    for m in moves:
+        if 'seed' in m:
+            toks = ALSO_SEED[k][m['seed']] if k < len(ALSO_SEED) and m['seed'] < len(ALSO_SEED[k]) else None
+        else:
+            toks = apply_move(toks, m)
+        if toks is None: return None
+    return toks
+
+
+def carry_text(toks, origin, also_toks):
+    """A whole text carried to another tree's text of the file: the token hunks of its difference
+    from the original (hunks nearer than 14 tokens as one), each put where its context is found
+    in the other text, the last first so that an earlier hunk's context is still the
+    original's; a hunk that has no place there is left out. (tokens or None, True when every
+    hunk carried, else False for none or (carried, hunks))."""
+    import difflib
+    wa, wb = [t[1] for t in origin], [t[1] for t in toks]
+    lo = 0
+    lim = min(len(wa), len(wb))
+    while lo < lim and wa[lo] == wb[lo]: lo += 1
+    hi = 0
+    while hi < lim - lo and wa[len(wa) - 1 - hi] == wb[len(wb) - 1 - hi]: hi += 1
+    ops = [(i1 + lo, i2 + lo, j1 + lo, j2 + lo) for tag, i1, i2, j1, j2 in
+           difflib.SequenceMatcher(None, wa[lo:len(wa) - hi], wb[lo:len(wb) - hi], autojunk=False).get_opcodes() if tag != 'equal']
+    hunks = []
+    for i1, i2, j1, j2 in ops:
+        if hunks and i1 - hunks[-1][1] < 14: hunks[-1] = (hunks[-1][0], i2, hunks[-1][2], j2)
+        else: hunks.append((i1, i2, j1, j2))
+    out, n = also_toks, 0
+    for i1, i2, j1, j2 in reversed(hunks):
+        t = apply_patch(out, make_patch(origin, [(i1, i2, toks[j1:j2])], wa))
+        if t is not None: out, n = t, n + 1
+    if n == len(hunks): return out, True
+    return (out, (n, len(hunks))) if n else (None, False)
+
+
+def parts_of(r):
+    """The per-target results of a result (one for a run without --also)."""
+    return r.parts if isinstance(r, permscore.Combo) else [r]
 
 
 def apply_move(toks, m):
@@ -685,6 +756,9 @@ class Gen:
     focus, focus_cold, focus_near = False, 0.25, 3
     src_name = None
     origin_toks = None
+    also = ()                   # the other targets: [{'toks', 'tail'}] of each tree's text of the file
+    also_weights = None
+    also_margin = 6
     cap = 8
     sizes = layouts = None
     c_opts = None               # the file's compile options as one line (for permrules.r_file_opts)
@@ -693,6 +767,7 @@ class Gen:
         self.func, self.tail, self.types, self.rules = func, tail, types, list(rules)
         self.__dict__.update(kw)
         self.cache = collections.OrderedDict()
+        self.cache2 = {}
         self.root_ctx = {}
 
     # ---- what the parent uses too
@@ -725,6 +800,61 @@ class Gen:
         b = self.cache[bh] = Base(text, toks, self.make_ctx(toks))
         while len(self.cache) > self.cap: self.cache.popitem(last=False)
         return b
+
+    def base_also(self, bh, k):
+        """The tokens of base bh as the k-th other target's tree has it."""
+        key = (bh, k)
+        t = self.cache2.get(key)
+        if t is None:
+            with open(os.path.join(self.bases_dir, f'{bh}.also{k + 1}.c'), encoding='latin1') as f: t = permc.tokenize(f.read())[0]
+            if len(self.cache2) > 3 * self.cap * max(1, len(self.also)): self.cache2.clear()
+            self.cache2[key] = t
+        return t
+
+    def score_also(self, kind, p, base, made, toks, r1, out):
+        """The candidate under the other targets (--also): its moves are replayed on each other
+        tree's text of the base (a patch goes where its context is found), that text is
+        compiled with that target's compiler and scored against its image. A candidate whose
+        moves do not all carry leaves that tree's text as its base has it (carried False). The
+        second compile is saved when the primary result is far from its base's (--also-margin).
+        (Combo, {'moves', 'texts', 'raws'})."""
+        moves = [x if isinstance(x, dict) else make_move(*x) for x in made]
+        b = p.get('p1')
+        near = (b is None or p.get('want') or p.get('both')
+                or self.also_margin >= 1000        # (a margin of 1000 or more: every variant under every target)
+                or (r1.key()[0] <= b[0] and r1.struct <= b[2] + max(1, self.also_margin // 6) and r1.diff <= b[3] + self.also_margin))
+        parts, carried, texts, raws = [r1], [], [], []
+        for k, a in enumerate(self.also):
+            ra = (p.get('ra') or [None] * len(self.also))[k]
+            if kind == 'gen':
+                fb = self.base_also(p['bh'], k)
+                t2 = apply_all(fb, moves)
+            elif kind == 'moves':
+                mv, nfix = out.get('order') or p['moves'], p.get('nfix', 0)
+                fb = also_apply(k, a['toks'], mv[:nfix])
+                if fb is None: fb, t2 = a['toks'], None
+                else: t2 = also_apply(k, fb, mv[nfix:])
+            else:
+                fb = a['toks']
+                t2, how = carry_text(toks, self.origin_toks, fb)
+            carried.append(how if kind == 'text' else t2 is not None)
+            if t2 is None:
+                out['unc'] = out.get('unc', 0) + 1
+                t2 = fb
+                if ra is not None:                 # the base's own result stands: no compile
+                    parts.append(ra); texts.append(permc.render(t2, a['tail'])); raws.append(None)
+                    continue
+            elif not near:
+                out['skip2'] = out.get('skip2', 0) + 1
+                parts.append(None); texts.append(None); raws.append(None)
+                continue
+            text2 = permc.render(t2, a['tail'])
+            r2, raw2, tc, ts, log = permrun.worker_score_also(k, text2)
+            out['tc'] += tc; out['ts'] += ts; out['n2'] = out.get('n2', 0) + 1
+            if r2 is None:
+                r2 = permscore.Result(error=f'target {k + 2} does not compile: ' + (log.strip().splitlines() or [''])[0][:120])
+            parts.append(r2); texts.append(text2); raws.append(raw2)
+        return permscore.Combo(parts, carried, self.also_weights), {'moves': moves, 'texts': texts, 'raws': raws}
 
     def weights(self):
         if self.wmm is None: return [r.weight for r in self.rules]
@@ -846,7 +976,8 @@ class Gen:
         elif kind == 'moves':                      # a move list replayed on the original
             toks = apply_all(self.origin_toks, p['moves'])
             if toks is None and len(p['moves']) >= 2 and p.get('either'):      # a pair: the other order
-                toks = apply_all(self.origin_toks, p['moves'][:-2] + [p['moves'][-1], p['moves'][-2]])
+                out['order'] = p['moves'][:-2] + [p['moves'][-1], p['moves'][-2]]
+                toks = apply_all(self.origin_toks, out['order'])
                 out['swapped'] = True
             if toks is None:
                 out['none'] = True; return out
@@ -866,6 +997,11 @@ class Gen:
         out['r'] = r
         if r is None:
             out['log'] = log; return out
+        aux = None
+        if self.also and r.ok:
+            r, aux = self.score_also(kind, p, base, made, toks, r, out)
+            out['r'], ohash, made = r, r.chash, aux['moves']
+        out.pop('order', None)
         out['ohash'] = ohash
         k = r.key()
         if not r.ok:
@@ -893,8 +1029,12 @@ class Gen:
             text = out['text'] = ctext if self.mode == 'whole' else permc.render(toks, self.tail)
             out['moves'] = [x if isinstance(x, dict) else make_move(*x) for x in made]
             improved = force or (old is not None and k < old) or (bkey is not None and k < bkey)
+            if aux is not None: out['also'] = aux['texts']
             if improved and not r.exact and not permscore.Result.flat:
                 out['sdiff'] = permrun._W['target'].struct_diff(raw)      # which instructions are wrong
+                for n, raw2 in enumerate(aux['raws'] if aux else ()):
+                    if raw2 is not None:
+                        out['sdiff'] += [f'target {n + 2}: ' + x for x in permrun._W['also'][n]['target'].struct_diff(raw2)]
             if self.focus and not r.exact and not improved and p.get('hot') and base is not None and r.size_ok:
                 out['hot'] = remap_lines(base.text, text, p['hot'])       # the base's hot lines, where they are now
             out['tg'] += time.perf_counter() - t1
@@ -929,6 +1069,7 @@ class Island:
         self.home = None            # where restarts to the original go (a simplified base)
         self.stale = 0
         self.bh = self.h = self.hot = None      # base file hash, normalised text hash, hot lines
+        self.also = None            # with --also: this source as each other target's tree has it (texts)
         self.strict = k % 2 == 1    # keeps only improvements (the odd islands)
         self.root = None            # the start it belongs to (the original or a seed source)
         self.anchor = False
@@ -938,12 +1079,12 @@ class Island:
         """Restart from src (the best, the original or a home)."""
         self.text, self.result, self.trail = src.text, src.result, list(src.trail)
         self.key, self.ohash, self.moves = src.key, src.ohash, list(src.moves)
-        self.bh, self.h, self.hot = src.bh, src.h, src.hot
+        self.bh, self.h, self.hot, self.also = src.bh, src.h, src.hot, src.also
         self.stale = 0
 
     def copy(self, k):
         x = Island(k, self.text, self.result, self.trail, self.key, self.ohash)
-        x.moves, x.bh, x.h, x.hot = list(self.moves), self.bh, self.h, self.hot
+        x.moves, x.bh, x.h, x.hot, x.also = list(self.moves), self.bh, self.h, self.hot, self.also
         return x
 
 
@@ -997,8 +1138,14 @@ class Search:
         self.restart = arg(a, '--restart', 400, int)
         self.screen_on = '--no-screen' not in a
         kind = arg(a, '--runner', os.environ.get('EXHUME_PERMUTE_RUNNER', 'native'))
-        self.runner = permrun.make_runner(kind, cfg, {'armcc_home': arg(a, '--armcc-home'),
-                                                      'mappings': arg(a, '--mappings'), 'exec': arg(a, '--exec')})
+        env = permrun.tree_env(cfg.root)       # the tree's own compiler, when it has a permuter.env
+        self.runner = permrun.make_runner(kind, cfg, {'armcc_home': arg(a, '--armcc-home') or env.get('EXHUME_ARMCC_LINUX'),
+                                                      'mappings': arg(a, '--mappings') or env.get('EXHUME_ARMCC_MAPPINGS'),
+                                                      'exec': arg(a, '--exec') or env.get('EXHUME_ARMCC_EXEC')})
+        self.runner_kind = kind
+        self.also = self.also_specs()          # the other targets (--also), completed in start()
+        self.also_weight = arg(a, '--also-weight', 1.0, float)
+        self.also_margin = arg(a, '--also-margin', 6, int)
         self.opts = permrun.source_opts(cfg, self.src, self.text)
         self.work = os.path.join(permrun.ram_dir(), f'pmt-{os.getpid()}')
         self.pwork = os.path.join(self.work, 'parent')         # the parent's own compiles (one Wine prefix)
@@ -1027,6 +1174,71 @@ class Search:
         self.log = open(os.path.join(self.out, 'attempts.tsv'), 'a')
 
     # ---- start-up
+    def also_specs(self):
+        """[{'config', 'src', 'func', 'env'}] from --also CONFIG:SRC[:FUNC], each with the
+        --also-env KEY=VALUE pairs that follow it."""
+        out = []
+        for i, x in enumerate(self.a):
+            if x == '--also' and i + 1 < len(self.a):
+                f = self.a[i + 1].split(':')
+                if len(f) < 2: raise SystemExit('--also CONFIG:SRC[:FUNC]')
+                out.append({'config': f[0], 'src': f[1], 'func': f[2] if len(f) > 2 and f[2] else self.func, 'env': {}})
+            elif x == '--also-env' and i + 1 < len(self.a):
+                if not out or '=' not in self.a[i + 1]: raise SystemExit('--also-env KEY=VALUE comes after the --also it belongs to')
+                k, v = self.a[i + 1].split('=', 1)
+                out[-1]['env'][k] = v
+        return out
+
+    def also_start(self):
+        """Each other target made ready: its tree's config, its text of the file, its compiler
+        (permuter.env in that tree's root, then --also-env, over this process's environment),
+        its start compile and scorer. The start scores of both are the check that the same
+        (empty) edit gives each tree its known score."""
+        import config
+        for n, a in enumerate(self.also):
+            cfg = config.load(os.path.abspath(a['config']))
+            root = os.path.dirname(os.path.abspath(a['config']))
+            src = a['src'] if os.path.isabs(a['src']) else os.path.join(root, a['src'])
+            with open(src, encoding='latin1') as f: text = f.read()
+            env = dict(permrun.tree_env(cfg.root), **a['env'])
+            runner = permrun.make_runner(self.runner_kind, cfg, {'armcc_home': env.get('EXHUME_ARMCC_LINUX'),
+                                                                 'mappings': env.get('EXHUME_ARMCC_MAPPINGS'), 'exec': env.get('EXHUME_ARMCC_EXEC')})
+            a.update(cfg=cfg, src=os.path.abspath(src), text=text, runner=runner, opts=permrun.source_opts(cfg, src, text),
+                     stem=os.path.splitext(os.path.basename(src))[0], work=os.path.join(self.work, f'parent-also{n + 1}'))
+            raw, log = permrun.compile_once(runner, cfg, a['src'], text, a['work'])
+            if raw is None: raise SystemExit(f'--also {a["config"]}: the source does not compile:\n' + log[-2000:])
+            a['target'] = permscore.Target(cfg, text, a['func'], raw)
+            a['r0'] = a['target'].score(raw)
+            a['toks'], a['tail'] = permc.tokenize(text)
+            permc.find_function(a['toks'], a['func'])
+            print(f'  target {n + 2}: {a["func"]} in {a["src"]}: start {a["r0"].text()}'
+                  + (f'  (compiler {getattr(runner, "home", "")})' if getattr(runner, 'home', None) else ''), flush=True)
+
+    def score_all(self, text, toks=None, moves=None):
+        """(result, primary object bytes, the other targets' texts) of a text scored in the parent:
+        under every target with --also (the text carried to each other tree by the moves that
+        make it from the original, or by the token hunks of its difference). (None, log, None)
+        when the primary does not compile."""
+        raw, log = self.compile(text)
+        if raw is None: return None, log, None
+        r = self.target.score(raw)
+        if not self.also or not r.ok: return r, raw, None
+        if toks is None: toks, _ = permc.tokenize(text)
+        parts, carried, texts = [r], [], []
+        for k, a in enumerate(self.also):
+            t2 = also_apply(k, a['toks'], moves) if moves is not None else None
+            if t2 is None and norm_hash(toks) == self.origin.h: t2 = a['toks']
+            how = t2 is not None
+            if t2 is None: t2, how = carry_text(toks, self.origin_toks, a['toks'])
+            carried.append(how)
+            if t2 is None:
+                parts.append(a['r0']); texts.append(a['text']); continue
+            text2 = permc.render(t2, a['tail'])
+            raw2, log2 = permrun.compile_once(a['runner'], a['cfg'], a['src'], text2, a['work'])
+            parts.append(a['target'].score(raw2) if raw2 is not None else permscore.Result(error=f'target {k + 2} does not compile'))
+            texts.append(text2)
+        return permscore.Combo(parts, carried, [1.0] + [self.also_weight] * len(self.also)), raw, texts
+
     def compile(self, text, extra=()):
         """(object bytes or None, log) of one compile in the parent."""
         return permrun.compile_once(self.runner, self.cfg, self.src, text, self.pwork, extra)
@@ -1039,6 +1251,10 @@ class Search:
         self.base_raw = raw
         self.target = permscore.Target(self.cfg, self.text, self.func, raw)
         r0 = self.target.score(raw)
+        if self.also:
+            print(f'  target 1: {self.func} in {self.src}: start {r0.text()}', flush=True)
+            self.also_start()
+            r0 = permscore.Combo([r0] + [a['r0'] for a in self.also], None, [1.0] + [self.also_weight] * len(self.also))
         print(f'{self.func}: start {r0.text()}  (compile + target {time.time() - t0:.1f} s)', flush=True)
         toks, tail = permc.tokenize(self.text)
         self.tail = tail
@@ -1054,10 +1270,12 @@ class Search:
                        c_opts=shlex.join(self.opts[:-1]), p_pair=self.p_pair, p_every=self.p_every, dead_penalty=self.dead_penalty,
                        move_penalty=self.move_penalty, seen=self.seen, tabu=self.tabu, wmm=self.wmm,
                        bases_dir=self.bases_dir, focus_cold=self.focus_cold, focus_near=self.focus_near,
-                       src_name=self.stem + '.c', origin_toks=toks, cap=self.nisl + 3)
+                       src_name=self.stem + '.c', origin_toks=toks, cap=self.nisl + 3,
+                       also=[{'toks': a['toks'], 'tail': a['tail']} for a in self.also],
+                       also_weights=[1.0] + [self.also_weight] * len(self.also), also_margin=self.also_margin)
         self.mode = 'whole'
         cut = arg(self.a, '--cut', 'off')
-        if cut != 'off':
+        if cut != 'off' and not self.also:         # (a cut file is not made for the other targets: whole units with --also)
             self.mode = self.check_cut(toks, tail, raw, cut)
         self.gen.mode = self.mode
         ctx = self.gen.make_ctx(toks)
@@ -1067,7 +1285,8 @@ class Search:
         self.screen = permscreen.Screen(self.src, self.opts, self.text, self.armcc_include()) if self.screen_on else None
         self.origin = Island(-2, self.text, r0, [], r0.key(), r0.chash)
         self.origin.h = norm_hash(toks)
-        self.origin.bh = self.put_base(self.text)
+        if self.also: self.origin.also = [a['text'] for a in self.also]
+        self.origin.bh = self.put_base(self.text, self.origin.also)
         self.seen.add(self.origin.h)
         if self.focus and not r0.exact:
             hot = self.hot_parent(self.text, raw)
@@ -1122,10 +1341,13 @@ class Search:
         for path in files:
             with open(path, encoding='latin1') as f: text = f.read()
             name = os.path.basename(path)
-            raw, log = self.compile(text)
-            if raw is None:
-                print(f'  seed source {path}: does not compile: {(log.strip().splitlines() or [""])[-1][:160]}', flush=True); continue
-            r = self.target.score(raw)
+            try:
+                stoks, _ = permc.tokenize(text)
+            except Exception as e:
+                print(f'  seed source {path}: {type(e).__name__}: {e}', flush=True); continue
+            r, raw, also = self.score_all(text, stoks)
+            if r is None:
+                print(f'  seed source {path}: does not compile: {(raw.strip().splitlines() or [""])[-1][:160]}', flush=True); continue
             if not r.ok:
                 print(f'  seed source {path}: not scored: {r.error}', flush=True); continue
             try:
@@ -1134,18 +1356,22 @@ class Search:
             except Exception as e:
                 print(f'  seed source {path}: {type(e).__name__}: {e}', flush=True); continue
             if norm_hash(toks) in {norm_hash(self.origin_toks)} | {norm_hash(c[5]) for c in cands}: continue      # the same text again
-            cands.append((path, name, text, raw, r, toks))
+            cands.append((path, name, text, raw, r, toks, also))
         best = min([self.base_result.diff or 0] + [c[4].diff for c in cands]) if cands else 0
         out = []
-        for path, name, text, raw, r, toks in cands:
+        for path, name, text, raw, r, toks, also in cands:
             if not r.exact and r.diff > factor * best + 5:
                 print(f'  seed source {path}: {r.text()}: left out (more than {factor:g} times the best start\'s {best} plus 5)', flush=True)
                 continue
             self.types.scan_globals(toks)
             SEED_TOKS.append(toks)
+            for k in range(len(self.also)):        # the seed as each other tree has it (or not carried: None)
+                while len(ALSO_SEED) <= k: ALSO_SEED.append([])
+                ALSO_SEED[k].append(permc.tokenize(also[k])[0] if r.carried[k] else None)
             mv = [{'rule': 'seed', 'desc': f'seed source {name} ({r.text()})', 'seed': len(SEED_TOKS) - 1}]
             isl = Island(-10 - len(out), text, r, [('seed', mv[0]['desc'])], self.key_of(r, self.dead_delta(toks), 1), r.chash)
-            isl.moves, isl.h, isl.bh = mv, norm_hash(toks), self.put_base(text)
+            isl.also = also
+            isl.moves, isl.h, isl.bh = mv, norm_hash(toks), self.put_base(text, also)
             isl.ridx, isl.name = len(SEED_TOKS), 'seed source ' + name
             self.seen.add(isl.h)
             if self.focus and not r.exact and r.size_ok: isl.hot = self.hot_parent(text, raw) or None
@@ -1171,11 +1397,15 @@ class Search:
     def dead_delta(self, toks):
         return self.gen.dead_of(toks) - self.dead0 if self.dead_penalty else None
 
-    def put_base(self, text):
-        """The name of text in the bases folder the workers read (written once)."""
-        bh = hashlib.blake2b(text.encode('latin1', 'replace'), digest_size=10).hexdigest()
+    def put_base(self, text, also=None):
+        """The name of text in the bases folder the workers read (written once); with --also the
+        other targets' texts of the same base are written beside it."""
+        key = text if not also else text + '\0' + '\0'.join(also)
+        bh = hashlib.blake2b(key.encode('latin1', 'replace'), digest_size=10).hexdigest()
         if bh not in self.bases:
             with open(os.path.join(self.bases_dir, bh + '.c'), 'w', encoding='latin1', errors='replace') as f: f.write(text)
+            for k, t in enumerate(also or ()):
+                with open(os.path.join(self.bases_dir, f'{bh}.also{k + 1}.c'), 'w', encoding='latin1', errors='replace') as f: f.write(t)
             self.bases.add(bh)
         return bh
 
@@ -1186,10 +1416,11 @@ class Search:
             live.add(isl.bh)
             if isl.home: live.add(isl.home.bh)
         for bh in self.bases - live:
-            try:
-                os.remove(os.path.join(self.bases_dir, bh + '.c'))
-            except OSError:
-                pass
+            for name in [bh + '.c'] + [f'{bh}.also{k + 1}.c' for k in range(len(self.also))]:
+                try:
+                    os.remove(os.path.join(self.bases_dir, name))
+                except OSError:
+                    pass
         self.bases &= live
 
     def check_cut(self, toks, tail, whole_raw, cut):
@@ -1266,6 +1497,10 @@ class Search:
         p = {'bh': isl.bh, 'seed': self.rng.getrandbits(48), 'depth': self.depth, 'cross': cross, 'old': old,
              'thr': thr, 'bkey': self.best.key, 'hot': isl.hot if self.focus else None, 'nm': len(isl.moves),
              'low': self.low[0]}
+        if self.also:
+            r1 = parts_of(isl.result)
+            p['p1'] = (r1[0].key()[0], 0, r1[0].struct, r1[0].diff)       # the primary's part of the base's result
+            p['ra'] = r1[1:]                                               # and the other targets' results of the base
         if isl.anchor: cross = p['cross'] = None
         if isl.bh in self.swept and not cross:
             p['steps'] = 2                        # the single edits of the original were tried in the sweep
@@ -1284,7 +1519,8 @@ class Search:
         self.start()
         if self.best.result.exact:
             print('already exact'); return 0
-        pool = permrun.Pool(self.runner, self.target, self.opts, self.stem, self.jobs, os.path.join(self.work, 'pool'), self.gen)
+        pool = permrun.Pool(self.runner, self.target, self.opts, self.stem, self.jobs, os.path.join(self.work, 'pool'), self.gen,
+                            [{'runner': a['runner'], 'target': a['target'], 'opts': a['opts'], 'stem': a['stem']} for a in self.also])
         results = queue.Queue()
         pending = {}
         nid = nres = 0
@@ -1347,10 +1583,11 @@ class Search:
     def cleanup(self):
         """Stop the parent's own compiler runner (its Wine prefix) and delete the work folder."""
         import shutil
-        try:
-            self.runner.stop()
-        except Exception:
-            pass
+        for rn in [self.runner] + [a.get('runner') for a in self.also]:
+            try:
+                rn.stop()
+            except Exception:
+                pass
         shutil.rmtree(self.work, ignore_errors=True)
 
     # ---- the sweep: every single edit of the original, then pairs of the best of them
@@ -1390,6 +1627,7 @@ class Search:
             flying -= 1
             out[res['id']] = res
             c['compile_s'] += res.get('tc', 0.0); c['score_s'] += res.get('ts', 0.0); c['wgen_s'] += res.get('tg', 0.0)
+            c['also_compiled'] += res.get('n2', 0); c['also_skipped'] += res.get('skip2', 0); c['also_uncarried'] += res.get('unc', 0)
             r = res.get('r')
             if r is None:
                 if not res.get('none') and 'err' not in res: c['failed'] += 1
@@ -1459,13 +1697,13 @@ class Search:
             except ValueError:
                 continue
             text = permc.render(nt, self.tail)
-            raw, log = self.compile(text)
-            if raw is None: continue
-            r = self.target.score(raw)
-            if not r.ok or r.chash in objs: continue
+            mv = [make_move(rule, ed.desc, toks, ed, words)]
+            r, raw, also = self.score_all(text, nt, mv)
+            if r is None or not r.ok or r.chash in objs: continue
             objs.add(r.chash)
             isl = Island(-30 - len(out), text, r, [(rule, ed.desc)], self.key_of(r, self.dead_delta(nt), 1), r.chash)
-            isl.moves, isl.h, isl.bh = [make_move(rule, ed.desc, toks, ed, words)], norm_hash(nt), self.put_base(text)
+            isl.also = also
+            isl.moves, isl.h, isl.bh = mv, norm_hash(nt), self.put_base(text, also)
             isl.ridx, isl.name = 100 + len(out), 'the base without dead code: ' + ed.desc[:110]
             # (its text is not put in the set of texts made: the original's sweep has the same
             # removal as a single edit, and pairs each removal with the best singles)
@@ -1490,6 +1728,10 @@ class Search:
         d_single = t_start + spans[0]
         d_pair = d_single + spans[1]
         d_third = d_pair + spans[2]
+        rk = {}                                # with --also: the start's own results, and how many moves make the start
+        if self.also:
+            r1 = parts_of(root.result)
+            rk = {'p1': (r1[0].key()[0], 0, r1[0].struct, r1[0].diff), 'ra': r1[1:], 'nfix': len(P)}
         # the workers list the singles, a rule per job (the compound rules take seconds on a
         # large function); one edit is kept once, for the first rule that makes it
         jobs = ([None] if self.simplify > 0 else []) + [r.id for r in self.rules]
@@ -1528,7 +1770,7 @@ class Search:
         # first pass alone, and the probe tiers come after the site subsets
         debt = any(root is x for x in self.debt)
         early = [n for n, x in enumerate(recs) if x['tier'] < (1 if debt else 2)]
-        got = self.pump(Lazy(early), d_single)
+        got = self.pump(Lazy(early), d_single, **rk)
         res = {early[n]: rr for n, rr in got.items()}
         fams, whole = {}, {}
         for n, rr in res.items():
@@ -1547,7 +1789,7 @@ class Search:
         late.sort(key=rank)
         if fams: print('  sweep: families tried first after the first tiers: ' + ', '.join(sorted(fams, key=fams.get)[:12])[:400], flush=True)
         if not any(rr.get('r') is not None and rr['r'].ok and rr['r'].exact and not rr['r'].neighbours for rr in res.values()):
-            got = self.pump(Lazy(late), d_single)
+            got = self.pump(Lazy(late), d_single, **rk)
             res.update({late[n]: rr for n, rr in got.items()})
         per = collections.defaultdict(collections.Counter)
         done = []
@@ -1610,7 +1852,7 @@ class Search:
             pl = sorted(pset, key=lambda ab: ((0 if ab[0] in rset else ab[0]) + (0 if ab[1] in rset else ab[1]), ab))
             lists = [P + top[a]['moves'] + top[b]['moves'] for a, b in pl]
             t1 = time.time()
-            res = self.pump(lists, d_pair, either=True)
+            res = self.pump(lists, d_pair, either=True, **rk)
             for n, (a, b) in enumerate(pl):
                 rr = res.get(n)
                 r = rr.get('r') if rr else None
@@ -1637,7 +1879,7 @@ class Search:
                 cand = [(p, x) for x in ext for p in bp if not any(m is x['moves'][0] for m in p['moves'])]
                 if not cand: break
                 t2 = time.time()
-                res = self.pump([P + p['moves'] + x['moves'] for p, x in cand], d_third)
+                res = self.pump([P + p['moves'] + x['moves'] for p, x in cand], d_third, **rk)
                 cur = []
                 for n, (p, x) in enumerate(cand):
                     rr = res.get(n)
@@ -1670,10 +1912,11 @@ class Search:
 
         def fetch(x, k):
             """An island at the result x (its text asked of a worker), or None."""
-            kk, rr = self.score_moves([P + x['moves']], want=True)[0]
+            kk, rr = self.score_moves([P + x['moves']], want=True, **{k: v for k, v in rk.items() if k != 'p1'})[0]
             if kk is None or rr.get('text') is None: return None
             isl = Island(k, rr['text'], rr['r'], list(root.trail) + [(x['rule'], x['desc'])], kk, rr['ohash'])
-            isl.moves, isl.h, isl.hot, isl.bh = P + list(x['moves']), rr.get('h'), rr.get('hot'), self.put_base(rr['text'])
+            isl.also = rr.get('also')
+            isl.moves, isl.h, isl.hot, isl.bh = P + list(x['moves']), rr.get('h'), rr.get('hot'), self.put_base(rr['text'], isl.also)
             if isl.result.key() < self.low[0]: self.set_low(isl.result, isl.text, len(isl.moves))
             return isl
         # the best becomes the best; the even islands take the best distinct results
@@ -1689,7 +1932,7 @@ class Search:
             if isl is None: continue
             got.append(isl)
             if isl.key < self.best.key:
-                if self.new_best(isl.text, isl.result, isl.key, isl.ohash, isl.trail, isl.moves, isl.h, isl.hot, x['rule'], x['desc']) is None:
+                if self.new_best(isl.text, isl.result, isl.key, isl.ohash, isl.trail, isl.moves, isl.h, isl.hot, x['rule'], x['desc'], isl.also) is None:
                     isl = self.best
             if n < len(even): even[n].take(isl)
             elif not any(i.root is root for i in self.islands):
@@ -1731,6 +1974,7 @@ class Search:
         c['generated'] += res.get('gen', 0); c['dup_text'] += res.get('dup', 0)
         c['wgen_s'] += res.get('tg', 0.0); c['compile_s'] += res.get('tc', 0.0); c['score_s'] += res.get('ts', 0.0)
         if 'th' in res: c['focus_compiles'] += 1; c['focus_s'] += res['th']
+        c['also_compiled'] += res.get('n2', 0); c['also_skipped'] += res.get('skip2', 0); c['also_uncarried'] += res.get('unc', 0)
         self.escalate()
         if 'err' in res:
             c['errors'] += 1
@@ -1785,6 +2029,7 @@ class Search:
             # penalty the best is the best for its length, not the lowest count
             self.set_low(r, text, len(p.moves) + len(res.get('moves') or p.vmoves or ()))
         newbest = k < bkey
+        if text is not None and self.also and (res.get('also') is None or None in res['also']): text = None
         if (newbest or accepted) and text is None:
             # the island or the best moved on after the job went out and the worker judged the
             # text not worth sending: it is not rebuilt
@@ -1792,7 +2037,7 @@ class Search:
             newbest = accepted = False
         moves = list(p.moves) + list(res.get('moves') or p.vmoves or ())
         if newbest:
-            why = self.new_best(text, r, k, ohash, list(p.trail) + [(rules, desc)], moves, res.get('h'), res.get('hot'), rules, desc)
+            why = self.new_best(text, r, k, ohash, list(p.trail) + [(rules, desc)], moves, res.get('h'), res.get('hot'), rules, desc, res.get('also'))
             if why is not None:
                 if why == 'screen':
                     c['screened_out'] += 1
@@ -1817,7 +2062,8 @@ class Search:
             else:
                 isl.text, isl.result, isl.key, isl.ohash = text, r, k, ohash
                 isl.trail = list(p.trail) + [(rules, desc)]
-                isl.moves, isl.h, isl.hot, isl.bh = moves, res.get('h'), res.get('hot'), self.put_base(text)
+                isl.also = res.get('also')
+                isl.moves, isl.h, isl.hot, isl.bh = moves, res.get('h'), res.get('hot'), self.put_base(text, isl.also)
             if p.force: isl.home = isl.copy(-3)
         if better or newbest: isl.stale = 0
         else: isl.stale += 1
@@ -1834,7 +2080,7 @@ class Search:
             isl.t_gain = time.time()
         return r.exact and not r.neighbours
 
-    def new_best(self, text, r, k, ohash, trail, moves, h, hot, rules='', desc=''):
+    def new_best(self, text, r, k, ohash, trail, moves, h, hot, rules='', desc='', also=None):
         """Make a result the best: screened (clang), a cut file's 0 confirmed on the whole unit,
         reduced over its moves, written to OUT. None when kept, else why not ('screen', 'cut')."""
         t0 = time.perf_counter()               # screening and reduction wait for clang and the workers
@@ -1845,7 +2091,8 @@ class Search:
                 raw, lg = self.compile(text)
                 if raw is None or not self.target.score(raw).exact: return 'cut'
             b = Island(-1, text, r, trail, k, ohash)
-            b.moves, b.h, b.hot, b.bh = list(moves), h, hot, self.put_base(text)
+            b.also = also
+            b.moves, b.h, b.hot, b.bh = list(moves), h, hot, self.put_base(text, also)
             self.best = b
             if '--no-reduce' not in self.a: self.reduce_moves()
             self.write_best()
@@ -1970,11 +2217,22 @@ class Search:
         with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.txt'), 'w') as f: f.write(notes)
         with open(os.path.join(self.out, 'best.c'), 'w', encoding='latin1') as f: f.write(self.best.text)
         with open(os.path.join(self.out, 'best.txt'), 'w') as f: f.write(notes)
+        for k, t in enumerate(self.best.also or ()):       # the same source as each other target's tree has it
+            if t is None: continue
+            with open(os.path.join(self.out, 'best', f'{stamp}_{tag}.also{k + 1}.c'), 'w', encoding='latin1') as f: f.write(t)
+            with open(os.path.join(self.out, f'best.also{k + 1}.c'), 'w', encoding='latin1') as f: f.write(t)
 
     def best_notes(self):
         b = self.best
         out = [f'{self.func}: {b.result.text()}' + (f' (reduced over moves: {b.reduced_from} -> {len(b.moves)})'
                                                     if getattr(b, 'reduced', False) else '')]
+        ps = parts_of(b.result)
+        if len(ps) > 1:
+            out.append(f'target 1 ({self.src}): {ps[0].text()}  (best.c)')
+            for n, a in enumerate(self.also):
+                out.append(f'target {n + 2} ({a["src"]}): ' + (ps[n + 1].text() if ps[n + 1] is not None else 'not compiled')
+                           + ('' if b.result.carried[n] else ' (the edits do not all carry to this text: it is as its base had it)')
+                           + f'  (best.also{n + 1}.c)')
         if b.moves:
             out.append('moves (each one needed, after reduction):' if getattr(b, 'reduced', False) else 'moves:')
             out += [f'  {m["rule"]}\t{m["desc"]}' for m in b.moves]
@@ -2028,7 +2286,7 @@ class Search:
     def score_moves(self, lists, **kw):
         """[(key or None, result dict)] of move lists replayed on the original, compiled and
         scored in the workers (all at once, waited for)."""
-        jobs = [self.pool.pool.apply_async(permrun._worker_gen, (('moves', -1, dict(kw, moves=m, dead=True)),)) for m in lists]
+        jobs = [self.pool.pool.apply_async(permrun._worker_gen, (('moves', -1, dict(kw, moves=m, dead=True, both=True)),)) for m in lists]
         out = []
         for j in jobs:
             try:
@@ -2089,7 +2347,8 @@ class Search:
         print(f'  reduced the new best over its moves: {len(moves)} -> {len(kept)}', flush=True)
         b.reduced_from, b.reduced = len(moves), True
         b.text, b.moves, b.key, b.result, b.ohash = text, kept, k, res['r'], res['ohash']
-        b.h, b.hot, b.bh = res.get('h'), res.get('hot'), self.put_base(text)
+        b.also = res.get('also')
+        b.h, b.hot, b.bh = res.get('h'), res.get('hot'), self.put_base(text, b.also)
 
     def report_line(self, el):
         c = self.counts
@@ -2138,6 +2397,11 @@ class Search:
               f'the parent process used {1000 * self.cpu / n:.2f} ms of CPU per variant), '
               f'worker generate {1000 * c["wgen_s"] / n:.1f} ms, compile {1000 * c["compile_s"] / n:.0f} ms, '
               f'score {1000 * c["score_s"] / max(1, c["compiled"]):.2f} ms; mode {self.mode}')
+        if self.also:
+            both = c['also_compiled'] / max(1, len(self.also))
+            print(f'other targets: {both:.0f} of {c["compiled"]} variants were compiled for the other target too ({100 * both / max(1, c["compiled"]):.0f}%); '
+                  f'{c["also_skipped"]} were not, the primary result being further than --also-margin {self.also_margin} from its base; '
+                  f'{c["also_uncarried"]} had an edit that does not carry to the other text (scored on the primary, the other\'s base result standing)')
         if self.focus:
             hot = sum(s['hot'] for s in self.stats.values()); ex = sum(s['exempt'] for s in self.stats.values())
             cold = sum(s['cold'] for s in self.stats.values()); ck = sum(s['cold_kept'] for s in self.stats.values())
@@ -2184,6 +2448,8 @@ class Search:
               'islands': []}
         for isl in self.islands:
             with open(os.path.join(self.out, f'island{isl.k}.c'), 'w', encoding='latin1') as f: f.write(isl.text)
+            for k, t in enumerate(isl.also or ()):
+                with open(os.path.join(self.out, f'island{isl.k}.also{k + 1}.c'), 'w', encoding='latin1') as f: f.write(t)
             st['islands'].append({'k': isl.k, 'trail': isl.trail, 'moves': [{k: v for k, v in m.items() if k != 'sig'} for m in isl.moves],
                                   'home': isl.home.text if isl.home else None})
         st['best_moves'] = [{k: v for k, v in m.items() if k != 'sig'} for m in self.best.moves]
@@ -2194,18 +2460,18 @@ class Search:
 
     def load_island(self, k, text, trail, mv):
         """An island from a saved text (compiled and scored here), or None."""
-        raw, log = self.compile(text)
-        if raw is None: return None
-        r = self.target.score(raw)
         toks, _ = permc.tokenize(text)
         h = norm_hash(toks)
         if mv is not None:
             t = apply_all(self.origin_toks, mv)
             if t is None or norm_hash(t) != h: mv = None
         if mv is None: mv = legacy_moves(self.origin_toks, toks)       # an older state, or moves that no longer replay
+        r, raw, also = self.score_all(text, toks, mv)
+        if r is None: return None
         isl = Island(k, text, r, trail, self.key_of(r, self.dead_delta(toks), len(mv)),
                      r.chash)
-        isl.moves, isl.h, isl.bh = mv, h, self.put_base(text)
+        isl.also = also
+        isl.moves, isl.h, isl.bh = mv, h, self.put_base(text, also)
         if self.focus and r.ok and not r.exact and r.size_ok: isl.hot = self.hot_parent(text, raw) or None
         return isl
 

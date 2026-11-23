@@ -673,6 +673,101 @@ class TrustKeyTest(unittest.TestCase):
         self.assertEqual(permscore.Result(True, True, 0, 8, 8, ()).key(), (0, 0, 0, 0))
 
 
+class TwoTargetTest(unittest.TestCase):
+    """One candidate against two builds (--also): the combined result and its key, and an edit made
+    on one tree's text carried to a sibling tree's text that is near it but not equal. (The whole
+    path, two compilers and two images, is checked on real trees: see compiler.md.)"""
+
+    def res(self, diff, struct, size=8, want=8, exact=False, neigh=()):
+        return permscore.Result(True, exact, 0 if exact else diff, size, want, neigh, code=bytes([diff % 256, struct % 256]), struct=struct)
+
+    def test_combined_key(self):
+        C = permscore.Combo
+        both = C([self.res(29, 0), self.res(29, 0)])
+        self.assertEqual(both.text(), '29+29 (structure 0+0, registers 29+29)')
+        self.assertEqual(both.key(), (1, 0, 0, 58))
+        # a fit on the first build alone: fewer ties there, more on the other
+        fit = C([self.res(20, 0), self.res(40, 0)])
+        self.assertLess(both.key(), fit.key())
+        # structure on either target comes before any number of ties
+        self.assertLess(both.key(), C([self.res(5, 0), self.res(3, 1)]).key())
+        # exact needs both; exact on one is the sum of what is left on the other
+        one = C([self.res(0, 0, exact=True), self.res(3, 0)])
+        self.assertFalse(one.exact); self.assertEqual(one.key(), (1, 0, 0, 3)); self.assertEqual(one.text(), 'EXACT+3 (structure 0+0, registers 0+3)')
+        ex = C([self.res(0, 0, exact=True), self.res(0, 0, exact=True)])
+        self.assertTrue(ex.exact); self.assertEqual(ex.key(), (0, 0, 0, 0)); self.assertEqual(ex.text(), 'EXACT')
+        # a wrong size on either is the worse class; a target not compiled is never kept
+        self.assertEqual(C([self.res(4, 0), self.res(4, 0, size=10)]).key()[:2], (2, 2))
+        skipped = C([self.res(4, 0), None])
+        self.assertGreater(skipped.key(), C([self.res(400, 90, size=20), self.res(400, 90, size=20)]).key())
+        self.assertIn('4+?', skipped.text())
+        # an edit that did not carry: the base's result stands and the text says so
+        self.assertIn('edit not carried', C([self.res(27, 0), self.res(29, 0)], [False]).text())
+        # weights, the hash and the pieces a Result has
+        self.assertEqual(C([self.res(10, 2), self.res(10, 2)], None, [1.0, 0.5]).key(), (1, 0, 3.0, 12.0))
+        self.assertNotEqual(both.chash, fit.chash)
+        self.assertEqual((both.diff, both.struct, both.size_ok, both.ok), (58, 0, True, True))
+        import armpermute2 as A
+        self.assertEqual(A.pen_key(both.key(), 0, 2, 3.0, 0.15), (1, 0, 0, 58.3))
+        self.assertEqual(len(A.parts_of(both)), 2); self.assertEqual(len(A.parts_of(self.res(1, 0))), 1)
+
+    def test_edit_carried_to_a_sibling_text(self):
+        import armpermute2 as A
+        one, _ = ctx_for('void g(void) { counter = 1; }\nvoid f(void) { status = 1; phase = 2; send(status, 7); table[1] = 3; }')
+        # the sibling release: another constant in f, another function before it
+        two, _ = ctx_for('void g(void) { counter = 2; phase = 0; }\nvoid f(void) { status = 1; phase = 2; send(status, 9); table[1] = 3; }')
+        carried = lost = 0
+        for seed in range(60):
+            for rule in ('stmt_swap', 'probe_cmp', 'getter', 'const_local'):
+                ed = R.BY_ID[rule].fn(one, random.Random(seed), everywhere=False)
+                if ed is None: continue
+                mv = [A.make_move(rule, ed.desc, one.toks, ed)]
+                t2 = A.also_apply(0, two.toks, mv)
+                if t2 is None:
+                    lost += 1; continue
+                carried += 1
+                new = permc.render(t2, two.tail)
+                self.assertIn('send(status, 9)' if 'const_local' not in rule and 'send(status, 9)' in new else 'counter = 2', new)   # still the sibling's text
+                self.assertTrue(clang_ok(new)[0], ed.desc)
+                self.assertNotEqual(A.norm_hash(t2), A.norm_hash(two.toks))
+        self.assertGreater(carried, 20)
+        self.assertGreater(lost, 0)             # an edit of the 7 itself has no place in the text that has a 9
+        # a seed source is carried as the text it was given at the start, or not at all
+        A.SEED_TOKS.append(one.toks); k = len(A.SEED_TOKS) - 1
+        while len(A.ALSO_SEED) < 1: A.ALSO_SEED.append([])
+        while len(A.ALSO_SEED[0]) <= k: A.ALSO_SEED[0].append(None)
+        seed = {'rule': 'seed', 'desc': 'seed source x.c', 'seed': k}
+        self.assertIsNone(A.also_apply(0, two.toks, [seed]))
+        A.ALSO_SEED[0][k] = two.toks
+        self.assertIs(A.also_apply(0, one.toks, [seed]), two.toks)
+
+    def test_whole_text_carried_by_hunks(self):
+        """A whole other text (a seed source, a resumed island) goes to the sibling tree hunk by hunk;
+        a hunk with no place there is left out and counted."""
+        import armpermute2 as A
+        one, _ = ctx_for('void g(void) { counter = 1; }\nvoid f(void) { status = 1; phase = 2; send(status, 7); table[1] = 3; table[2] = 4; counter = 5; }')
+        two, _ = ctx_for('void g(void) { counter = 2; phase = 0; }\nvoid f(void) { status = 1; phase = 2; send(status, 9); table[1] = 3; table[2] = 4; counter = 5; }')
+        new, _ = ctx_for('void g(void) { counter = 1; }\nvoid f(void) { status = 1; phase = 2; send(status, 7); table[1] = 30; table[2] = 4; counter = 6; }')
+        t, how = A.carry_text(new.toks, one.toks, two.toks)
+        self.assertIs(how, True)
+        self.assertIn('send(status, 9); table[1] = 30; table[2] = 4; counter = 6;', permc.render(t, two.tail))
+        self.assertIn('counter = 2; phase = 0;', permc.render(t, two.tail))
+        part, _ = ctx_for('void g(void) { counter = 1; }\nvoid f(void) { status = 1; phase = 2; send(status, 8); table[1] = 3; table[2] = 4; counter = 6; }')
+        t, how = A.carry_text(part.toks, one.toks, two.toks)
+        self.assertEqual(how, (1, 2))                   # the 7 made an 8 has no place where the text has a 9
+        self.assertIn('send(status, 9); table[1] = 3; table[2] = 4; counter = 6;', permc.render(t, two.tail))
+        self.assertEqual(A.carry_text(one.toks, one.toks, two.toks)[1], True)
+        self.assertIn('2 of 5 hunks carried', permscore.Combo([self.res(26, 0), self.res(26, 0)], [(2, 5)]).text())
+
+    def test_tree_env(self):
+        import permrun
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'permuter.env'), 'w') as f:
+                f.write('# the compiler this tree is built with\nexport EXHUME_ARMCC_LINUX=/opt/armcc-b750\nEXHUME_ARMCC_MAPPINGS="/opt/MDK525/ARM/sw/mappings"\n')
+            self.assertEqual(permrun.tree_env(d), {'EXHUME_ARMCC_LINUX': '/opt/armcc-b750', 'EXHUME_ARMCC_MAPPINGS': '/opt/MDK525/ARM/sw/mappings'})
+            self.assertEqual(permrun.tree_env(os.path.join(d, 'none')), {})
+
+
 class LineRowsTest(unittest.TestCase):
     def test_line_program(self):
         """A DWARF 3 line program as armcc -g writes it (2-byte instructions, line base 0, range 6,
