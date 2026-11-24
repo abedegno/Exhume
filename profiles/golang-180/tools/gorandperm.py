@@ -365,6 +365,7 @@ def main(argv=None):
     ap.add_argument("--pkg", help="package to build instead of the unit's pkg (e.g. the real main package)")
     ap.add_argument("--out", help="output directory (default BUILD/gorandperm/<func>)")
     ap.add_argument("--seed", type=int)
+    ap.add_argument("--start", help="start from this version of the file (e.g. an earlier best.go) instead of the unit's own")
     ap.add_argument("--config")
     a = ap.parse_args(argv)
 
@@ -374,8 +375,10 @@ def main(argv=None):
     rel = os.path.relpath(path, unit.src_dir)
     if rel.startswith(".."):
         raise gotc.ToolError(f"{a.file} is not inside {unit.src_dir}")
-    base = open(path).read()
+    base = open(a.start or path).read()
     lo, hi = map(int, a.lines.split("-")) if a.lines else func_lines(base, a.func)
+    if a.start and base.count("\n") != open(path).read().count("\n"):
+        raise gotc.ToolError(f"{a.start} has a different number of lines from {path}")
     rx = a.func if not a.guard else f"(?:{a.func})|(?:{a.guard})"
     tag = re.sub(r'[^A-Za-z0-9]+', '_', a.func).strip('_')[-60:] or "func"
     out = a.out or os.path.join(s.build, "gorandperm", tag)
