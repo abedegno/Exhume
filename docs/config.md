@@ -152,6 +152,25 @@ A C2000 source may carry `/* cgt: VERSION */` (another installed compiler, a dir
 `/* cflags: ... */` (added to them), in C or, after `;`, in assembly. Its variables sit between
 `/* ebss-begin */` and `/* ebss-end */` for the `.ebss` solver.
 
+## [go18] for a Go 1.8.0 ELF binary
+
+With `[toolchain] profile = "golang-180"`, `tools/match.py`, `tools/merge.py`, and `tools/gate.py`
+dispatch to `profiles/golang-180/tools/` (`gomatch.py`, `gomerge.py`, `gogate.py`), and
+`tools/fingerprint.py` inspects the ELF64 binary's `.gopclntab`, Go version strings, and stripped
+flags. `[binary] image` names the target ELF binary.
+
+- `runner`: `"docker"` (default; uses `docker_image = "golang:1.8.0"`, `platform = "linux/amd64"`)
+  or `"local"` (uses `goroot` or `[toolchain] home`). Overridden by `EXHUME_GO_RUNNER`.
+- `goos`, `goarch`, `cgo_enabled`, `gcflags`, `ldflags`: build environment and flags (defaults:
+  `linux`, `amd64`, `"0"`, `"-trimpath=/build"`, `"-s -w"`).
+- `tools_dir`: optional directory containing prebuilt `gocmp` and `gofuncs` binaries; otherwise the
+  profile compiles them automatically from `profiles/golang-180/tools/go/` into `<build>/go18-tools/`.
+- `first_party`: optional list of package import prefixes counted as first-party in coverage reports
+  (e.g. `["main", "applib", "app", "store"]`).
+- `[[go18.unit]]`: one table per verification unit (`name`, `gopath`, `pkg` default `"pocmain"`,
+  `out` default `"poc.bin"`, `regex` matching target `.gopclntab` function names, optional `packages`
+  and `notes`).
+
 ## [mod]
 
 The modded build of a linked image (`gate.py game`, profiles/armcc5/tools/armmod.py;

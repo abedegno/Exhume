@@ -1,0 +1,36 @@
+# Toolchain profile: Go 1.8.0 (gc, linux/amd64, GOPATH mode).
+# What is true of the compiler, linker and ELF/.gopclntab format, not of one program;
+# the evidence is in compiler.md and linker.md.
+#
+# By default builds run inside the official Docker image `golang:1.8.0` on `--platform linux/amd64`
+# with `CGO_ENABLED=0`, `-gcflags "-trimpath=/build"`, and `-ldflags "-s -w"`.
+# Projects can also point `[go18] goroot` at a local linux/amd64 go1.8.0 installation (`runner = "local"`).
+
+name = "Go 1.8.0 (gc, linux/amd64, GOPATH)"
+
+[go]
+version = "go1.8"
+docker_image = "golang:1.8.0"
+platform = "linux/amd64"
+goos = "linux"
+goarch = "amd64"
+cgo_enabled = "0"
+gcflags = "-trimpath=/build"
+ldflags = "-s -w"
+mode = "gopath"
+
+[log]
+problem = "(^[^\\s]+\\.go:\\d+:|cannot find package|undefined:|import cycle|build constraints exclude)"
+fatal = "(^[^\\s]+\\.go:\\d+:|cannot find package|undefined:|import cycle|failed)"
+
+[link]
+# Go packages are compiled and linked into a verification binary (or full binary) and compared
+# per-function via .gopclntab: normalized disassembly + exact file:line table + raw byte comparison
+# with x86-64 PC-relative displacement fields masked.
+object_model = "linked-image"
+match_tool = "gomatch"
+gate_tool = "gogate"
+merge_tool = "gomerge"
+
+[fingerprint]
+strings = ["go1.8", "runtime.main", "runtime.morestack", ".gopclntab"]

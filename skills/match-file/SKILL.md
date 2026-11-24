@@ -161,6 +161,24 @@ profiles/ti-c2000/compiler.md. What differs:
 - A function that stays off after the budget goes to `c28batch.py --climb` over a choice-point
   spec; check a hit with match.py under the real name.
 
+## golang-180 (Go 1.8.0 ELF binaries)
+
+The brief to give an agent is `profiles/golang-180/match-brief.md`, and the evidence is in
+`profiles/golang-180/compiler.md` and `linker.md`. What differs:
+
+- `.gopclntab` provides exact function names, bounds, source basenames, and **per-instruction line
+  numbers** even when built with `-ldflags "-s -w"`. Start every file from
+  `profiles/golang-180/tools/gomap.py skeleton PKG FILE.go`.
+- `match.py UNIT` compiles in `golang:1.8.0` (Docker or local `GOROOT`) and verifies **both**
+  `gocmp cmp` (normalized disassembly + exact `file:line` table) and `gocmp raw` (0 unmasked
+  machine-code byte diffs outside PC-relative displacements). Because `.rodata` addresses are masked
+  as `<DATA>`, always confirm strings/constants in the target binary with `match.py --dis ... --addr`.
+- Go 1.8 sorts same-class local variables alphabetically when assigning stack slots (`[RSP+0x...]`).
+  When instructions agree and only stack offsets differ, run `profiles/golang-180/tools/goslotmap.py`
+  and adjust local names to match the binary's slot order.
+- For stubborn functions, run `profiles/golang-180/tools/gobatch.py` with a Python `VARIANTS` file
+  or a JSON choice-point spec (`--climb`).
+
 ## Why verify matters here
 
 match.py masks every byte a fixup writes, so a call to the wrong routine, a wrong global, or a constant where the original had a relocation still says MATCH. In UW2 a draft called `strncmp` where the original called `strnicmp`, and about 20 extern names in another file were wrong behind a MATCH. Only verify and the link catch these.

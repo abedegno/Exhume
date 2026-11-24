@@ -59,6 +59,10 @@ compiler, and the C2000 parts without the FPU (`rts2800_ml.lib`).
 
 [Turbo Assembler 3.1](tasm31/assembler.md) can be selected per assembly module alongside Watcom C/WASM or MASM. It selects no C compiler, linker or extender. Its setup verifies user-supplied media and extracts local tools; no proprietary binaries are bundled.
 
+## golang-180
+
+Go 1.8.0 (`gc`, `linux/amd64`, GOPATH mode, `CGO_ENABLED=0`, `-gcflags "-trimpath=/build"`, `-ldflags "-s -w"`), run via Docker (`golang:1.8.0`) or a local `GOROOT`. Learned on a stripped, statically linked Go 1.8.0 server binary (`store/fs` + `store/errors` 32/32 recovered from their upstream open-source commit; hand-decompiled `applib/crypto` 17/17 functions, 10,432 bytes, 0 unmasked byte diffs). Its tools (`profiles/golang-180/tools/`) include the toolchain runner and pure-Python ELF/`.gopclntab` fingerprinter (`gotc.py`), `.gopclntab` mapper and line-numbered Go skeleton generator (`gomap.py`), per-unit matcher verifying both normalized disassembly + exact `file:line` table and raw bytes with PC-relative displacements masked (`gomatch.py`), whole-project gate with mutation `--fail-test` (`gogate.py`), merge recorder (`gomerge.py`), stack-slot mapper for Go 1.8's alphabetical variable layout (`goslotmap.py`), and batch variant/coordinate-descent searcher (`gobatch.py`), backed by bundled Go helpers (`tools/go/gocmp`, `tools/go/gofuncs`). `compiler.md`, `linker.md`, and `match-brief.md` record what matching taught.
+
 ## Profiles that would come naturally next (not written)
 
 - **Borland C++ 2.0 / 3.x and Turbo C 2.0.** The nearest neighbours: same object format, same linker family and overlay manager in 3.x, much of compiler.md likely to carry over but every rule to be re-proven (the `_BSS` hash and public order in particular).
