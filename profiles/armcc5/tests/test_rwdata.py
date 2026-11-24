@@ -15,6 +15,52 @@ class NoTable(unittest.TestCase):
             rwdata.find_table(ehex.Image(p))
 
 
+class StandardLibraryTable(unittest.TestCase):
+    """The standard C library's __scatterload_rt2: an adr to two offsets, and handlers of its own.
+    The image is made by hand (the code patterns and a table), so no toolchain is needed."""
+
+    def image(self):
+        import struct
+        b = bytearray(0x100)
+        struct.pack_into('<H', b, 0, 0xA004)                      # adr r0, T  (T = 4 + 4*4 = 0x14)
+        b[2:2 + len(rwdata.SCATTERLOAD_RT2)] = rwdata.SCATTERLOAD_RT2
+        struct.pack_into('<II', b, 0x14, 0x40 - 0x14, 0x60 - 0x14)  # table base and limit, from T
+        struct.pack_into('<IIII', b, 0x40, 0, 0x20000000, 32, 0x80 | 1)        # zeroed by the library's zeroinit
+        struct.pack_into('<IIII', b, 0x50, 0xC0, 0x20000020, 8, 0xA0 | 1)      # copied
+        b[0x80:0x80 + len(rwdata.HANDLERS['zero '])] = rwdata.HANDLERS['zero ']
+        b[0xA0:0xA0 + len(rwdata.HANDLERS['copy'])] = rwdata.HANDLERS['copy']
+        b[0xC0:0xC8] = bytes(range(1, 9))
+        d = tempfile.mkdtemp(); p = os.path.join(d, 'x.bin')
+        with open(p, 'wb') as f: f.write(bytes(b))
+        return ehex.Image(p)
+
+    def test_table_and_regions(self):
+        img = self.image()
+        self.assertEqual(rwdata._table_rt2(img), (0x40, 0x60))
+        regs = rwdata.find_table(img)
+        self.assertEqual([(r.load, r.exec, r.size, r.kind) for r in regs],
+                         [(0, 0x20000000, 32, 'zero'), (0xC0, 0x20000020, 8, 'copy')])
+        ram = rwdata.RamImage(img, regs)
+        self.assertEqual(ram.bytes(0x20000000, 32), bytes(32))
+        self.assertEqual(ram.bytes(0x20000020, 8), bytes(range(1, 9)))
+        self.assertEqual(ram.kind_at(0x20000004), 'zero')
+
+    def test_its_decompress_handler_is_known(self):
+        import struct
+        b = bytearray(0x40); code = rwdata.HANDLERS['compressed ']
+        b[0x10:0x10 + len(code)] = code
+        d = tempfile.mkdtemp(); p = os.path.join(d, 'x.bin')
+        with open(p, 'wb') as f: f.write(bytes(b))
+        self.assertEqual(rwdata._kind(ehex.Image(p), 0x10 | 1), 'compressed')
+
+    def test_another_instruction_before_the_pattern_is_not_a_table(self):
+        b = bytearray(0x40); b[2:2 + len(rwdata.SCATTERLOAD_RT2)] = rwdata.SCATTERLOAD_RT2   # no adr before it
+        d = tempfile.mkdtemp(); p = os.path.join(d, 'x.bin')
+        with open(p, 'wb') as f: f.write(bytes(b))
+        with self.assertRaises(ValueError):
+            rwdata.find_table(ehex.Image(p))
+
+
 @unittest.skipUnless(HOME and DOCKER, 'needs EXHUME_ARMCC_HOME and Docker')
 class TestFirmwareRam(unittest.TestCase):
     @classmethod
