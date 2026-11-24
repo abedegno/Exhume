@@ -673,6 +673,47 @@ class TrustKeyTest(unittest.TestCase):
         self.assertEqual(permscore.Result(True, True, 0, 8, 8, ()).key(), (0, 0, 0, 0))
 
 
+class TraceKeyTest(unittest.TestCase):
+    """--trace-key: the fifth key, its penalties, and the distance of a light colouring."""
+
+    def test_key_and_penalties(self):
+        import armpermute2 as A
+        a = permscore.Result(True, False, 3, 8, 8, (), code=b'a', struct=0)
+        permscore.Result.trace_key = True
+        try:
+            self.assertEqual(a.key(), (1, 0, 0, 3, permscore.Result.UNTRACED))
+            b, c = a.with_tdist(2.5), a.with_tdist(1.25)
+            self.assertIsNone(a.tdist)
+            self.assertLess(c.key(), b.key())
+            self.assertNotEqual(b.chash, c.chash)                  # same code, other allocation: another result
+            self.assertEqual(b.text(), '3 (structure 0, registers 3, trace 2.5)')
+            # the dead-code penalty stays with the register count, the move penalty comes after the distance
+            self.assertEqual(A.pen_key(b.key(), 1, 2, 3.0, 0.15), (1, 0, 0, 6.0, 2.5, 0.3))
+            self.assertLess(A.pen_key(c.key(), 0, 3, 0, 0.15), A.pen_key(b.key(), 0, 1, 0, 0.15))
+            self.assertEqual(permscore.Result(True, True, 0, 8, 8, ()).key(), (0, 0, 0, 0, 0))
+            self.assertEqual(len(permscore.Result(error='x').key()), 5)
+        finally:
+            permscore.Result.trace_key = False
+
+    def test_distance(self):
+        import permtrace
+        # node 30 wants r2: held by 20 (coloured one before it) and by the precoloured r2;
+        # node 31 wants r4: free, not chosen; node 32 has its wanted register
+        L = {'passes': [{'steps': [], 'movenb': {30: [31]}, 'spills': [], 'coalesced': [(33, 30)], 'col': [
+            [20, 99, 2, []], [21, 65, 5, []],
+            [30, 65, 1, [(2, 20, 'c'), (2, 2, 'm'), (5, 21, 'c')]],
+            [31, 65, 3, []], [32, 33, 6, []]]}]}
+        d, dr, det = permtrace.distance(L, {30: 2, 31: 4, 32: 6, 33: 2})
+        self.assertEqual(len(det), 3)                           # 30, 31, and 33 through 30
+        self.assertAlmostEqual(d, round((1 + 2 / 32 + 1) * 2 + 1, 4))
+        self.assertAlmostEqual(dr, (1 + 35 / 32 + 1) * 2 + 1)
+        T, moves = permtrace.light_T(L)
+        self.assertEqual(T['final']['nodes'][33], (1, 'INT32'))
+        self.assertIn((30, 20), T['final']['clash'])
+        self.assertNotIn((30, 2), T['final']['clash'])
+        self.assertEqual(moves[31], {30})
+
+
 class TwoTargetTest(unittest.TestCase):
     """One candidate against two builds (--also): the combined result and its key, and an edit made
     on one tree's text carried to a sibling tree's text that is near it but not equal. (The whole

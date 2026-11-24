@@ -264,10 +264,21 @@ def align(ws, ns):
     return out, D[W][N]
 
 
-def match(T, roots, clash, touch, ins):
+def match(T, roots, clash, touch, ins, moves=None, quiet=False):
+    """moves: {node: partners} in place of the trace's first graph (a light trace, permtrace.py)."""
     fin = T['final']
     col0 = {n: c for n, (c, t) in fin['nodes'].items() if t != 'REAL' and isinstance(c, int) and c >= 0}
-    grp = node_groups(T, col0)
+    if moves is None:
+        grp = node_groups(T, col0)
+    else:
+        parent = {n: n for n in col0}
+        def find(a):
+            while parent[a] != a: parent[a] = parent[parent[a]]; a = parent[a]
+            return a
+        for a in col0:
+            for b in moves.get(a, ()):
+                if b in col0 and col0[a] == col0[b]: parent[find(a)] = find(b)
+        grp = {n: find(n) for n in col0}
     members = collections.defaultdict(list)
     for n, g in grp.items(): members[g].append(n)
     reps = sorted(members, key=lambda g: min(members[g]))
@@ -311,10 +322,13 @@ def match(T, roots, clash, touch, ins):
             for k, g in enumerate(ns):
                 gr = k / max(1, len(ns) - 1)
                 nb = [place[h] for h in gadj[g] if h in place and col0[h] != reg]
+                nbs, nl = set(nb), len(nb)
                 lo, hi = int((gr - WINDOW) * len(ws)), int((gr + WINDOW) * len(ws)) + 1
                 for w in ws[max(0, lo):hi]:
                     cw = clash.get(w, ())
-                    s = sum(1 for x in nb if x in cw) - 0.5 * sum(1 for x in nb if x not in cw) - 4 * abs(gr - wr[w])
+                    # (the neighbours that clash in the code count 1, the others -0.5)
+                    c = len(nbs & cw) if len(nbs) == nl and isinstance(cw, set) else sum(1 for x in nb if x in cw)
+                    s = c - 0.5 * (nl - c) - 4 * abs(gr - wr[w])
                     cand.append((s, g, w))
             cand.sort(key=lambda x: -x[0])
             usedg, usedw, new = set(), set(), {}
@@ -334,7 +348,8 @@ def match(T, roots, clash, touch, ins):
             seen.add((grp[a], grp[b]))
             tot += 1
             agree += any(y in clash.get(x, ()) for x in out[a] for y in out[b])
-    print(f'clash check: {agree} of {tot} traced clashes between placed nodes also clash in the code')
+    if not quiet: print(f'clash check: {agree} of {tot} traced clashes between placed nodes also clash in the code')
+    match.check = (agree, tot)
     return out, cost, nw, len(reps)
 
 

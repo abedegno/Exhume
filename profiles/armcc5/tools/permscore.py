@@ -384,13 +384,16 @@ def struct_count(exp_s, got_s):
 
 
 class Result:
-    __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code', 'chash', 'struct')
+    __slots__ = ('ok', 'exact', 'diff', 'size', 'want_size', 'neighbours', 'error', 'code', 'chash', 'struct', 'tdist')
     flat = False                 # True: the old single count (no structural level in the key)
+    trace_key = False            # True: a fifth key, the allocator-trace distance (armpermute2 --trace-key)
+    UNTRACED = 1e9
 
     def __init__(self, ok=False, exact=False, diff=None, size=None, want_size=None, neighbours=(), error='', code=b'', struct=None):
         self.ok, self.exact, self.diff, self.size, self.want_size = ok, exact, diff, size, want_size
         self.neighbours, self.error, self.code = neighbours, error, code
         self.struct = diff if struct is None else min(struct, diff)      # the structural part of diff
+        self.tdist = None                                                # the trace distance (permtrace.py), when measured
         # what the result hangs on: FUNC's placed bytes and the neighbours that changed (the object's
         # own bytes hold the path it was compiled at, so they differ from one work folder to the next)
         self.chash = hashlib.blake2b(code + repr(neighbours).encode(), digest_size=12).hexdigest() if ok else ''
@@ -401,15 +404,27 @@ class Result:
 
     def key(self):
         """Sort key: exact first, then right size, then the structural difference, then the
-        rest of the differing instructions (the register level). With flat the count is one."""
-        if not self.ok: return (3, 0, 0, 10 ** 9)
-        if self.exact and not self.neighbours: return (0, 0, 0, 0)
+        rest of the differing instructions (the register level). With flat the count is one.
+        With trace_key a fifth element, the trace distance (UNTRACED when not measured)."""
+        t = (Result.UNTRACED if self.tdist is None else self.tdist,) if Result.trace_key else ()
+        if not self.ok: return (3, 0, 0, 10 ** 9) + t
+        if self.exact and not self.neighbours: return (0, 0, 0, 0) + ((0,) if t else ())
         st = 0 if Result.flat else self.struct
-        return (1 if self.size_ok and not self.neighbours else 2, abs(self.size - self.want_size), st, self.diff - st)
+        return (1 if self.size_ok and not self.neighbours else 2, abs(self.size - self.want_size), st, self.diff - st) + t
+
+    def with_tdist(self, d):
+        """A copy with the trace distance d; its chash names the code and the distance (two
+        sources with the same code and different allocations are different results)."""
+        r = Result.__new__(Result)
+        for k in Result.__slots__: setattr(r, k, getattr(self, k))
+        r.tdist = d
+        if d is not None and self.ok: r.chash = f'{self.chash}:{d:g}'
+        return r
 
     def text(self):
         if not self.ok: return 'FAILED ' + self.error
-        s = 'EXACT' if self.exact else f'{self.diff}' if Result.flat else f'{self.diff} (structure {self.struct}, registers {self.diff - self.struct})'
+        tr = f', trace {self.tdist:g}' if self.tdist is not None else ''
+        s = 'EXACT' if self.exact else f'{self.diff}{tr}' if Result.flat else f'{self.diff} (structure {self.struct}, registers {self.diff - self.struct}{tr})'
         if not self.size_ok: s += f' size {self.size:#x}/{self.want_size:#x}'
         if self.neighbours: s += ' neighbours changed: ' + ','.join(self.neighbours)
         return s
