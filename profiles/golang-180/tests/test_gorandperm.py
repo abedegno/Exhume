@@ -76,6 +76,30 @@ class MutatorTest(unittest.TestCase):
         self.assertEqual((lo, hi), (3, 16))
         self.assertEqual(g.func_lines(SRC, r'^main\.\(\*T\)\.cachedSize$'), (3, 16))
 
+    def test_atoms_never_inside_literals_or_comments(self):
+        cases = {
+            '\t\treturn "!error \\"Couldn\'t access x: " + quote(err.Error()) + "\\""': ['quote(err.Error())', 'err.Error()'],
+            '\tu := "http://x/" + path // note: y': ['path'],
+            "\tif c == '\"' || c == '`' {": ['c', 'c'],
+            '\tx := `raw ` + v + ` more`': ['v'],
+        }
+        for line, want in cases.items():
+            self.assertEqual([line[s:e] for s, e in g.atoms(line)], want, line)
+        rng = random.Random(5)
+        line = '\t\treturn "!error \\"Couldn\'t access x: " + quote(err.Error()) + "\\""'
+        lit = '"!error \\"Couldn\'t access x: "'
+        for _ in range(200):
+            for fn, _w in g.MUTATORS:
+                out = fn(line, rng)
+                if out:
+                    self.assertIn(lit, out)
+
+    def test_blank_never_duplicates_a_call(self):
+        rng = random.Random(2)
+        for _ in range(100):
+            out = g.m_blank('\terr = json.Unmarshal(data, &sizes)', rng)
+            self.assertTrue(out is None or "; _ = json" not in out, out)
+
     def test_edits(self):
         self.assertEqual(g.edits('a\nb\nc', 'a\nB\nc'), [(1, 'B')])
 

@@ -54,15 +54,15 @@ KEYWORDS = set(
 
 
 def balanced_end(s, i, open_c, close_c):
-    """Index just past the bracket matching s[i], skipping "string" literals; -1 if unbalanced."""
+    """Index just past the bracket matching s[i], skipping string, rune and raw literals; -1 if unbalanced."""
     depth = 0
     j = i
     while j < len(s):
         c = s[j]
-        if c == '"':
+        if c in "\"'`":
             j += 1
-            while j < len(s) and s[j] != '"':
-                j += 2 if s[j] == '\\' else 1
+            while j < len(s) and s[j] != c:
+                j += 2 if (s[j] == "\\" and c != "`") else 1
         elif c == open_c:
             depth += 1
         elif c == close_c:
@@ -73,10 +73,37 @@ def balanced_end(s, i, open_c, close_c):
     return -1
 
 
+def code_mask(line):
+    """(code, mask): the line cut at a // comment that is not inside a literal, and for each kept
+    character whether it is inside a "string", 'rune' or single-line `raw string` literal (escapes
+    honoured). Lines that open or close a multi-line raw string are excluded by raw_string_lines."""
+    mask, quote, i = [], None, 0
+    while i < len(line):
+        c = line[i]
+        if quote is None:
+            if c == "/" and line[i:i + 2] == "//":
+                break
+            if c in "\"'`":
+                quote = c
+                mask.append(True)
+            else:
+                mask.append(False)
+        else:
+            mask.append(True)
+            if c == "\\" and quote != "`" and i + 1 < len(line):
+                mask.append(True)
+                i += 1
+            elif c == quote:
+                quote = None
+        i += 1
+    return line[:len(mask)], mask
+
+
 def atoms(line):
     """Spans (start, end) of expressions in a line that can be wrapped without changing its meaning
-    grammatically: identifiers, selector chains, calls and index expressions, with an optional *."""
-    code = line.split("//")[0]
+    grammatically: identifiers, selector chains, calls and index expressions, with an optional *.
+    Nothing inside a string, rune or raw-string literal or a comment is ever returned."""
+    code, mask = code_mask(line)
     out = []
     for m in re.finditer(r'(\*?)([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)', code):
         st, en = m.start(), m.end()
@@ -85,7 +112,7 @@ def atoms(line):
         name = m.group(2)
         if name in KEYWORDS and name not in ("len", "cap"):
             continue
-        if code[:st].count('"') % 2 == 1:
+        if mask[st]:
             continue
         while en < len(code) and code[en] in "([":
             e2 = balanced_end(code, en, code[en], ")" if code[en] == "(" else "]")
@@ -202,7 +229,7 @@ def m_blank(line, rng):
     s = code.strip()
     if not s or code.endswith(("{", ",", "(", "}")) or s.startswith(("case", "default", "return", "}")):
         return None
-    a = atoms(line)
+    a = [(st, en) for st, en in atoms(line) if "(" not in line[st:en]]   # never duplicate a call
     if not a:
         return None
     st, en = rng.choice(a)
