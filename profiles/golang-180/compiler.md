@@ -92,7 +92,94 @@ itab/data, or `slice` ptr/len/cap) are swapped (e.g. `MOVQ 8(AX), CX; MOVQ (AX),
      **named vs unnamed return parameters**, and **temporary variable vs inline expression**.
 - **Fast iteration:** Test candidate Go snippets in a tiny `/tmp/test.go` inside the Docker
   container with `go tool compile -S` (or `GOSSAFUNC='(*T).Method' go tool compile ...` to inspect
-  `ssa.html`) instead of relinking the full binary.
+  `ssa.html`) instead of relinking the full binary. `GOSSAFUNC=name go build ...` on a whole
+  package writes `ssa.html` into the **package source directory**: move it out at once.
+
+### Where the recycled IDs come from, and which knob reaches which site
+
+Read from `ssa/func.go` (`newValue`, `freeValue`), `ssa/deadcode.go` and `ssa/rewrite.go`, and
+confirmed on two functions of one program, `main.cachedSize` and `main.(*App).Run`,
+by dumping `ssa.html`:
+
+- `f.freeValues` is one linked list per function, pushed by `deadcode` (dead values freed in
+  `f.Blocks` order, then value order within a block) and by the end of every rewrite pass
+  (values left `OpInvalid`). During a rewrite pass nothing is freed, so the `dec` pass only pops.
+- `dec` walks `f.Blocks` in order and allocates as it rewrites: `(Load <error>)` becomes
+  `IMake (Load itab) (Load data)` with the **itab load allocated first**, then the data load,
+  then the `OffPtr`; string and slice loads likewise allocate `ptr` first. A decomposed
+  `Store <string>` / `Store <error>` allocates an `OffPtr` and a second `Store`.
+- After `schedule`, ties on one line are broken by **ascending value ID**. So a pair comes out
+  `(data, itab)` or `(len, ptr)` exactly when the two IDs it popped were in descending order.
+  IDs are reused across passes, so the stack is not sorted: in `cachedSize` one return path's
+  itab load popped `v105` while its data load popped `v4`.
+- The top of the stack is whatever was freed **last**, which is the **last block** of the
+  function, and `dec` hands it to the **first** block. So:
+  - one extra dead value near the **end of the function** shifts every pair in the function by
+    one position, and every swap tends to flip at once. A function whose swaps all go the same
+    way (all `(len,ptr)` where the original is `(ptr,len)`) wants exactly such a shift.
+    `(*App).Run` went from 10 swap sites to 2 (and one line-table entry) with two `+0` on
+    `*delayMS` at its last statement;
+  - a dead value early in the function lands deep in the stack and reaches only the late pops;
+  - two knobs at different depths flip the sites between them. A shift by two restores the
+    original pairing.
+- Only **non-constant** expressions count. `10 * time.Minute + 0`, `int(5)` and other constant
+  expressions are folded by the type checker before SSA exists and change nothing.
+- The int64 result of a call keeps its own (old) ID while the error beside it is split into two
+  fresh ones, so a three-value return like `(n int64, err error)` can come out in any of the six
+  orders. `cachedSize`'s three `return measureSize(name)` paths need three different ones.
+
+## 2c. Equal sort keys: inlined results and the unstable sort
+
+`cmpstackvarlt` (§2) ends with `a.Sym.Name < b.Sym.Name`, but the frame sort is
+`sort.Sort(byStackVar(Curfn.Func.Dcl))` (`gc/pgen.go:260`), which is **not stable**. Every
+inlined call's unnamed result is a fresh local called `~r0` (`gc/inl.go`, `retvar`: `lookupN("~r", i)`),
+so two inlined constructors in one function (`x = pkg.NewA()` ... `y = pkg.NewB()`, each
+`return &T{...}`) have **identical** sort keys, and which one gets the higher slot depends on
+how many other locals the function declares and where they sit in `Dcl`.
+
+- Symptom: two `runtime.newobject` results stored to `[RSP+0x50]` / `[RSP+0x60]` the wrong way
+  round, nowhere near the edit that caused it.
+- Measured on `(*App).Run` (6,832 B): removing the unrelated local `dbPath := dbFile` ninety lines
+  further down swapped the slots of `syncer = sync.NewSyncer()` and `hub = events.NewHub()`;
+  naming the first one, `s := sync.NewSyncer(); syncer = s`, swapped them back.
+- Remedy: add or remove one named local elsewhere in the function, or give one of the two results
+  a name (as above) so the tie is gone.
+
+## 2d. Line attribution that a rewrite can move
+
+- **Tagged vs tagless `switch`:** in `switch x { case A: }` the load of `x` is attributed to the
+  `switch` line; in `switch { case x == A: }` it stays on the `case` line, like an `if`. Replacing
+  `if t == A { ... } else if t == B { ... } else { ... }` with a tagless switch kept the original's
+  lines and changed the SSA value count (an HTTP router method, 15,632 B: the last
+  `(ptr,len)` swap went away and the function matched).
+- **A constant passed to a multi-line call** is attributed to the call's closing `)` line, like
+  the call. Copying it into a local first (`p := constName` on its own line) moves its `LEA` to
+  that line. A `LEA` of a constant string on the line of the call's last argument in the original
+  means it was passed directly.
+- **Inlined helpers take the call site's line.** An inlined same-package helper
+  (`isSyncable` in `sync.go`) shows up as `CMP`s on the line of its call,
+  never on its own lines. The line table cannot prove that the original had no such helper.
+
+## 2e. Earlier knobs hide each other: natural source first
+
+`(x+0)` chains, `unsafe` struct punning and similar parity knobs (§2b) compensate for each other.
+Once a function carries several, removing any one makes it worse, so no single edit (by hand or
+by a permuter) can get out. Before searching knobs, rewrite every knob in the function as the
+code a programmer would have written, and only then search.
+
+- `main.findFile` (864 B) built a `*disk.Store` through
+  `(*disk.Store)(unsafe.Pointer(&struct{ dir string }{dir: path}))` because the field was
+  unexported, plus an 18-deep `((len(name)+0)...)*0 == 0 &&` to cancel the effect. Exporting the
+  field (`Dir string`; field names of a struct do not reach any function's code) and writing
+  `&disk.Store{Dir: path}` with a plain `if err != nil` took it from 24 to 8 raw diff bytes.
+- In the same file, `measureSize` got worse (9 → 221) when its `+0`s were removed: those knobs
+  are still standing in for something the natural source does differently. Keep such knobs, note
+  them, and come back.
+- Order of attack for a right-sized function that still differs: (1) undo knobs, write natural
+  source; (2) structural idioms one at a time (`gopermute.py`, §5–7); (3) the parity mechanics
+  above, by hand, for one or two sites; (4) `gorandperm.py`, the random parallel knob search,
+  with `--guard` on the file's other functions; (5) when the search stalls on a plateau, dump
+  `ssa.html` for the function and read which IDs each site popped.
 
 ## 3. Dependency stubs: escape analysis, inlining, and `init()`
 

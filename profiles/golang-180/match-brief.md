@@ -52,6 +52,10 @@ $PY $T/goslotmap.py UNIT FUNC                        # builds with -S and maps s
 $PY $T/gobatch.py UNIT FILE.go FUNC_REGEX SPEC.py
 $PY $T/gobatch.py UNIT FILE.go FUNC_REGEX SPEC.json --climb
 
+# Permuters for right-sized functions (both leave the unit's source alone unless told otherwise)
+$PY $T/gopermute.py UNIT FILE.go FULL_FUNC_NAME      # structural idioms, one at a time
+$PY $T/gorandperm.py UNIT FILE.go FUNC_REGEX --guard 'OTHER_FUNCS_IN_FILE' --minutes 30 \
+    [--pkg MAIN_PKG] [--workers N]                   # parallel random parity knobs -> BUILD/gorandperm/*/best.go
 
 # Verify whole project / accept a matched unit
 $PY $EX/tools/merge.py UNIT
@@ -90,10 +94,21 @@ $PY $EX/tools/gate.py check
      `for i := range` vs `for _, x := range`, `bytes.Buffer{}` vs `&bytes.Buffer{}` / `new(...)`,
      and value struct literal + `&ret` vs `&T{...}`.
    - **Stubborn function:** write a small hypothesis-driven variant spec and run `gobatch.py`.
+   - **Still stuck, or every edit makes it worse:** look for knobs earlier work left in the function
+     (`(x+0)` chains, `unsafe` struct punning, `; _ = x`). They hide each other; rewrite them as
+     natural source first (`compiler.md` §2e), then search: `gopermute.py`, then `gorandperm.py`.
+     If all of a function's swaps go the same way, one dead value near the function's **end** may
+     flip them all (§2b, "which knob reaches which site"). Two inlined constructors whose
+     `newobject` results sit in swapped slots are a sort tie, not a naming problem (§2c).
 6. **Parallel multi-worker builds (when scaling across a large binary):**
    - Partition files strictly disjointly across workers.
    - Each worker must build to its own private `-o /work/build/cand_GROUP.bin` **without `-i`**
      (concurrent `go build -i` races on `pkg/` archives).
+   - Workers that try variants of the **same** file need their own copy of the GOPATH
+     (`gorandperm.py` does this). Editing one tree in place races even with write-then-rename: on a
+     macOS Docker bind mount another build briefly sees the file as missing.
+   - Compare baselines with `LC_ALL=C sort` on both sides; `comm` on lists sorted under different
+     locales reports hundreds of false regressions.
    - Snapshot `src/` before each wave and check `comm -23 match_baseline.txt match_now.txt` after
      each wave to guarantee zero regressions.
 7. **Verify raw bytes.** A function is only complete when **both**:
