@@ -191,6 +191,52 @@ class TestLocal(unittest.TestCase):
             with open(p, 'w') as f: f.write('[trace]\ncommands = []\n')
             with self.assertRaises(SystemExit): armtrace.load_local(p)
 
+    def test_linux_entry_and_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            cc = os.path.join(d, 'bin', 'armcc'); os.makedirs(os.path.dirname(cc))
+            open(cc, 'w').close()
+            p = os.path.join(d, 'armtrace.local.toml')
+            with open(p, 'w') as f:
+                f.write(f'[linux.a]\narmcc = "{cc}"\nhook = "1000:e900000000"\n'
+                        '[linux.a.sites]\nstart = "10"\nsimplify = "11"\ncolouring = "12"\ncolour = "13"\nmark = "14"\n')
+            e = armtrace.linux_entry(p, cc)
+            self.assertEqual((e['name'], e['hook']), ('a', '1000:e900000000'))
+            with self.assertRaises(SystemExit): armtrace.linux_entry(p, os.path.join(d, 'other'))
+            old = armtrace.shim_path
+            armtrace.shim_path = lambda: '/x/shim.so'
+            try:
+                env = armtrace.trace_env(e, 5)
+                self.assertEqual(env, {'LD_PRELOAD': '/x/shim.so', 'ARMTRACE_HOOK': '1000:e900000000', 'ARMTRACE_LEVELS': '5'})
+                env = armtrace.trace_env(e, 5, 'light', only=3)
+                self.assertEqual(env['ARMTRACE_LEVELS'], '0,10=5,11=5,12=5,13=5,14=5')
+                self.assertEqual(env['ARMTRACE_ONLY'], '10:3')
+            finally:
+                armtrace.shim_path = old
+            self.assertIn('set *(unsigned int*)0x1000 = 0xc358056a', armtrace.gdb_script(e, 5))
+
+    def test_parse_light(self):
+        t = '\n'.join([
+            '***** Start of graph colouring, num_nodes=40, second_clash_set=1, thumb2_regalloc=0, spill_all_vars=0',
+            '*** Simplify called for register 31 status = NS_ExtraLowNode refs = 65', '',
+            'Adding move clashes for the move-neighbours of 31:30 0 ',
+            '*** Simplify called for register 30 status = NS_LowNode refs = 99',
+            'Colouring 30. Refs = 99. Type = INT32.',
+            '     Marking 0 unavailable due to clash between 30 and 0(0) (clash)', '  Colour = 1. ', '',
+            'Colouring 31. Refs = 65. Type = INT32.',
+            '     Marking 1 unavailable due to clash between 31 and 30(1) (clash)',
+            '     Marking 2 unavailable due to clash between 31 and 2(2) (move clash)', '  Colour = 3. ',
+            'Node 32 coalesced with 31', ' whose colour is 3',
+            '***** Start of graph colouring, num_nodes=20, second_clash_set=1, thumb2_regalloc=0, spill_all_vars=0',
+            'Colouring 5. Refs = 1. Type = INT32.', '  Colour = 0. ', ''])
+        L = armtrace.parse_light(t)
+        self.assertEqual(len(L), 2)
+        P = L[0]['passes'][0]
+        self.assertEqual(P['steps'], [(31, 65), (30, 99)])
+        self.assertEqual(P['movenb'], {31: [30, 0]})
+        self.assertEqual(P['col'], [[30, 99, 1, [(0, 0, 'c')]], [31, 65, 3, [(1, 30, 'c'), (2, 2, 'm')]]])
+        self.assertEqual(armtrace.light_colours(L[0]), {30: 1, 31: 3, 32: 3})
+        self.assertEqual(armtrace.parse_light(t, 1)[0]['header']['num_nodes'], 20)
+
     def test_example_file_holds_no_address(self):
         ex = os.path.join(os.path.dirname(HERE), 'armtrace.local.example.toml')
         text = open(ex).read()

@@ -622,6 +622,60 @@ What the trace does not give, and what it must not be taken for:
   too and are not in Exhume. Without them, identify nodes from the trace: their references and
   degree, and the registers the trace gives them against the listing's.
 
+### The trace with the Linux compiler
+
+ARM Compiler 5 for Linux is the same release built for 32-bit x86 Linux, and its trace is the
+same. I traced one 64 KB unit (17 colourings, the largest 5,606 nodes) with the Windows build
+under Wine and with the Linux build of the same update (5.06u3, build 300): the two traces had
+the same 873,304 lines, and `armtrace.parse` gave equal results. The only differences were the
+file name in the warnings and the way the two C libraries print a float in the graph dump's
+colour attribute (`4.29497e+009` against `4.29497e+09`), which the parser does not read. The
+objects were the same.
+
+How I found the place to write, in words. The trace's format strings are in the program's read-
+only data; the code that passes each one to the print routine is a few instructions after a call
+through an object's table of methods, whose result is compared with a small number before the
+print. All the allocator's tests call the same method. Under a debugger, stopped at one of those
+calls, the method turned out to make sure of a singleton object and then to jump, as its last
+instruction, to a two-instruction function that returns 0: the release build's debug level. The
+Windows build has the same method with the getter inlined (its last two instructions return 0),
+and that is where the Windows commands write. That tiny getter is shared by dozens of other
+callers in the Linux build, so I do not write there: I replace the method's final jump, which only
+the allocator's tests reach. Build 750 (5.06u6) has the same method at another address.
+
+How it is switched on (armtrace.py `--runner linux`): an LD_PRELOAD library
+(`tools/armtrace_shim/armtrace_shim.c`, built with `cc -m32` on first use; it needs no 32-bit C
+library) runs before the compiler's `main`. It checks that the five bytes at the local file's
+`hook` address are the ones recorded, makes that page writable, writes a jump to its own getter,
+and puts the page back. Nothing on disk changes. Its getter answers a level per call site (the
+return address), so the trace can hold only some of its parts, and it can count the calls from
+the site that starts a colouring and answer 0 except in the K-th, so only one function is traced.
+`armtrace.py survey` lists the call sites and what each prints, for the local file. With gdb in
+place of the library (`--method gdb`, writing `push imm8; pop eax; ret` there at the first
+instruction) the trace is the same and each compile costs about 80 ms more.
+
+Checks, on the 64 KB unit with both builds: with the library loaded and the level 0, the object
+is byte for byte the normal compile's; with the trace on at any level, in any form, the object is
+also byte for byte the normal compile's (the command line is in the object, so compare with the
+same `--errors` name). Costs on a 32-core x86 host (normal compile 0.18-0.20 s):
+
+| trace | seconds | size |
+|---|---|---|
+| everything, level 5 | 5.5-6.1 | 74 MB |
+| level 5, one colouring (the 5,606-node function) | 4.7 | 59 MB |
+| everything, level 1 | 0.33-0.36 | 9.8 MB |
+| light profile, all colourings | 0.33-0.35 | 9.0 MB |
+| light profile, one colouring | 0.25-0.29 | 5.9 MB |
+
+Most of the full trace is the work lists printed before every removal (41 of the 74 MB) and the
+clash sets before and after it. The light profile (`--profile light`, `armtrace.parse_light`)
+keeps the start of each colouring, the passes and spills, every removal with its weighted
+references and its move neighbours, every colouring with the registers its coloured neighbours
+take away and from whom (clash or move clash), its colour, and the coalescings. Reading it takes
+0.08-0.1 s for the large function. It gives every final colour of the full trace (2,792 of 2,792),
+but it has no graph dump and no heaps, so armreplay cannot check or replay it; it is for
+measuring, per variant, why a value got the register it got.
+
 ### Reference counts as targets
 
 - The graph dump leaves out moves to precoloured registers, and graphs with spills replay wrongly
@@ -1677,3 +1731,73 @@ Checked on a 5.6 KB function that two releases share (compilers 5.06 update 3 an
 
 Not done: hot lines from the second target (the focus uses the primary's); a cut file with a
 second target.
+
+Eighth round: a slope from the allocator trace (`--trace-key`). The 5.6 KB responder stood at 26
+differing instructions with structure 0: every instruction the image's, 26 registers wrong at
+about eight places. The sweep (16,000 single edits, the pairs of the best, a beam) and hours of
+islands found nothing that lowers the count: the count is flat around that source. By hand,
+with traces, I had seen edits move a value's reference count or its place in the removal order
+without changing a register, so the plan was to give the search that slope as a key after the
+register count. What was built (permtrace.py, and the light trace above):
+
+- Each variant that ties or beats its island's base at the instruction level (in the sweep, the
+  start) gets a second, traced compile: the Linux compiler with the LD_PRELOAD shim, only the
+  function's colouring, the light profile (0.27 s against 0.19 s for the plain compile on that
+  64 KB unit; 6 MB of trace, read in 0.1 s).
+- The node map without fromelf: the function's bytes as the scorer places them, decoded with
+  capstone, split into webs and matched to the trace's nodes by armnodemap's matcher, fed with
+  the clashes the light trace gives (each neighbour that took a register from a node, with its
+  register) and the move neighbours each removal lists. The webs are kept per code, the map per
+  code and graph. The light clashes are 80% of the full trace's final graph (the coalesced
+  nodes' edges are their representatives'), and on the start the matcher placed 2,767 of 2,816
+  nodes, 6,183 of 7,812 traced clashes agreeing with the code's; the wanted nodes (the image's
+  register at each instruction that differs only in registers) came out as 19, where the full
+  trace and fromelf had given 17 by hand. The matcher's refinement rounds matter: with 0, 1, 2
+  or 4 rounds in place of 8 the wanted set differed by 35, 13, 7 and 3 nodes. A map costs 0.9 s
+  (it was 1.45 s; the refinement now counts with set intersections) and is then reused while
+  the code and the graph stay; all told a traced variant cost 0.55-0.6 s of worker time.
+- The distance: per wanted node not given its register, 1, plus for each neighbour that held the
+  wanted register when the node was coloured, that neighbour's distance before it in the
+  colouring order over 32 (at most 1; a precoloured holder counts 1). A wanted register that was
+  free and not chosen counts 1. A refs measure beside it: how many weighted references each
+  holder has more than the node, in uses of 32. Both cost under a millisecond once the map is
+  there.
+
+Results on the responder (30 workers, 32-core host; the sweep compiled 16,046 singles in about
+210 s):
+
+- A first form divided each gap by the number of nodes coloured. It moved for 43 of 3,666 tie
+  variants, and every such move came from nodes added elsewhere (a probe, an empty `switch`),
+  which push every position along by two to six places: no wanted node changed its holder, its
+  gap to a holder of its own size (1 or 3 places) or any reference count. The beam then
+  followed those artefacts (three dead constructs, "lower distance", nothing else changed). So
+  the gap is now capped at 32 places.
+- With the capped gap: 3,644 single edits kept the count at 26, and every one of them gave the
+  start's distance (27.1875) and the start's refs measure (24.4375): the same 19 wanted nodes,
+  the same holders, the same gaps, the same reference counts. No single edit lowers the
+  distance at 26, so the pairs and the beam over the distance had nothing to start from (the
+  pairs of the best singles: none better than the start).
+- The proxy against the ground truth (one sweep with every structure-0 variant traced): 163
+  variants changed the register count, all upwards (28 to 54). The base sites they flipped were
+  one site whose wanted register was free (86 variants) and one held by a precoloured register
+  (24); the four sites whose holder is a value of the same size coloured one to three places
+  before, the ones the order term ranks nearest, never flipped. Rank correlation between a
+  site's term and how often it flipped: 0.09. And across those variants the distance follows
+  the register count (rank correlation 0.97): where it varies at all it says what the count
+  says.
+
+The same function under build 750 (5.06u6) with the same edits carried over: the same start
+distance (27.1875), and in a two-minute sweep (7,675 singles, 1,607 traced) no single edit and no
+pair moved it.
+
+So on this function the trace distance gives the search no slope either: the allocation of the
+wanted values does not move under any single edit that keeps the code, and where it moves the
+code moves with it. The trace confirms what the sweep showed: what decides those registers is
+not reachable by one more neutral edit of this source. `--trace-key` stays as a tool (and the
+EXHUME_TRACE_LOG=DIR variable writes one JSON line per traced variant for this kind of study;
+EXHUME_TRACE_ALL=1 traces every structure-0 variant, not only the ties),
+but on this function it is not worth its 0.55 s.
+
+Not done: the per-node refs search of the plan (the smallest change of one count in the clash
+neighbourhood that satisfies a value in the replay) needs the full trace and the replay, about
+5 s a variant for this function, and was not built since the cheaper signal never moved.

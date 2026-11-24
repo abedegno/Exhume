@@ -68,10 +68,11 @@ class Native:
     def stop(self):
         pass
 
-    def compile(self, src, obj, opts):
+    def compile(self, src, obj, opts, env=None):
+        """env: more environment variables for this compile (the allocator trace's, permtrace.py)."""
         cmd = self.wrap + [os.path.join(self.home, 'bin', 'armcc'), '-c'] + opts + [src, '-o', obj]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, env=self.env, timeout=TIMEOUT)
+            r = subprocess.run(cmd, capture_output=True, text=True, env=dict(self.env, **env) if env else self.env, timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
             return None, 'timeout'
         if r.returncode != 0 or not os.path.exists(obj): return None, r.stdout + r.stderr
@@ -190,15 +191,17 @@ def _worker_exit():
         pass
 
 
-def worker_compile(text, extra=()):
-    """(object bytes or None, log, seconds) of one compile of text in this worker."""
+def worker_compile(text, extra=(), env=None):
+    """(object bytes or None, log, seconds) of one compile of text in this worker (env: more
+    environment variables, native runner only)."""
     with open(_W['src'], 'w', encoding='latin1') as f: f.write(text)
     opts = _W['opts']
     if 'PMT_FILE_OPTS' in text:                 # a variant with its own /* opts: */ line (permrules.r_file_opts)
         m = re.search(r'/\*\s*opts:\s*([^*]+?)\s*\*/', text[:4000])
         if m and '{root}' not in m.group(1): opts = shlex.split(m.group(1)) + opts[-1:]
     t0 = time.perf_counter()
-    raw, log = _W['runner'].compile(_W['src'], _W['obj'], opts + list(extra))
+    if env: raw, log = _W['runner'].compile(_W['src'], _W['obj'], opts + list(extra), env=env)
+    else: raw, log = _W['runner'].compile(_W['src'], _W['obj'], opts + list(extra))
     return raw, log, time.perf_counter() - t0
 
 
@@ -262,8 +265,9 @@ class Pool:
         shutil.rmtree(self.work, ignore_errors=True)
 
 
-def compile_once(runner, cfg, src_path, text, work=None, extra=()):
-    """(object bytes or None, log) of one compile in this process (extra: more options)."""
+def compile_once(runner, cfg, src_path, text, work=None, extra=(), env=None):
+    """(object bytes or None, log) of one compile in this process (extra: more options; env:
+    more environment variables, native runner only)."""
     work = work or tempfile.mkdtemp(prefix='pmt-', dir=ram_dir())
     os.makedirs(work, exist_ok=True)
     stem = os.path.splitext(os.path.basename(src_path))[0]
@@ -271,6 +275,7 @@ def compile_once(runner, cfg, src_path, text, work=None, extra=()):
     with open(p, 'w', encoding='latin1') as f: f.write(text)
     runner.start(work)
     try:
+        if env: return runner.compile(p, os.path.join(work, stem + '.o'), source_opts(cfg, src_path, text) + list(extra), env=env)
         return runner.compile(p, os.path.join(work, stem + '.o'), source_opts(cfg, src_path, text) + list(extra))
     finally:
         os.remove(p)

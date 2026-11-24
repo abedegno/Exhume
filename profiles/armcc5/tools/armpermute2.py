@@ -12,6 +12,7 @@ variants made, compiled and scored in a worker pool.
         [--origin SHARE] [--flat-score] [--seed-source FILE]... [--seed-dir DIR] [--seed-factor F]
         [--debt-bases N] [--debt-share F] [--resweep LEVELS]
         [--also CONFIG:SRC[:FUNC] [--also-env KEY=VALUE]...]... [--also-weight W] [--also-margin N]
+        [--trace-key [--trace-local FILE] [--trace-only K]]
 
 First a sweep, so that an answer of one or two edits does not hang on the seed: every single
 edit of the original source is listed (for the probe rules by enumeration: each insertion
@@ -100,6 +101,20 @@ the image does not have, lacks or has elsewhere); then the rest of the differing
 instruction. Scores print as `30 (structure 4, registers 26)`; best.txt lists the structural
 differences. --flat-score gives the old single count.
 
+--trace-key (the native runner, and an armtrace.local.toml with a [linux.NAME] table for its
+armcc): a fifth key after the register count, the allocator-trace distance of permtrace.py.
+For each value whose register the image has otherwise, it measures how far the value is from
+being coloured before the neighbours that hold the wanted register (their distance in the
+colouring order), so that an edit that moves an allocation towards the image's without yet
+changing a register ranks better than one that does nothing. A worker makes a second, traced
+compile (only FUNC's colouring, the light profile) only when the variant's instruction-level key
+ties or beats its island's base (in the sweep, the start); results with the same code and a
+different distance are different results (their object hash names the distance), so the sweep
+pairs and the beam take them. The dead-code penalty stays with the register count; the move
+penalty comes after the distance. Scores print `26 (structure 0, registers 26, trace 21.9)` and
+best.txt says what the distance is made of. --trace-only K names the colouring (else FUNC's
+place among the object's functions, or the largest colouring).
+
 Parsimony: each move in a variant's list costs --move-penalty differing instructions in the
 acceptance key (default 0.15), so of two sources with the same code the shorter list wins and a
 long chain of neutral edits is not progress; and an island that has given no new best for
@@ -155,7 +170,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EXHUME = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 for p in (HERE, os.path.join(EXHUME, 'tools')):
     if p not in sys.path: sys.path.insert(0, p)
-import permc, permrules as R, permrun, permscore, permscreen, orcobj        # noqa: E402
+import permc, permrules as R, permrun, permscore, permscreen, permtrace, orcobj        # noqa: E402
+from permtrace import fmt_detail        # noqa: E402
 
 
 SAME_ONLY = False        # --same-only: no edit that may change what the program does (meaning 'type')
@@ -526,6 +542,8 @@ def pen_key(k, d, nm, dead_penalty, move_penalty):
     the variant's list (nm) costs a share of a differing instruction, so of two sources with
     the same code the one with the shorter list wins. An exact result is not penalised."""
     if not k[0] or k[0] == 3: return k
+    if len(k) == 5:      # --trace-key: the dead-code penalty stays with the register count, the move penalty comes after the distance
+        return k[:3] + (k[3] + dead_penalty * max(0, d or 0), k[4], move_penalty * nm)
     return k[:-1] + (k[-1] + dead_penalty * max(0, d or 0) + move_penalty * nm,)
 
 
@@ -760,6 +778,7 @@ class Gen:
     also_weights = None
     also_margin = 6
     cap = 8
+    tracer = None               # permtrace.Tracer with --trace-key
     sizes = layouts = None
     c_opts = None               # the file's compile options as one line (for permrules.r_file_opts)
 
@@ -997,6 +1016,25 @@ class Gen:
         out['r'] = r
         if r is None:
             out['log'] = log; return out
+        if self.tracer is not None and r.ok and not r.exact and r.size_ok:
+            # the trace distance, only where it can decide: the instruction-level key ties or beats
+            # the island's base (or the sweep's start); jobs with no reference are always measured
+            ref = p.get('old') if p.get('old') is not None else p.get('tref')
+            if ref is None or r.key()[:4] <= tuple(ref[:4]) or (os.environ.get('EXHUME_TRACE_ALL') and r.struct == 0):
+                t1 = time.perf_counter()
+                m = self.tracer.measure(lambda extra, env: permrun.worker_compile(ctext, extra, env)[:2], permrun._W['wd'])
+                out['tt'] = time.perf_counter() - t1
+                if m is not None:
+                    r = out['r'] = r.with_tdist(m[0])
+                    ohash = r.chash
+                    if os.environ.get('EXHUME_TRACE_LOG'):        # one line per traced variant, for studying the distance
+                        descs = [x.get('desc') for x in p.get('moves') or () if isinstance(x, dict)] if kind == 'moves' else []
+                        with open(os.path.join(os.environ['EXHUME_TRACE_LOG'], f'trace-{os.getpid()}.jsonl'), 'a') as f:
+                            f.write(json.dumps({'kind': kind, 'n': len(p.get('moves') or ()), 'descs': descs,
+                                                'h': h, 'key': list(r.key()), 'd': m[0], 'dr': m[1], 'info': m[3],
+                                                'det': m[2]}) + '\n')
+                else:
+                    out['tfail'] = True
         aux = None
         if self.also and r.ok:
             r, aux = self.score_also(kind, p, base, made, toks, r, out)
@@ -1089,7 +1127,8 @@ class Island:
 
 
 Pending = collections.namedtuple('Pending', 'isl bh moves trail margin force vtrail vmoves t')
-FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus', '--no-sweep', '--sweep-only', '--same-only', '--flat-score')
+FLAGS = ('--resume', '--no-screen', '--no-reduce', '--no-focus', '--no-sweep', '--sweep-only', '--same-only', '--flat-score',
+         '--trace-key')
 
 
 class Search:
@@ -1116,6 +1155,9 @@ class Search:
         self.rebase_s = 60 * arg(a, '--rebase', 10.0, float)   # minutes without a new best before an island goes back to it
         self.focus = '--no-focus' not in a
         permscore.Result.flat = '--flat-score' in a      # the old single count as the key (before the workers fork)
+        self.trace_key = '--trace-key' in a
+        permscore.Result.trace_key = self.trace_key      # a fifth key: the allocator-trace distance (permtrace.py)
+        self.tracer = None
         self.history = []                   # (seconds, compiles, score, moves) at each new best
         self.sdiffs = {}                    # text hash -> its structural differences (from the worker that scored it)
         self.sweep_on = '--no-sweep' not in a
@@ -1239,9 +1281,24 @@ class Search:
             texts.append(text2)
         return permscore.Combo(parts, carried, [1.0] + [self.also_weight] * len(self.also)), raw, texts
 
-    def compile(self, text, extra=()):
+    def compile(self, text, extra=(), env=None):
         """(object bytes or None, log) of one compile in the parent."""
-        return permrun.compile_once(self.runner, self.cfg, self.src, text, self.pwork, extra)
+        return permrun.compile_once(self.runner, self.cfg, self.src, text, self.pwork, extra, env)
+
+    def trace_result(self, text, r):
+        """r with the trace distance of text (--trace-key), measured in the parent."""
+        if self.tracer is None or r is None or not r.ok or r.exact or not r.size_ok: return r
+        m = self.tracer.measure(lambda extra, env: self.compile(text, extra, env), self.pwork)
+        return r.with_tdist(m[0]) if m is not None else r
+
+    def trace_detail(self, text):
+        """Lines that say what the trace distance of text is made of."""
+        m = self.tracer.measure(lambda extra, env: self.compile(text, extra, env), self.pwork)
+        if m is None: return ['trace distance: not measured (the traced compile or its parse failed)']
+        d, dr, det, info = m
+        return ([f'trace distance {d:g} (refs measure {dr:g}): {info["wanted"]} nodes with a register from the image '
+                 f'({info["diffs"]} register differences; {info["placed"]} nodes placed on {info["webs"]} webs, clash check '
+                 f'{info["check"][0]} of {info["check"][1]}); unsatisfied:'] + ['  ' + x for x in fmt_detail(det)])
 
     def start(self):
         t0 = time.time()
@@ -1251,6 +1308,14 @@ class Search:
         self.base_raw = raw
         self.target = permscore.Target(self.cfg, self.text, self.func, raw)
         r0 = self.target.score(raw)
+        if self.trace_key:
+            if self.also: raise SystemExit('--trace-key does not go with --also')
+            os.makedirs(self.pwork, exist_ok=True)
+            self.tracer = permtrace.Tracer(self.runner, arg(self.a, '--trace-local'), self.cfg.root)
+            self.tracer.setup(self.target, self.func, raw, lambda extra, env: self.compile(self.text, extra, env), self.pwork,
+                              arg(self.a, '--trace-only'))
+            r0 = self.trace_result(self.text, r0)
+            if r0.tdist is None: print('  trace key: the start could not be measured', flush=True)
         if self.also:
             print(f'  target 1: {self.func} in {self.src}: start {r0.text()}', flush=True)
             self.also_start()
@@ -1272,7 +1337,8 @@ class Search:
                        bases_dir=self.bases_dir, focus_cold=self.focus_cold, focus_near=self.focus_near,
                        src_name=self.stem + '.c', origin_toks=toks, cap=self.nisl + 3,
                        also=[{'toks': a['toks'], 'tail': a['tail']} for a in self.also],
-                       also_weights=[1.0] + [self.also_weight] * len(self.also), also_margin=self.also_margin)
+                       also_weights=[1.0] + [self.also_weight] * len(self.also), also_margin=self.also_margin,
+                       tracer=self.tracer)
         self.mode = 'whole'
         cut = arg(self.a, '--cut', 'off')
         if cut != 'off' and not self.also:         # (a cut file is not made for the other targets: whole units with --also)
@@ -1369,6 +1435,7 @@ class Search:
                 while len(ALSO_SEED) <= k: ALSO_SEED.append([])
                 ALSO_SEED[k].append(permc.tokenize(also[k])[0] if r.carried[k] else None)
             mv = [{'rule': 'seed', 'desc': f'seed source {name} ({r.text()})', 'seed': len(SEED_TOKS) - 1}]
+            r = self.trace_result(text, r)
             isl = Island(-10 - len(out), text, r, [('seed', mv[0]['desc'])], self.key_of(r, self.dead_delta(toks), 1), r.chash)
             isl.also = also
             isl.moves, isl.h, isl.bh = mv, norm_hash(toks), self.put_base(text, also)
@@ -1627,6 +1694,7 @@ class Search:
             flying -= 1
             out[res['id']] = res
             c['compile_s'] += res.get('tc', 0.0); c['score_s'] += res.get('ts', 0.0); c['wgen_s'] += res.get('tg', 0.0)
+            if 'tt' in res: c['traced'] += 1; c['trace_s'] += res['tt']; c['trace_fail'] += res.get('tfail', 0)
             c['also_compiled'] += res.get('n2', 0); c['also_skipped'] += res.get('skip2', 0); c['also_uncarried'] += res.get('unc', 0)
             r = res.get('r')
             if r is None:
@@ -1701,6 +1769,7 @@ class Search:
             r, raw, also = self.score_all(text, nt, mv)
             if r is None or not r.ok or r.chash in objs: continue
             objs.add(r.chash)
+            r = self.trace_result(text, r)
             isl = Island(-30 - len(out), text, r, [(rule, ed.desc)], self.key_of(r, self.dead_delta(nt), 1), r.chash)
             isl.also = also
             isl.moves, isl.h, isl.bh = mv, norm_hash(nt), self.put_base(text, also)
@@ -1729,6 +1798,7 @@ class Search:
         d_pair = d_single + spans[1]
         d_third = d_pair + spans[2]
         rk = {}                                # with --also: the start's own results, and how many moves make the start
+        if self.tracer is not None: rk['tref'] = root.key     # with --trace-key: trace what ties or beats the start
         if self.also:
             r1 = parts_of(root.result)
             rk = {'p1': (r1[0].key()[0], 0, r1[0].struct, r1[0].diff), 'ra': r1[1:], 'nfix': len(P)}
@@ -1912,7 +1982,7 @@ class Search:
 
         def fetch(x, k):
             """An island at the result x (its text asked of a worker), or None."""
-            kk, rr = self.score_moves([P + x['moves']], want=True, **{k: v for k, v in rk.items() if k != 'p1'})[0]
+            kk, rr = self.score_moves([P + x['moves']], want=True, **{k: v for k, v in rk.items() if k not in ('p1', 'tref')})[0]
             if kk is None or rr.get('text') is None: return None
             isl = Island(k, rr['text'], rr['r'], list(root.trail) + [(x['rule'], x['desc'])], kk, rr['ohash'])
             isl.also = rr.get('also')
@@ -1973,6 +2043,7 @@ class Search:
         for (rid, name), n in (res.get('st') or {}).items(): self.stats[rid][name] += n
         c['generated'] += res.get('gen', 0); c['dup_text'] += res.get('dup', 0)
         c['wgen_s'] += res.get('tg', 0.0); c['compile_s'] += res.get('tc', 0.0); c['score_s'] += res.get('ts', 0.0)
+        if 'tt' in res: c['traced'] += 1; c['trace_s'] += res['tt']; c['trace_fail'] += res.get('tfail', 0)
         if 'th' in res: c['focus_compiles'] += 1; c['focus_s'] += res['th']
         c['also_compiled'] += res.get('n2', 0); c['also_skipped'] += res.get('skip2', 0); c['also_uncarried'] += res.get('unc', 0)
         self.escalate()
@@ -2097,7 +2168,7 @@ class Search:
             if '--no-reduce' not in self.a: self.reduce_moves()
             self.write_best()
             rb = self.best.result
-            pen = 0 if rb.exact else self.best.key[-1] - rb.key()[-1]       # what the dead-code and move penalties add to the key
+            pen = 0 if rb.exact else sum(self.best.key[i] - rb.key()[i] for i in range(3, len(rb.key())))   # what the penalties add to the key
             what = rb.text() + (f' +{pen:.2f} in penalties' if pen > 0.005 else '')
             print(f'  new best {what}  ({len(self.best.moves)} moves)  [{rules}] {desc[:150]}', flush=True)
             self.history.append((time.time() - self.t_run, self.counts['compiled'], what, len(self.best.moves)))
@@ -2238,6 +2309,11 @@ class Search:
             out += [f'  {m["rule"]}\t{m["desc"]}' for m in b.moves]
         if b.hot:
             out.append('source lines the differing instructions come from: ' + ' '.join(str(x) for x in b.hot))
+        if self.tracer is not None and not b.result.exact:
+            try:
+                out += self.trace_detail(b.text)
+            except Exception as e:
+                out.append(f'trace distance: {type(e).__name__}: {e}')
         if self.sdiffs.get(b.h):
             out.append('structural differences (- the image, + this source; registers masked):')
             out += ['  ' + x for x in self.sdiffs[b.h]]
@@ -2397,6 +2473,9 @@ class Search:
               f'the parent process used {1000 * self.cpu / n:.2f} ms of CPU per variant), '
               f'worker generate {1000 * c["wgen_s"] / n:.1f} ms, compile {1000 * c["compile_s"] / n:.0f} ms, '
               f'score {1000 * c["score_s"] / max(1, c["compiled"]):.2f} ms; mode {self.mode}')
+        if self.tracer is not None:
+            print(f'trace key: {c["traced"]} of {c["compiled"]} variants traced ({1000 * c["trace_s"] / max(1, c["traced"]):.0f} ms each: '
+                  f'traced compile, parse, node map, distance), {c["trace_fail"]} could not be measured')
         if self.also:
             both = c['also_compiled'] / max(1, len(self.also))
             print(f'other targets: {both:.0f} of {c["compiled"]} variants were compiled for the other target too ({100 * both / max(1, c["compiled"]):.0f}%); '

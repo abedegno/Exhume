@@ -18,3 +18,21 @@ home = "/path/to/your/MDK/home"
 commands = [
     "set *(int*)0xADDRESS = 0xVALUE_WITH_{level:02x}",
 ]
+
+# The Linux build of the compiler (ARM Compiler 5 for Linux, a 32-bit x86 program), for
+# `armtrace.py run --runner linux` and the permuter's --trace-key. One table per build; it is used
+# when its `armcc` is the compiler being run (EXHUME_ARMCC_LINUX/bin/armcc).
+[linux.b300]
+armcc = "/path/to/armcc5-linux/bin/armcc"
+# The tail jump into the debug-level getter, as ADDRESS:BYTES (hex, the five bytes found there).
+# The LD_PRELOAD shim checks the bytes and replaces the jump with one to its own getter.
+hook = "ADDRESS:e9XXXXXXXX"
+
+# The getter's call sites by what they print: `armtrace.py survey ARMCC_HOME --src BIG.c` lists
+# them ready to paste. start, simplify, colouring, colour and mark are needed for --profile light.
+[linux.b300.sites]
+start = "ADDRESS"
+simplify = "ADDRESS"
+colouring = "ADDRESS"
+colour = "ADDRESS"
+mark = "ADDRESS"
