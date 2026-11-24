@@ -59,6 +59,20 @@ The same proof; profiles/ti-c2000/compiler.md, "Fingerprinting the version", has
 - `-O1`, not -O2: one function matched only at -O1. `--gen_func_subsections=on` changes no code
   and the tools always add it.
 
+## Go 1.8.0 (the golang-180 profile)
+
+The same proof; `profiles/golang-180/compiler.md` and `linker.md` have the evidence.
+
+- Run `python3 tools/fingerprint.py TARGET_BIN`: on an ELF64 Go binary it reports `.gopclntab`
+  magic (`0xfffffffb` for Go 1.2–1.15), function count, Go version strings (`go1.8`), static vs
+  CGO linking (`PT_INTERP`/`.dynamic`), and stripped status (`-s` = no `.symtab`, `-w` = no DWARF;
+  `.gopclntab` is always retained).
+- Inspect `.gopclntab` source paths with `profiles/golang-180/tools/gomap.py init` and `funcs`:
+  package-relative paths without a host prefix indicate `-gcflags "-trimpath=..."`.
+- Check third-party / vendored packages first (`skills/recover-linked-library`): compiling an exact
+  upstream commit under `golang:1.8.0` and matching 100% of its functions + line tables + 0 unmasked
+  raw bytes proves the exact compiler version and flags before hand-decompiling first-party code.
+
 ## Record
 
 - Write what you proved, with the evidence, in the profile's compiler.md, assembler.md or linker.md (or start a new profile directory with a profile.toml: command lines, name prefix and limit, library-name patterns, log patterns).

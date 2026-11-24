@@ -45,14 +45,45 @@ def _le_facts(data):
     print('Profile signatures only narrow the toolchain; confirm with compilation and exact matching.')
 
 
+def _elf_facts(data):
+    import importlib.util
+    gotc_path = os.path.join(EXHUME, 'profiles', 'golang-180', 'tools', 'gotc.py')
+    spec = importlib.util.spec_from_file_location('go18_gotc', gotc_path)
+    gotc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gotc)
+    info = gotc.inspect_elf_go(data)
+    link_kind = 'dynamic (CGO/libc)' if info['dynamic'] else 'static (CGO_ENABLED=0)'
+    flags = []
+    if info['stripped_symtab']:
+        flags.append('-s (no .symtab)')
+    if info['stripped_dwarf']:
+        flags.append('-w (no DWARF)')
+    print(f'ELF64: {info["arch"]}, entry {info["entry"]:#x}, {link_kind}, file {info["size"]:#x} bytes')
+    print(f'    .text {info["text_size"]:#x} bytes, .rodata {info["rodata_size"]:#x} bytes'
+          + (f'; stripped: {", ".join(flags)}' if flags else '; unstripped'))
+    if info['pclntab']:
+        p = info['pclntab']
+        print(f'    .gopclntab: magic {p["magic"]:#x} ({p["format"]}), '
+              f'minLC={p["min_lc"]}, ptrSize={p["ptr_size"]}, nfunc={p["nfunc"]}, size={p["size"]:#x}')
+    if info['go_versions']:
+        print(f'    Go version strings: {", ".join(info["go_versions"][:10])}')
+    if info['build_id']:
+        print(f'    Go buildid: {info["build_id"]}')
+    _profile_signatures(data)
+    print('Profile signatures only narrow the toolchain; confirm with compilation and exact matching.')
+
+
 def main(path):
     with open(path, 'rb') as source:
         d = source.read()
+    if d[:4] == b'\x7fELF':
+        _elf_facts(d)
+        return
     if _declares_le(d):
         _le_facts(d)
         return
     if d[:2] not in (b'MZ', b'ZM'):
-        raise ValueError('expected MZ or supported LE')
+        raise ValueError('expected MZ, ELF64, or supported LE')
     if len(d) < 0x20:
         raise ValueError('truncated MZ header')
     w = lambda i: struct.unpack_from('<H', d, i)[0]
