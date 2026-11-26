@@ -69,6 +69,7 @@ $PY $T/gotrace.py trace UNIT FILE.go SSA_NAME FUNC_REGEX --second C[:GOROOT]   #
 
 # A second release built with another Go version (compiler.md 2g, 2h)
 $PY $T/goinltree.py LATER_BIN 'FUNC_REGEX'           # Go >= 1.9: which calls were inlined, and where
+$PY $T/gomoved.py BIN OTHER_BIN ['FUNC_REGEX']          # which source files the vendor changed between them
 $PY $T/godual.py score UNIT FILE.go FUNC_REGEX --second C[:GOROOT] --target2 OTHER_BIN
 $PY $T/godual.py enum  UNIT FILE.go FUNC_REGEX SPEC.json --second C[:GOROOT] --target2 OTHER_BIN --depth 3
 
@@ -122,7 +123,9 @@ $PY $EX/tools/gate.py check
      longer. If the original's last pairs are all `(ptr,len)`, its free list ran out and yours is
      too long. If no position of the list gives the wanted order, no shift will, and the list's
      content has to change.
-   - **Another release was built with another Go version:** score candidates against both
+   - **Another release was built with another Go version:** first see which files the vendor
+     changed between the two (`gomoved.py`): a function can differ because it inlines a helper
+     that exists in one release only. Then score candidates against both
      (`godual.py`, §2g). A knob moves one compiler only. Ordinary rewrites move both (§2h): a
      struct built in a named local instead of a literal argument, the grouping of an `&&` chain,
      a constant written first, `var x T` then `=`. Try those before knobs, and look at how

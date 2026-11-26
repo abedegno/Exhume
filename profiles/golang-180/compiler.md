@@ -264,6 +264,33 @@ both, and you can test a candidate against both with `tools/godual.py`.
 - **Pick the release with the same source.** The template function had the same line range in
   the first three Go 1.7.5 releases and one more line in later ones. Compare against the former.
 
+- **Find what the vendor changed before you fit anything** (`tools/gomoved.py A B`). The tool
+  compares each function's file and lines in the two releases. A function that starts lower or
+  covers more lines means its file was edited. A package's `init` is given the line after the
+  last line of the package's last file, so a new file shows there. Two results from one target:
+  - A set of one-line wrappers matched the first release as plain calls and the second only
+    with each argument passed through an identity helper. No single form satisfied both
+    compilers. The package's `init` had moved from `store_linux.go:60` to `store_other.go:10`:
+    the vendor had added a nine-line file holding the helper. With that file both releases
+    matched, each from its own source.
+  - A function with unchanged lines differed in one loop header. Three functions of another
+    package sat six lines lower in the second release, and the Go 1.9 release showed the loop
+    inlining a helper from that package. The helper was the six new lines.
+  A function whose own lines did not move can still inline a helper from a file that did. When
+  one form suits each compiler and no form suits both, suspect a vendor change and look for
+  moved lines in the packages the function calls.
+- **Keep the second release's changes apart from the tree.** Put the files that reproduce them
+  in an overlay directory that only the second compiler's build copies over the source. The
+  functions they touch can then still be checked, and the tree stays the first release's source.
+- **Under Go 1.7.5 a local's name decides its stack slot.** Slots are sorted by name
+  (`cmpstackvarlt`), spilled temporaries are named `autotmp_NNNN`, the words of a string or
+  interface local are `name.ptr`, `name.len`, `name.itab` and `name.data`, and an inlined call's
+  result is `~r0`. A slot swap between a local and a temporary means the local's name sorts on
+  the other side of `autotmp_`. The assembly listing (`-gcflags -S`) prints the name of every
+  slot of your own build, which shows at once which names are out of order. Several variables
+  with one name (two `~r0`) are a tie, and the sort breaks a tie by the order and number of all
+  declared variables, so it can move when an unrelated local is added.
+
 Set-up is one container per toolchain with the project on the same mount. `godual.py score` prints
 both results for a file. `godual.py enum SPEC.json` scores a list of named rewrites one, two and
 three at a time. With host-native compilers (`tools/gonative.py`) one score took 1.4 seconds.
