@@ -10,6 +10,7 @@ sys.path.insert(0, TOOLS)
 
 import godual
 import gofast
+import gomoved
 import gorandperm as g
 import gotrace
 
@@ -156,6 +157,52 @@ class StructuralMutators(unittest.TestCase):
             wrapped[i] = new
         back = g.else_wrap(wrapped, 0, len(wrapped), random.Random(1))
         self.assertEqual(back, [(3, '\t}'), (6, '}')])
+
+
+LIFT_A = '''== app/store.(*Cache).Size  (cache.go:40-44, 96 bytes) ==
+  L40:
+    +000  sub     RSP, $0x18
+  L44:
+    +010  ret
+== app/store.init  (cache_linux.go:60-60, 64 bytes) ==
+  L60:
+    +000  ret
+== app.Total  (sum.go:10-31, 200 bytes) ==
+  L14:
+    +000  sub     RSP, $0x40
+  L10:
+    +020  nop
+  L31:
+    +0c0  ret
+'''
+LIFT_B = LIFT_A.replace('cache.go:40-44', 'cache.go:46-52').replace('  L40:', '  L46:').replace('  L44:', '  L52:') \
+    .replace('cache_linux.go:60-60', 'cache_other.go:10-10').replace('  L60:', '  L10:') \
+    + '== app.Extra  (sum.go:40-41, 16 bytes) ==\n  L40:\n    +000  ret\n'
+
+
+class MovedBetweenReleases(unittest.TestCase):
+    def test_first_instruction_places_a_function(self):
+        a = gomoved.parse_lift(LIFT_A)
+        self.assertEqual(a['app.Total'], ('sum.go', 14, 31, 200))      # not 10: an inlined line
+        self.assertEqual(a['app/store.(*Cache).Size'], ('cache.go', 40, 44, 96))
+
+    def test_package_of(self):
+        self.assertEqual(gomoved.package_of('app/store.(*Cache).Size'), 'app/store')
+        self.assertEqual(gomoved.package_of('app.Total.func1'), 'app')
+
+    def test_compare_reports_shift_growth_and_new_file(self):
+        only_a, only_b, moved = gomoved.compare(gomoved.parse_lift(LIFT_A), gomoved.parse_lift(LIFT_B))
+        self.assertEqual((only_a, only_b), ([], ['app.Extra']))
+        self.assertEqual(moved[('app/store', 'cache.go', 'cache.go')], [('app/store.(*Cache).Size', 6, 2)])
+        self.assertEqual(moved[('app/store', 'cache_linux.go', 'cache_other.go')], [('app/store.init', -50, 0)])
+        self.assertNotIn(('app', 'sum.go', 'sum.go'), moved)
+
+    def test_report_lines(self):
+        out = []
+        gomoved.report(gomoved.parse_lift(LIFT_A), gomoved.parse_lift(LIFT_B), out.append)
+        self.assertEqual(out[0], 'only in the second release: app.Extra')
+        self.assertIn('app/store  cache.go: 1 moved (by +6); changed length: (*Cache).Size +2', out)
+        self.assertIn('app/store  cache_linux.go -> cache_other.go: 1 moved (by -50)', out)
 
 
 if __name__ == '__main__':

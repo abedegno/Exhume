@@ -66,9 +66,13 @@ class Second:
         return subprocess.run(['docker', 'exec', '-i', self.c, 'sh', '-c', script],
                               input=stdin, capture_output=True, text=True, timeout=timeout)
 
-    def _build(self, w, extra=''):
+    def _build(self, w, extra='', install=False):
+        # -i only for the set-up build: it installs the dependencies, and also rewrites archives
+        # under GOROOT/pkg, which every worker and every other run in the container shares. Two
+        # candidate builds doing that at once fail now and then, and a failed build reads as a
+        # candidate that does not compile.
         g = f'{self.root}/w{w}'
-        return (f'cd {g} && GOPATH={g} {self.env} {self.go} build -i{extra} -gcflags -trimpath={g} '
+        return (f'cd {g} && GOPATH={g} {self.env} {self.go} build{" -i" if install else ""}{extra} -gcflags -trimpath={g} '
                 f"-ldflags '-s -w' -o {self.out_c}/{self.tag}_w{w}.bin {self.pkg}")
 
     def prepare(self, src_mount, pkg, out_host, out_mount, workers=1):
@@ -77,7 +81,7 @@ class Second:
         self.pkg, self.out_h, self.out_c, self.workers = pkg, out_host, out_mount, workers
         os.makedirs(out_host, exist_ok=True)
         script = (f'rm -rf {self.root} && mkdir -p {self.root}/w0 && cp -r {src_mount} {self.root}/w0/src && '
-                  + self._build(0) + ''.join(f' && cp -r {self.root}/w0 {self.root}/w{n}' for n in range(1, workers)))
+                  + self._build(0, install=True) + ''.join(f' && cp -r {self.root}/w0 {self.root}/w{n}' for n in range(1, workers)))
         r = self.sh(script)
         if r.returncode:
             raise gotc.ToolError(f'second toolchain: set-up build failed:\n{r.stderr[-1500:]}')
@@ -89,8 +93,9 @@ class Second:
         return None if r.returncode else os.path.join(self.out_h, f'{self.tag}_w{w}.bin')
 
     def score(self, w, rel, text, regex, gocmp):
-        """(differing bytes outside relocations, sorted lines they are on); (None, []) when it does
-        not build; (-1, []) when a function's size differs from the release's."""
+        """(differing bytes outside relocations, sorted lines of the differing instructions);
+        (None, []) when it does not build; (-1, []) when a function's size differs from the
+        release's. A match is 0 bytes AND no lines."""
         b = self.build(w, rel, text)
         if b is None:
             return None, []
@@ -98,8 +103,10 @@ class Second:
                              capture_output=True, text=True).stdout
         if any(x != y for x, y in re.findall(r'\((\d+) vs (\d+) bytes\)', out)):
             return -1, []
-        base = re.escape(os.path.basename(rel))
-        lines = sorted({int(m.group(1)) for m in re.finditer(r'^\s+\* ' + base + r':(\d+)', out, re.M)})
+        # every differing instruction counts, whichever file its line belongs to: an init function's
+        # lines are in another file than the one edited, and a wrong call target is a difference
+        # that the byte count below cannot see (the field is relocated)
+        lines = sorted({int(m.group(1)) for m in re.finditer(r'^\s+\* \S+:(\d+)', out, re.M)})
         raw = subprocess.run([gocmp, 'raw', self.target, b, regex], capture_output=True, text=True).stdout
         return sum(1 for ln in raw.splitlines() if ln.startswith('UNMASKED')), lines
 

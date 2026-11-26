@@ -246,12 +246,22 @@ class Fast:
         # the target's std export data, as the toolchain container has it now
         eroot = self._exec('go env GOROOT').stdout.strip()
         tgt = f'{s.goos}_{s.goarch}'
-        p1 = subprocess.Popen(['docker', 'exec', self.container, 'tar', 'cf', '-', '-C', f'{eroot}/pkg', tgt], stdout=subprocess.PIPE)
-        p2 = subprocess.run(['docker', 'exec', '-i', nc, 'sh', '-c', f'rm -rf {ngoroot}/pkg/{tgt} && tar xf - -C {ngoroot}/pkg'],
-                            stdin=p1.stdout, capture_output=True)
-        p1.wait()
-        if p1.returncode or p2.returncode:
-            raise FastError(f'copying std export data to {nc} failed: {p2.stderr[-300:]}')
+        # Copy it only when it differs. Every run in the native container shares this directory, so
+        # replacing it while another run compiles makes that run's candidates fail to build.
+        fp = "cd %s/pkg/" + tgt + " 2>/dev/null && find . -name '*.a' | sort | xargs sha1sum | sha1sum"
+        if nx(fp % ngoroot).stdout.split()[:1] != self._exec(fp % eroot).stdout.split()[:1]:
+            tmp = f'{ngoroot}/pkg/.{tgt}.{os.getpid()}'
+            p1 = subprocess.Popen(['docker', 'exec', self.container, 'tar', 'cf', '-', '-C', f'{eroot}/pkg', tgt], stdout=subprocess.PIPE)
+            p2 = subprocess.run(['docker', 'exec', '-i', nc, 'sh', '-c',
+                                 f'rm -rf {tmp} && mkdir -p {tmp} && tar xf - -C {tmp} && rm -rf {ngoroot}/pkg/{tgt} && '
+                                 f'mv {tmp}/{tgt} {ngoroot}/pkg/{tgt} && rmdir {tmp}'],
+                                stdin=p1.stdout, capture_output=True)
+            p1.stdout.close()           # or a reader that failed early leaves the writer blocked for ever
+            if p2.returncode:
+                p1.kill()
+            p1.wait()
+            if p1.returncode or p2.returncode:
+                raise FastError(f'copying std export data to {nc} failed: {p2.stderr[-300:]}')
         r = nx(copy_script)
         if r.returncode != 0:
             raise FastError(f'copy into the native container failed:\n{r.stderr[-2000:]}')

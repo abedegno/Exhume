@@ -183,7 +183,8 @@ The brief to give an agent is `profiles/golang-180/match-brief.md`, and the evid
   searches edits that emit no code, and `gotrace.py` shows which freed value each load got. Trace
   before you run a search for longer.
 - If the vendor shipped a neighbouring release built with another Go version, the real source
-  matches both. `godual.py` scores a candidate against both, and `compiler.md` 2h lists the
+  matches both, except where the vendor changed it in between: `gomoved.py` lists the files
+  that changed. `godual.py` scores a candidate against both, and `compiler.md` 2h lists the
   ordinary rewrites to try first, e.g., a struct built in a named local instead of a literal
   passed as an argument. In the reference project the last function matched both releases with
   such a rewrite and no dead code, after every search on one compiler had failed.
