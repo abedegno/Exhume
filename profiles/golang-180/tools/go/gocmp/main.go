@@ -1,14 +1,19 @@
 // gocmp: disassemble / compare Go functions between ELF amd64 binaries using pclntab.
-//   gocmp dis BIN REGEX        print normalised asm with file:line
-//   gocmp cmp ORIG NEW REGEX   compare functions present in both; report MATCH / DIFF
-//   flags: -v show side-by-side diff for mismatches
+//
+//	gocmp dis BIN REGEX        print normalised asm with file:line
+//	gocmp cmp ORIG NEW REGEX   compare functions present in both; report MATCH / DIFF
+//	gocmp ref BIN REGEX        function bytes and per-instruction lines, for object-level scoring
+//	flags: -v show side-by-side diff for mismatches
 package main
 
 import (
+	"bufio"
 	"debug/elf"
 	"debug/gosym"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"sort"
@@ -170,6 +175,45 @@ func (b *Bin) arg(a x86asm.Arg, next uint64, fn *gosym.Func) string {
 	}
 }
 
+// masked is one instruction with every register replaced by its class and no branch or call
+// target: two instructions with the same masked form differ only in register choice.
+func masked(code []byte) string {
+	inst, err := x86asm.Decode(code, 64)
+	if err != nil {
+		return "??"
+	}
+	reg := func(r x86asm.Reg) string {
+		switch {
+		case r == 0:
+			return ""
+		case r == x86asm.RSP || r == x86asm.ESP || r == x86asm.RIP:
+			return r.String()
+		case r >= x86asm.X0 && r <= x86asm.X15:
+			return "x"
+		case r >= x86asm.ES && r <= x86asm.GS:
+			return r.String()
+		}
+		return "r"
+	}
+	out := []string{inst.Op.String(), fmt.Sprint(inst.DataSize)}
+	for _, a := range inst.Args {
+		if a == nil {
+			break
+		}
+		switch a := a.(type) {
+		case x86asm.Reg:
+			out = append(out, reg(a))
+		case x86asm.Mem:
+			out = append(out, fmt.Sprintf("[%s%s+%s*%d+%#x]", reg(a.Segment), reg(a.Base), reg(a.Index), a.Scale, a.Disp))
+		case x86asm.Imm:
+			out = append(out, fmt.Sprintf("$%#x", int64(a)))
+		default:
+			out = append(out, "rel")
+		}
+	}
+	return strings.Join(out, ",")
+}
+
 func main() {
 	verbose := flag.Bool("v", false, "show diffs")
 	firstWindow := flag.Int("first", 0, "with -v, show only N lines of context around the first mismatching line (0 = all)")
@@ -187,6 +231,40 @@ func main() {
 			fmt.Printf("\n== %s  (%d bytes)\n", fn.Name, fn.End-fn.Entry)
 			for _, l := range b.dis(&fn) {
 				fmt.Printf("  %-18s %s\n", l.Src, l.Asm)
+			}
+		}
+	case "mask":
+		// gocmp mask: hex instructions on stdin, one per line; prints each with its registers masked
+		sc := bufio.NewScanner(os.Stdin)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		for sc.Scan() {
+			code, err := hex.DecodeString(strings.TrimSpace(sc.Text()))
+			if err != nil || len(code) == 0 {
+				fmt.Println("??")
+				continue
+			}
+			fmt.Println(masked(code))
+		}
+	case "ref":
+		// gocmp ref BIN REGEX: per function `FUNC name size hex`, then `I offset length line` per
+		// instruction, for scoring a compiled object (go tool objdump of a package archive)
+		// against the image without linking.
+		b := load(a[1])
+		re := regexp.MustCompile(a[2])
+		for _, fn := range b.tab.Funcs {
+			if !re.MatchString(fn.Name) {
+				continue
+			}
+			code := b.text[fn.Entry-b.taddr : fn.End-b.taddr]
+			fmt.Printf("FUNC %s %d %x\n", fn.Name, len(code), code)
+			for off := 0; off < len(code); {
+				n := 1
+				if inst, err := x86asm.Decode(code[off:], 64); err == nil {
+					n = inst.Len
+				}
+				_, line, _ := b.tab.PCToLine(fn.Entry + uint64(off))
+				fmt.Printf("I %d %d %d %s\n", off, n, line, masked(code[off:off+n]))
+				off += n
 			}
 		}
 	case "str":

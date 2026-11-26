@@ -57,6 +57,24 @@ $PY $T/gopermute.py UNIT FILE.go FULL_FUNC_NAME      # structural idioms, one at
 $PY $T/gorandperm.py UNIT FILE.go FUNC_REGEX --guard 'OTHER_FUNCS_IN_FILE' --minutes 30 \
     [--pkg MAIN_PKG] [--workers N]                   # parallel random parity knobs -> BUILD/gorandperm/*/best.go
 
+# Fast scoring and searching (one package compile per candidate, scored from the object file)
+$PY $T/gorandperm.py UNIT FILE.go FUNC_REGEX --fast --sweep --minutes 30 --out DIR
+                                                     # every single edit and pair first, then random; give each run its own --out
+$PY $T/gonative.py build NAME golang:1.8             # on an arm64 host: the same Go version built for the host
+export EXHUME_GO_NATIVE=NAME:/opt/go1.8              # ... and used by --fast, gotrace, goordergoal (checked byte-identical)
+
+# Which value IDs did each load pair get, and who freed them (compiler.md 2f)
+$PY $T/gotrace.py trace UNIT FILE.go SSA_NAME FUNC_REGEX --rows 80
+$PY $T/gotrace.py trace UNIT FILE.go SSA_NAME FUNC_REGEX --second C[:GOROOT]   # under a second Go version
+
+# A second release built with another Go version (compiler.md 2g, 2h)
+$PY $T/goinltree.py LATER_BIN 'FUNC_REGEX'           # Go >= 1.9: which calls were inlined, and where
+$PY $T/godual.py score UNIT FILE.go FUNC_REGEX --second C[:GOROOT] --target2 OTHER_BIN
+$PY $T/godual.py enum  UNIT FILE.go FUNC_REGEX SPEC.json --second C[:GOROOT] --target2 OTHER_BIN --depth 3
+
+# The words of one call's results in the wrong order (compiler.md 2i)
+$PY $T/goordergoal.py UNIT FILE.go SSA_NAME FUNC_REGEX --line L --kinds slice,iface --want 2,1,3,4,0
+
 # Verify whole project / accept a matched unit
 $PY $EX/tools/merge.py UNIT
 $PY $EX/tools/gate.py check
@@ -100,6 +118,17 @@ $PY $EX/tools/gate.py check
      If all of a function's swaps go the same way, one dead value near the function's **end** may
      flip them all (§2b, "which knob reaches which site"). Two inlined constructors whose
      `newobject` results sit in swapped slots are a sort tie, not a naming problem (§2c).
+   - **A knob search has stalled:** trace the function (`gotrace.py`, §2f) before running it
+     longer. If the original's last pairs are all `(ptr,len)`, its free list ran out and yours is
+     too long. If no position of the list gives the wanted order, no shift will, and the list's
+     content has to change.
+   - **Another release was built with another Go version:** score candidates against both
+     (`godual.py`, §2g). A knob moves one compiler only. Ordinary rewrites move both (§2h): a
+     struct built in a named local instead of a literal argument, the grouping of an `&&` chain,
+     a constant written first, `var x T` then `=`. Try those before knobs, and look at how
+     neighbouring functions in the same file are written.
+   - **Everything matches and one instruction has the wrong line:** a `+0` knob created the zero
+     constant too early (§2i). Pad with a unary minus instead.
 6. **Parallel multi-worker builds (when scaling across a large binary):**
    - Partition files strictly disjointly across workers.
    - Each worker must build to its own private `-o /work/build/cand_GROUP.bin` **without `-i`**
@@ -111,7 +140,10 @@ $PY $EX/tools/gate.py check
      locales reports hundreds of false regressions.
    - Snapshot `src/` before each wave and check `comm -23 match_baseline.txt match_now.txt` after
      each wave to guarantee zero regressions.
-7. **Verify raw bytes.** A function is only complete when **both**:
+7. **Do not believe a search result until you have seen it in the disassembly.** A scorer that
+   reads positions in a list or shares a work directory with another run can report a match that is
+   not there (§2i). Rebuild the whole program and read the instructions.
+8. **Verify raw bytes.** A function is only complete when **both**:
    - `gocmp cmp` reports `MATCH` (normalized disassembly + `.gopclntab` line table), AND
    - `gocmp raw` reports `0 differ elsewhere` (0 unmasked machine-code byte differences).
 

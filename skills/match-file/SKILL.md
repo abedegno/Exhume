@@ -178,6 +178,17 @@ The brief to give an agent is `profiles/golang-180/match-brief.md`, and the evid
   and adjust local names to match the binary's slot order.
 - For stubborn functions, run `profiles/golang-180/tools/gobatch.py` with a Python `VARIANTS` file
   or a JSON choice-point spec (`--climb`).
+- When a function has the right size and only the order of a few `(ptr,len)` loads is wrong, the
+  compiler's value numbering decides it (`compiler.md` 2b, 2f). `gorandperm.py --fast --sweep`
+  searches edits that emit no code, and `gotrace.py` shows which freed value each load got. Trace
+  before you run a search for longer.
+- If the vendor shipped a neighbouring release built with another Go version, the real source
+  matches both. `godual.py` scores a candidate against both, and `compiler.md` 2h lists the
+  ordinary rewrites to try first, e.g., a struct built in a named local instead of a literal
+  passed as an argument. In the reference project the last function matched both releases with
+  such a rewrite and no dead code, after every search on one compiler had failed.
+- Confirm a search's result from the disassembly and a whole build. Two searches in the
+  reference project reported matches that were not there (`compiler.md` 2i).
 
 ## Why verify matters here
 
