@@ -178,8 +178,163 @@ code a programmer would have written, and only then search.
 - Order of attack for a right-sized function that still differs: (1) undo knobs, write natural
   source; (2) structural idioms one at a time (`gopermute.py`, §5–7); (3) the parity mechanics
   above, by hand, for one or two sites; (4) `gorandperm.py`, the random parallel knob search,
-  with `--guard` on the file's other functions; (5) when the search stalls on a plateau, dump
-  `ssa.html` for the function and read which IDs each site popped.
+  with `--guard` on the file's other functions (`--fast --sweep` scores from the object file and
+  tries every single edit and pair first); (5) when the search stalls on a plateau, trace the
+  function with `gotrace.py` and read which IDs each site popped (2f); (6) if another release was
+  built with another Go version, score the ordinary forms of 2h against both (2g); (7) for the
+  words of one call in the wrong order, `goordergoal.py` (2i).
+
+## 2f. The free list as `dec` reads it
+
+`tools/gotrace.py` builds the image's own compiler with logging added and prints, for one function,
+every value ID the `dec` pass takes and which pass, block and line freed it. Read from those
+traces, the list `dec` pops (top first) has three parts:
+
+- **D**, the values `opt deadcode` freed, in reverse. Later blocks come first. Inside the entry
+  block the values `opt` created come first, newest first (a dead `SB` for every constant string,
+  a dead `Const64` for every string length that repeats an earlier one), and then the dead values
+  built before `opt` ran, e.g., the zero value of a struct temporary.
+- **O**, the unused copies that `opt` reset to `OpInvalid`, e.g., the `StructSelect`s left by
+  building a struct field by field.
+- **E**, what is left of the values `early deadcode` freed after `short circuit`, `decompose user`
+  and `opt` took theirs. Each of those allocations pops E in turn, so the n-th allocation gets
+  E's n-th entry. E's top is the last blocks of the function. E's bottom is the entry block.
+
+Before `dec` runs, `decompose builtin` pops two IDs for every named string or interface value and
+three for every named slice (a variable assigned twice counts twice). Then `dec` takes a fixed
+number per statement, e.g., seven for `x, _ := f(g("k"), ...)` with string argument and result
+(`OffPtr Store`, `Load Load OffPtr`, `OffPtr Store`). The pair of a line is ascending or descending
+according to the two list entries it lands on. When the list runs out, IDs are fresh and
+ascending, so every later pair is `(ptr,len)`.
+
+What follows from the model, measured on an HTTP handler `main.finishJob` (2,112 B, twelve
+`r.FormValue` lines) and a template function `(*Builder).template` (2,592 B):
+
+- **The first lines of a function depend on its last lines.** The first pairs land in D on dead
+  `SB` and `Const64` values. Those values took their IDs from E's top, which holds the copies of
+  the live variables in the blocks of the function's last `&&` and `||` expressions (one block
+  pair per operand). Regrouping such a chain, or adding an operand, moves pairs sixty lines
+  earlier.
+- **A run of `(ptr,len)` pairs at the end of a straight-line block usually means the list ran
+  out.** In `finishJob` the original's last four pairs were all ascending. The fitted source had
+  74 list entries where about 55 were needed, and the empty inlined call that had been fitted
+  earlier added five of the extra entries.
+- **One pair can be pinned by a boundary.** A pair that straddles the end of D and the start of
+  O, or the end of O and the start of E, is ascending whatever the IDs are, because O and the
+  bottom of D hold old, low IDs. If the original has such a pair one position away from where the
+  boundary falls, the count of entries above the boundary is off by one or two.
+- **Check whether any alignment can work before searching.** For the five result words of
+  `b, err := ioutil.ReadFile(...)` slide the five positions over the whole list. In `template` no
+  position anywhere gave the original's order, on the fitted source or on the clean one. The dead
+  `OffPtr`s of promoted field reads come in adjacent pairs in descending line order, and such
+  pairs can never give an ascending pair that lies between two others. So 100,000 candidates
+  from a search whose edits only slide the list found nothing. `goordergoal.py` searches for
+  different list content instead (see 2i).
+
+Go 1.7.5 has the same passes and the same list, with one difference that changes everything
+downstream. A call ends its block, so the same function has several times as many blocks and
+copies (199 early dead values against 88), the list never runs out, and the entry block is short.
+
+## 2g. A second release built with another Go version
+
+Vendors rebuild. Of the releases of one program, some were built with Go 1.8, the next patch
+releases with Go 1.7.5 and later ones with Go 1.9.2 (the version string is in each binary). When
+a function has the same size and line range in two releases built by one compiler, its source
+did not change. When two such releases come from two compilers, the real source has to reproduce
+both, and you can test a candidate against both with `tools/godual.py`.
+
+- **A knob fitted to one compiler does nothing for the other.** In `finishJob` two empty inlined
+  calls and a no-op conversion took Go 1.8 from 24 differing bytes to 8. Under Go 1.7.5 the
+  function was 24 bytes off with or without them.
+- **Both compilers respond to how the source is written.** Grouping an `&&` chain, putting a
+  constant first in a comparison and naming a temporary each changed which lines were wrong under
+  both. A form that is closer under both is evidence about the source. A form that is closer
+  under one only is a fit.
+- **The two wanted pair patterns are twice the constraints.** The same twelve lines wanted
+  `<><<><>><<<<` under Go 1.8 and `<<<><<>>>>>>` under Go 1.7.5 (`gotrace.py trace --second`).
+- **Ask which entries the second compiler has too many of.** `gotrace.deletions` removes entries
+  from the list and reports the smallest sets that give the wanted pattern. For `finishJob`
+  under Go 1.7.5 every answer was one entry from the group of a struct temporary's zero value
+  plus one from a call result, both built before `opt` ran. A deletion of such a value is a
+  change source can make by itself. A deletion of a recycled ID would renumber others. The
+  answer pointed at how the struct was built, and the source was found there (2h).
+- **Go 1.9 and later keep the inlining tree** (`tools/goinltree.py`), stripped or not. A later
+  release showed one inlined call in `finishJob` (`time.Time.Unix`) and none in `template`. So the
+  empty inlined calls fitted in both stood for ordinary statements, and no helper was missing.
+- **Pick the release with the same source.** The template function had the same line range in
+  the first three Go 1.7.5 releases and one more line in later ones. Compare against the former.
+
+Set-up is one container per toolchain with the project on the same mount. `godual.py score` prints
+both results for a file. `godual.py enum SPEC.json` scores a list of named rewrites one, two and
+three at a time. With host-native compilers (`tools/gonative.py`) one score took 1.4 seconds.
+
+## 2h. Source that compiles to the same code and numbers values differently
+
+These are ordinary ways to write the same thing. Each emits identical instructions and leaves
+different dead values, so each is a candidate for the real source, and each was seen to move
+pairs under both compilers. Try them before any knob.
+
+- **A struct argument built in a named local.** `db.add(user, id, Entry{Time: t, Level: lvl,
+  Text: "done"})` and
+  ```go
+  var entry Entry
+  entry.Time = t
+  entry.Level = lvl
+  entry.Text = "done"
+  err := db.add(user, id, entry)
+  ```
+  store the same words. For the literal, `gc/sinit.go:anylit` zeroes a temporary and assigns the
+  fields. Both forms zero and assign, and they differ in which values hold the intermediate
+  structs and when those die. `finishJob` matched both releases with the named local and with no
+  knob at all, after every knob search on the literal form had failed. The function above it in
+  the same file used the named local, which was the hint.
+- **The grouping of `&&` and `||`.** `a && b && c && d` is `((a && b) && c) && d`. Each of the
+  five groupings of four operands creates the join blocks in another order. A join created
+  before the blocks of its right operand has a lower block number and newer values, which puts
+  an ascending step into E.
+- **Which operand comes first when one is a new constant.** `x.Kind == 4001` loads and then
+  makes the constant. `4001 == x.Kind` makes the constant first. `x > 0` against `0 < x` changes
+  nothing, because the zero constant already exists and is shared.
+- **Declaration style.** `var id string` at the top and `id = r.FormValue("ID")` later, against
+  `id := ...`. Each named string or interface value costs `decompose builtin` two pops.
+- **A named value for a temporary.** `v := r.FormValue("k"); n, _ := strconv.ParseInt(v, 10, 64)`,
+  `now := time.Now(); t := now.Unix()`, `if e := err; e != nil`.
+- **`else` after a branch that returns**, and `switch { case a, b: }` for `if a || b`. The join
+  block of an `if` is created before its bodies.
+
+`tools/gorandperm.py` has the grouping (`m_assoc`), a folded-away operand (`m_trueop`) and the
+`else` form (`else_wrap`) as edits. The others are quick to write as a `godual.py enum` spec.
+
+## 2i. What a knob does besides its purpose, and three false results
+
+- **`x+0`, `x|0` and `x-0` create the function's zero constant where they stand.** The constant is
+  cached, and an instruction that later materialises a zero (`XORL`) carries the line of the
+  first use. `template` had every byte right and one line number wrong, 10 for 23, because of
+  three `+0` in a dead expression on line 10. A unary minus pads with one dead value and no
+  constant. `(-len(s))` in place of `(len(s)+0)` gave the match.
+- **`_ = x` is a read.** If `x` was defined in another block it leaves one dead copy in the
+  current block. So the same knob does different things in different blocks.
+- **A variable that is live across a join gets a copy there.** A folded zero made early and used
+  late (`z := len(s) - len(s)` ... `n+z`) adds copies at every join in between and its values are
+  not freed before `dec`. Use it in the block that makes it.
+- **An empty inlined call (`func nop() {}`) starts a new block.** After a `return` it also makes
+  a dead block, so the next join gets a phi for every live variable. It fits many things and
+  stands for none of them (2g).
+- **Not folded in Go 1.8:** `int64(v)` of an `int16` variable that holds zero. It emits code.
+
+Three results in this work were wrong, and each cost hours:
+
+1. A search located the five words of a call's results at a fixed position in the list. An edit
+   that made `dec` split another value first moved the words, and the search reported a perfect
+   order for a function that was no better. Locate values by their own allocation pattern
+   (`gotrace.load_group`) and confirm an order from the disassembly after the call.
+2. Two runs used one work directory name inside the container. Each compiled the other's files
+   and both reported scores for the wrong text. A work directory has to carry the run's name
+   (`gorandperm.py` and `goordergoal.py` use the output directory's), and an improvement should be
+   measured twice before it is kept.
+3. A source form was dropped after one test that did not compile because the edit was on the
+   wrong lines. The form was the answer (2h, first item). A candidate that fails to build has
+   not been tested.
 
 ## 3. Dependency stubs: escape analysis, inlining, and `init()`
 
