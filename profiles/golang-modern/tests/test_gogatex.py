@@ -386,8 +386,8 @@ def fake_compare(table):
     return compare_many
 
 
-class Stubbed(unittest.TestCase):
-    """The waits column and its uses, with stub binaries and a stub comparator."""
+class StubBase(unittest.TestCase):
+    """Stub binaries and a stub comparator."""
 
     def setUp(self):
         self.work = tempfile.mkdtemp(prefix='gogatex-stub-')
@@ -425,6 +425,10 @@ class Stubbed(unittest.TestCase):
 
     def rows(self):
         return {r[0]: r for r in read_rows(self.status)}
+
+
+class Stubbed(StubBase):
+    """The waits column, with stubs."""
 
     def test_separator_survives_spaces_commas_and_semicolons(self):
         odd = 'shop/T[go.shape.struct { X int; Y string },go.shape.int].M'
@@ -477,6 +481,101 @@ class Stubbed(unittest.TestCase):
         self.assertEqual(lines[-1], 'matched 3 of 3; fitted 0; 1 of the matched call unmatched code')
         code, lines = self.run_main(['shop/a', 'shop/b', 'shop/c'], table)
         self.assertEqual(lines[-1], 'matched 3 of 3; fitted 0; 0 of the matched call unmatched code')
+
+
+class AcceptFrom(StubBase):
+    """--accept-regressions-from NAME: a regression whose old waits named NAME, now MATCH."""
+
+    def old(self, *extra):
+        self.write(('shop/a', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/b'),
+                   ('shop/b', 'shop/a.go', 'SIZE', '0', '2025-01-01', ''), *extra)
+        with open(self.status, 'rb') as f:
+            return f.read()
+
+    def unchanged(self, before):
+        with open(self.status, 'rb') as f:
+            self.assertEqual(f.read(), before)
+
+    def test_accepted_when_the_callee_matches_and_was_waited_on(self):
+        self.old()
+        code, lines = self.run_main(['shop/a', 'shop/b'], {
+            'shop/a': ('SIZE', ['shop/b']), 'shop/b': ('MATCH', [])},
+            extra=['--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 0, lines)
+        self.assertIn('ACCEPTED\tshop/a\tcaused by shop/b\tSIZE', lines)
+        self.assertFalse(any(l.startswith('REGRESSED') for l in lines), lines)
+        rows = self.rows()
+        self.assertEqual(rows['shop/a'][2:5], ['SIZE', '0', '2026-01-01'])
+        self.assertEqual(rows['shop/b'][2], 'MATCH')
+        self.assertTrue(lines[-1].startswith('matched 1 of 2;'), lines)
+
+    def test_refused_when_the_callee_is_not_match(self):
+        before = self.old()
+        code, lines = self.run_main(['shop/a', 'shop/b'], {
+            'shop/a': ('SIZE', ['shop/b']), 'shop/b': ('DIFF', [])},
+            extra=['--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 1)
+        self.assertIn('REGRESSED\tshop/a', lines)
+        self.assertFalse(any(l.startswith('ACCEPTED') for l in lines), lines)
+        self.unchanged(before)
+
+    def test_refused_for_a_function_that_did_not_wait_on_it(self):
+        before = self.old(('shop/c', 'shop/a.go', 'MATCH', '0', '2025-01-01', ''),
+                          ('shop/d', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/x'))
+        table = {'shop/a': ('SIZE', ['shop/b']), 'shop/b': ('MATCH', []),
+                 'shop/c': ('DIFF', ['shop/b']), 'shop/d': ('DIFF', ['shop/b'])}
+        names = ['shop/a', 'shop/b', 'shop/c', 'shop/d']
+        code, lines = self.run_main(names, table, extra=['--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 1)
+        self.assertIn('ACCEPTED\tshop/a\tcaused by shop/b\tSIZE', lines)
+        self.assertIn('REGRESSED\tshop/c', lines)     # empty old waits
+        self.assertIn('REGRESSED\tshop/d', lines)     # waited on another function
+        self.assertNotIn('REGRESSED\tshop/a', lines)
+        self.assertTrue(lines[-1].endswith('(status file unchanged, not written)'), lines)
+        self.unchanged(before)                        # written only when nothing is refused
+        code, lines = self.run_main(names, table, extra=['--accept-regressions-from', 'shop/b',
+                                                         '--accept-regressions-from', 'shop/x'])
+        self.assertEqual(code, 1)                     # shop/x is not MATCH: not in this run at all
+        self.assertIn('REGRESSED\tshop/d', lines)
+
+    def test_repeatable_and_names_with_spaces(self):
+        odd = 'shop/T[go.shape.struct { X int; Y string }].M'
+        self.write(('shop/a', 'shop/a.go', 'MATCH', '0', '2025-01-01', gogatex.join_waits([odd])),
+                   ('shop/c', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/b'),
+                   ('shop/b', 'shop/a.go', 'SIZE', '0', '2025-01-01', ''),
+                   (odd, 'shop/a.go', 'SIZE', '0', '2025-01-01', ''))
+        code, lines = self.run_main(['shop/a', 'shop/c', 'shop/b', odd], {
+            'shop/a': ('DIFF', [odd]), 'shop/c': ('MISSING', ['shop/b']),
+            'shop/b': ('MATCH', []), odd: ('MATCH', [])},
+            extra=['--accept-regressions-from', odd, '--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 0, lines)
+        self.assertIn('ACCEPTED\tshop/a\tcaused by %s\tDIFF' % odd, lines)
+        self.assertIn('ACCEPTED\tshop/c\tcaused by shop/b\tMISSING', lines)
+
+    def test_only_takes_an_unscored_callee_from_the_file(self):
+        self.write(('shop/a', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/b'),
+                   ('shop/b', 'shop/a.go', 'MATCH', '0', '2025-01-01', ''))
+        table = {'shop/a': ('SIZE', ['shop/b']), 'shop/b': ('SIZE', [])}
+        code, lines = self.run_main(['shop/a', 'shop/b'], table,
+                                    extra=['--only', '^shop/a$', '--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 0, lines)
+        self.assertIn('ACCEPTED\tshop/a\tcaused by shop/b\tSIZE', lines)
+        before = self.old()                           # b SIZE in the file: refused
+        code, lines = self.run_main(['shop/a', 'shop/b'], {'shop/a': ('SIZE', ['shop/b']),
+                                                           'shop/b': ('MATCH', [])},
+                                    extra=['--only', '^shop/a$', '--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 1)
+        self.assertIn('REGRESSED\tshop/a', lines)
+        self.unchanged(before)
+
+    def test_a_row_gone_from_the_result_is_refused(self):
+        before = self.old(('shop/gone', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/b'))
+        code, lines = self.run_main(['shop/a', 'shop/b'], {
+            'shop/a': ('MATCH', ['shop/b']), 'shop/b': ('MATCH', [])},
+            extra=['--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 1)
+        self.assertIn('REGRESSED\tshop/gone', lines)
+        self.unchanged(before)
 
 
 class Errors(Base):

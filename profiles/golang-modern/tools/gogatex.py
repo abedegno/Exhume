@@ -5,6 +5,7 @@ keep a status file.
     gogatex.py REF CAND STATUS_TSV --prefix PREFIX [--exclude SUBSTR]...
                      [--name-prefix P]... [--src DIR] [--today DATE]
                      [--only REGEX] [--accept-regressions]
+                     [--accept-regressions-from NAME]...
 
 A function of REF is first-party when the file of its declaration starts with PREFIX and holds no
 --exclude substring. A function is also selected when its name starts with a --name-prefix: a
@@ -57,6 +58,15 @@ reported again on the next run; the totals are then those of the unchanged file 
 with `(status file unchanged, not written)`. With --accept-regressions the file is written and
 the exit status is 0. A selection that yields no function at all (usually a wrong --prefix) is a
 tool error.
+
+With --accept-regressions-from NAME (repeatable), a regressed row is accepted when the `waits` of
+its row in the old file holds NAME and NAME is MATCH in this run (scored now, or, under --only and
+not scored, as the file has it). It is printed as `ACCEPTED<TAB>name<TAB>caused by NAME<TAB>new
+status` and written with its new status. This is for a caller whose callee has just got its real
+body: the callee's inlining or escape analysis can change the caller. A regressed row whose old
+`waits` is empty or names none of the NAMEs, a row gone from the result, and every row when no
+NAME is MATCH, is still REGRESSED; then the exit status is 1 and nothing is written. When every
+regression is accepted, the file is written and the exit status is 0.
 
 Tool errors exit with 2 and leave the status file as it was: a status file that does not parse
 (a missing or wrong header, a row whose field count differs from the header's, text that is not UTF-8), a name with a tab
@@ -222,15 +232,17 @@ def global_conflicts(results):
 
 
 Outcome = collections.namedtuple('Outcome', 'regressed dups matched total fitted scored written '
-                                 'operands scored_rows waiting globals',
-                                 defaults=(None, (), 0, ()))
+                                 'operands scored_rows waiting globals accepted',
+                                 defaults=(None, (), 0, (), ()))
 
 
 def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, today=None,
-         only=None, accept_regressions=False):
+         only=None, accept_regressions=False, accept_from=()):
     """Compare and return an Outcome. The status file is written unless a scored function
     regressed and accept_regressions is false. only is a regex: when given, only the selected
-    functions whose names match it are scored and the other rows of the file are kept."""
+    functions whose names match it are scored and the other rows of the file are kept.
+    accept_from holds function names: a regression whose old waits holds one of them that is
+    MATCH in the new rows is accepted (Outcome.accepted) instead of regressed."""
     today = today or datetime.date.today().isoformat()
     old = read_status(status)
     try:
@@ -301,8 +313,20 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
                 rows.append(row)
         rows += [r for name, r in old.items() if name not in done and not pattern.search(name)]
     # a row that was MATCH and is not in the result, for any reason, is a regression too
-    kept = {r[0] for r in rows}
+    kept = {r[0]: r for r in rows}
     regressed += [name for name, r in old.items() if r[2] == 'MATCH' and name not in kept]
+    # a regression caused by a named callee: the row waited on it, and it is MATCH now (scored in
+    # this run, or as the file has it under --only); a row gone from the result is never accepted
+    accepted, refused = [], []
+    for name in regressed:
+        waited = split_waits(old[name][5])
+        cause = next((n for n in accept_from if n in waited and n in kept and
+                      kept[n][2] == 'MATCH'), None) if name in kept else None
+        if cause:
+            accepted.append((name, cause, kept[name][2]))
+        else:
+            refused.append(name)
+    regressed = refused
     written = not regressed or accept_regressions
     if written:
         write_status(status, rows)
@@ -313,7 +337,7 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
                    gocmpx.operand_totals(compared) if compared else None,
                    [(r[2], r[0]) for r in new.values()],
                    sum(r[2] == 'MATCH' and r[5] != '' for r in shown),
-                   global_conflicts(compared) if compared else None)
+                   global_conflicts(compared) if compared else None, accepted)
 
 
 def main(argv):
@@ -328,15 +352,19 @@ def main(argv):
     ap.add_argument('--today', default=None)
     ap.add_argument('--only', default=None, metavar='REGEX')
     ap.add_argument('--accept-regressions', action='store_true')
+    ap.add_argument('--accept-regressions-from', action='append', default=[], metavar='NAME')
     args = ap.parse_args(argv[1:])
     try:
         ref, cand = gobin.load(args.ref), gobin.load(args.cand)
         out = gate(ref, cand, args.status, args.prefix, args.exclude, args.name_prefix, args.src,
-                   args.today, args.only, args.accept_regressions)
+                   args.today, args.only, args.accept_regressions,
+                   args.accept_regressions_from)
     except Exception as e:
         print('gogatex: %s: %s' % (type(e).__name__, e) if not isinstance(e, ToolError)
               else 'gogatex: %s' % e, file=sys.stderr)
         return 2
+    for name, cause, st in out.accepted:
+        print('ACCEPTED\t%s\tcaused by %s\t%s' % (name, cause, st))
     for name in out.regressed:
         print('REGRESSED\t' + name)
     if out.regressed and not out.written:
