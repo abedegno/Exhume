@@ -159,8 +159,28 @@ class Skeleton(unittest.TestCase):
         self.assertEqual(src[self.ref_start_line('shop/shelf.NewShelf') - 1],
                          'func NewShelf(int, string) { panic("todo") } // skel:stub signature guessed')
         self.assertEqual(src[self.ref_start_line('shop/shelf.Report') - 1],
-                         'func Report(any) { panic("todo") } // skel:stub signature guessed')
+                         'func Report(any) (int, int) { panic("todo") } // skel:stub signature '
+                         'guessed')
         self.assertIn('shop/shelf.Report\tshelf/shelf.go:', self.read(self.out, 'UNKNOWN.txt'))
+
+    def test_results_recovered_from_call_sites(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        src = self.read(self.out, 'cart/shapes.go').split('\n')
+        line = lambda name: src[self.ref_start_line('shop/cart.' + name) - 1]
+        self.assertEqual(line('Parse'), 'func Parse(string) (int, int, int) { panic("todo") } '
+                         '// skel:stub signature guessed')
+        self.assertEqual(line('Square'), 'func Square(int) int { panic("todo") } '
+                         '// skel:stub signature guessed')
+        self.assertEqual(line('Tick'), 'func Tick() { panic("todo") } '
+                         '// skel:stub signature guessed')
+        self.assertEqual(line('Triple'), 'func Triple(int) { panic("todo") } '
+                         '// skel:stub signature guessed')
+        unknown = self.read(self.out, 'UNKNOWN.txt')
+        self.assertRegex(unknown, r'shop/cart\.Parse\tcart/shapes\.go:\d+\tsignature guessed: '
+                         r'parameters from the argument layout, results from 1 call sites\n')
+        self.assertRegex(unknown, r'shop/cart\.Triple\tcart/shapes\.go:\d+\tsignature guessed: '
+                         r'parameters from the argument layout, results unknown\n')
+        self.assertEqual(self.go_build(self.out).returncode, 0)
 
     def test_compiler_generated_functions_are_not_emitted(self):
         goskel.write(self.ref, self.out, prefix='shop/')

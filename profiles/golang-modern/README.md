@@ -51,9 +51,19 @@ The last line reads `matched N of M; fitted F`. When a function that matched bef
 gotypes.py BINARY PKG_REGEX
 ```
 
+### gosig.py
+
+`gosig.py` recovers how many result registers a function has, for functions whose signature is not in the type information. It reads the whole binary and works out, for every function, the registers that must hold a result (read after a direct call before they are written, written before a `ret` and not read again, or passed on by a caller whose results are known) and the registers that may hold one (not garbage at any `ret`). The methods with known types seed both. A function gets an answer only when the two sets agree, it has at least one direct call site, no result is on the stack, and its results are not a mix of integer and floating-point registers. The answer is one class per register, `int` or `float`; how registers group into strings, slices, interfaces or structs stays unknown, so a function that returns a string shows as two `int`.
+
+```
+gosig.py BINARY REGEX
+```
+
+Each line gives the name, the classes (`-` for no results, `?` for no answer) and the number of direct call sites. It needs `objdump` (LLVM or GNU), as `gocmpx.py` does.
+
 ### goskel.py
 
-`goskel.py` writes a skeleton source tree that builds. Every function becomes a one-line stub on the line where it starts in the binary, and the named types of each package go into its `types_recovered.go`. Signatures come from method tables where the linker kept them, and are otherwise guessed from the argument layout. The file `UNKNOWN.txt` lists every guess.
+`goskel.py` writes a skeleton source tree that builds. Every function becomes a one-line stub on the line where it starts in the binary, and the named types of each package go into its `types_recovered.go`. Signatures come from method tables where the linker kept them, and are otherwise guessed: the parameters from the argument layout, the results with `gosig.py`. The file `UNKNOWN.txt` lists every guess.
 
 ```
 goskel.py BINARY OUT_DIR --prefix shop/ [--modcache DIR] [--keep TAG] [--adopt-unmarked-stubs]

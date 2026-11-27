@@ -14,7 +14,10 @@ other package of the tree, so that building the main package builds them all.
 Signatures: a method's comes from its type's method table when the linker kept it. Otherwise
 the parameters are guessed from the runtime's argument layout and pointer maps (so a pointer
 and a length is written as a string, a type word and a pointer as any, a pointer, length and
-capacity as []byte) and the results are not known: such stubs end in `signature guessed`.
+capacity as []byte), and the results are those gosig.py recovers from the call sites and
+return paths, one placeholder of a register's size per result register (int, or float64 for a
+floating-point register), or none when it gives no answer: such stubs end in `signature
+guessed`, and UNKNOWN.txt says `results from N call sites` or `results unknown`.
 With no layout either, the stub has no parameters and ends in `signature unknown`. OUT_DIR/UNKNOWN.txt lists every guessed and
 unknown signature, every declaration skipped and why, and every type written as a placeholder.
 
@@ -60,6 +63,7 @@ import struct
 import sys
 
 import gobin
+import gosig
 import gotypes
 
 STUB_MARK, IMPORT_MARK, TYPE_MARK = '// skel:stub', '// skel:import', '// skel:type'
@@ -221,6 +225,7 @@ def arg_pointers(b, f):
 
 
 SCALAR = {1: 'byte', 2: 'int16', 4: 'int32', 8: 'int'}
+RESULT_PLACEHOLDER = {'int': SCALAR[8], 'float': 'float64'}     # one register each
 
 
 def guess(item, ptrs):
@@ -543,10 +548,11 @@ class Importer:
 # The skeleton
 
 class Stub:
-    __slots__ = ('func', 'decl', 'line', 'text')
+    __slots__ = ('func', 'decl', 'line', 'text', 'sites')
 
     def __init__(self, func, decl):
         self.func, self.decl, self.line, self.text = func, decl, func.start_line, ''
+        self.sites = None           # call sites the results were recovered from, if they were
 
 
 class Package:
@@ -567,6 +573,7 @@ class Skeleton:
         self.out, self.prefix = out, prefix
         self.unknown = []           # (name, where, reason)
         self.counts = {}
+        self._sig = None            # gosig's analysis of the binary, made when first needed
         self.pkgs = {}
         self._collect()
         self._add_type_only_packages()
@@ -577,9 +584,25 @@ class Skeleton:
         self.importer = Importer(out, [p.path for p in self.pkgs.values() if p.path != 'main'],
                                  modcache)
 
-    def note(self, name, where, reason):
+    def note(self, name, where, reason, counted_as=None):
+        """List a row in UNKNOWN.txt, counted under counted_as (default: the reason)."""
         self.unknown.append((name, where, reason))
-        self.counts[reason] = self.counts.get(reason, 0) + 1
+        key = counted_as or reason
+        self.counts[key] = self.counts.get(key, 0) + 1
+
+    def _results(self, stub):
+        """(result classes, call sites) recovered by gosig.py for a stub, or None."""
+        if self._sig is None:
+            try:
+                self._sig = gosig.analysis(self.b, types=self.types)
+            except (OSError, RuntimeError) as e:
+                print('goskel.py: results not recovered: %s' % e, file=sys.stderr)
+                self._sig = False
+        if not self._sig:
+            return None
+        fi = self._sig.by_name.get(stub.func.name)
+        r = self._sig.results(fi) if fi is not None else None
+        return None if r is None else (r, self._sig.fs[fi].sites)
 
     def _collect(self):
         funcs = [f for f in self.b.funcs()
@@ -737,6 +760,7 @@ class Skeleton:
     def _signature(self, stub, chosen, r):
         """(text after the name, note) of a stub."""
         d, f = stub.decl, stub.func
+        stub.sites = None
         if d.kind == 'init' or (d.kind == 'func' and d.name == 'main' and r.pkg == 'main'):
             return '()', ''
         if d.tparams:
@@ -748,14 +772,27 @@ class Skeleton:
             if m is not None and m.type is not None:
                 return r.signature(m.type), ''
         layout = arg_layout(self.b, f)
-        if layout is None:
-            return '()', 'unknown'
+        if layout is None or d.kind == 'method' and not layout:
+            return '()' + self._result_text(stub), 'unknown'
         if d.kind == 'method':
-            if not layout:
-                return '()', 'unknown'
             layout = layout[1:]
         ptrs = arg_pointers(self.b, f)
-        return '(' + ', '.join(guess(x, ptrs) for x in layout) + ')', 'guessed'
+        return '(' + ', '.join(guess(x, ptrs) for x in layout) + ')' + \
+            self._result_text(stub), 'guessed'
+
+    def _result_text(self, stub):
+        """' T' or ' (T, ...)' for the results gosig.py recovers, with a placeholder of a
+        register's size for each register (int, or float64 for a floating-point one); '' when
+        there are none or they are not known."""
+        found = self._results(stub)
+        if found is None:
+            stub.sites = None
+            return ''
+        classes, stub.sites = found
+        outs = [RESULT_PLACEHOLDER[c] for c in classes]
+        if not outs:
+            return ''
+        return ' ' + outs[0] if len(outs) == 1 else ' (' + ', '.join(outs) + ')'
 
     def _stub_text(self, stub, chosen, generic, r):
         """(stub line, note) of a stub: note is '', 'guessed' or 'unknown'."""
@@ -778,11 +815,16 @@ class Skeleton:
 
     def _note_stub(self, stub, note):
         where = '%s:%d' % (stub.func.file[len(self.prefix):], stub.line)
+        found = stub.sites is not None
+        results = 'results from %d call sites' % stub.sites if found else 'results unknown'
         if note == 'unknown':
-            self.note(stub.func.name, where, 'signature unknown')
+            self.note(stub.func.name, where, 'signature unknown' + (
+                ': ' + results if found else ''), 'signature unknown' + (
+                ': results from call sites' if found else ''))
         elif note == 'guessed':
             self.note(stub.func.name, where, 'signature guessed: parameters from the argument '
-                      'layout, results unknown')
+                      'layout, ' + results, 'signature guessed: parameters from the argument '
+                      'layout, ' + ('results from call sites' if found else results))
         else:
             self.counts['signature recovered'] = self.counts.get('signature recovered', 0) + 1
 

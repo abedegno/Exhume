@@ -20,4 +20,7 @@ func main() {
 	fmt.Println(st.Label(), n, ok, sh.Items[0], cart.Total(sh.Items), sh.Bins)
 	fmt.Println(shelf.Count([]shelf.Pair[string, int]{{Key: "a", Val: 1}}, shelf.Bins{1, 2}))
 	fmt.Println(shelf.Labels{"a": "b"}, shelf.Report(sh))
+	cart.Tick()
+	v, err := cart.Parse("12")
+	fmt.Println(cart.Square(v), err, cart.Label(v), cart.Bounds(v), cart.Ops[0](v))
 }
