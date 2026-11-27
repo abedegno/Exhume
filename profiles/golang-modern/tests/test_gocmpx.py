@@ -63,6 +63,82 @@ def call_helper(which, as_value=False):
             'sink(%s)' % which if as_value else which + '()'))}))
 
 
+WORDS = '''package cart
+
+type Shape interface{ Area() int }
+
+type Box struct{ W, H int }
+
+type Disc struct{ R, Pad int }
+
+func (b Box) Area() int  { return b.W * b.H }
+func (d Disc) Area() int { return d.R * d.R * 3 }
+
+var boxV Box
+var discV Disc
+
+// Counter is a global that Bump reads and writes.
+var Counter int
+
+//go:noinline
+func Greet(n int) string {
+	if n > 2 {
+		return "%(greet)s"
+	}
+	return "hi"
+}
+
+//go:noinline
+func IsFruit(s string) bool { return s == "%(apple)s" || s == "a much longer word to compare" }
+
+//go:noinline
+func Wrap(n int) any { return %(wrap)s{n, n} }
+
+//go:noinline
+func Pick() Shape { return &%(pick)s }
+
+//go:noinline
+func Bump() int {
+	Counter++
+	return Counter
+}
+
+//go:noinline
+func Rev(s string, n int) int { return len(s) + n }
+
+// Backwards loads the length of the string before its address.
+//
+//go:noinline
+func Backwards(n int) int { return Rev("%(rev)s", Square(n)) }
+
+//go:noinline
+func Colours(i int) string {
+	x := []string{"red", "green", "blue"}
+	return x[i%%3]
+}
+
+func init() {
+	println(Greet(1), IsFruit("x"), Wrap(1), Pick(), Bump(), Backwards(2), Colours(1))
+}
+'''
+WORD_DEFAULTS = dict(greet='a long greeting for the shop', apple='apple', wrap='Box', pick='boxV',
+                     rev='reversed')
+
+
+def words(**changes):
+    """Add cart/words.go, functions with string literals, type descriptors, an itab and a global,
+    with some of them changed."""
+    values = dict(WORD_DEFAULTS, **changes)
+    return Edit(('words', tuple(sorted(values.items()))),
+                lambda files: files.update({'cart/words.go': WORDS % values}))
+
+
+def shift_data():
+    """A function with strings of its own, so the data of the others moves."""
+    return add_function('func Spare() { println("spare words that move the read-only data", '
+                        '"and more of them") }')
+
+
 class Stub:
     """Just enough of a gobin.Binary to hold one function, p.g."""
 
@@ -245,6 +321,77 @@ class Comparator(unittest.TestCase):
         rows = [l.split('\t') for l in r.stdout.splitlines()]
         self.assertIn(['MATCH', TOTAL, ''], rows)
         self.assertTrue(all(row[0] == 'MATCH' for row in rows))
+
+    # Strings, types and itabs
+
+    def words_pair(self, name, ref=None, cand=None, cand_extra=()):
+        a = self.build((words(**(ref or {})),))
+        b = self.build((words(**(cand or {})),) + tuple(cand_extra))
+        return self.between(a, b, 'shop/cart.' + name)
+
+    def test_string_of_the_same_length_differs(self):
+        r = self.words_pair('Greet', cand={'greet': 'a long greeting for the shoe'})
+        self.assertEqual(r.status, 'DIFF', r)
+        self.assertIn('"a long greeting for the shop"', r.detail)
+        self.assertIn('"a long greeting for the shoe"', r.detail)
+
+    def test_equal_strings_match_when_the_data_moves(self):
+        a = gobin.load(self.build((words(),)))
+        b = gobin.load(self.build((words(), shift_data())))
+        for name in ('Greet', 'IsFruit', 'Backwards', 'Colours'):
+            f, g = a.func('shop/cart.' + name), b.func('shop/cart.' + name)
+            self.assertNotEqual(a.code(f), b.code(g), name)      # the displacements moved
+            r = gocmpx.compare(a, b, 'shop/cart.' + name)
+            self.assertEqual(r.status, 'MATCH', r)
+            self.assertGreater(r.data.content, 0, (name, r.data))
+        self.assertEqual(gocmpx.compare(a, b, 'shop/cart.Colours').data.content, 3)
+
+    def test_type_in_an_interface_conversion_differs(self):
+        r = self.words_pair('Wrap', cand={'wrap': 'Disc'})
+        self.assertEqual(r.status, 'DIFF', r)
+        self.assertIn('shop/cart.Box', r.detail)
+        self.assertIn('shop/cart.Disc', r.detail)
+        r = self.words_pair('Wrap', cand_extra=(shift_data(),))
+        self.assertEqual(r.status, 'MATCH', r)
+        self.assertGreater(r.data.type, 0, r.data)
+
+    def test_itab_with_another_concrete_type_differs(self):
+        r = self.words_pair('Pick', cand={'pick': 'discV'})
+        self.assertEqual(r.status, 'DIFF', r)
+        self.assertIn('itab', r.detail)
+        self.assertIn('shop/cart.Shape', r.detail)
+        self.assertIn('shop/cart.Box', r.detail)
+        self.assertIn('shop/cart.Disc', r.detail)
+        r = self.words_pair('Pick', cand_extra=(shift_data(),))
+        self.assertEqual(r.status, 'MATCH', r)
+        self.assertEqual((r.data.type, r.data.masked), (1, 1), r.data)   # the global is masked
+
+    def test_short_string_compared_inline_is_code(self):
+        self.assertEqual(self.words_pair('IsFruit', cand_extra=(shift_data(),)).status, 'MATCH')
+        r = self.words_pair('IsFruit', cand={'apple': 'apply'})
+        self.assertEqual(r.status, 'DIFF', r)
+
+    def test_length_loaded_before_the_address(self):
+        r = self.words_pair('Backwards', cand={'rev': 'reverse!'})
+        self.assertEqual(r.status, 'DIFF', r)
+        self.assertIn('"reversed"', r.detail)
+        self.assertIn('"reverse!"', r.detail)
+
+    def test_global_stays_masked_when_the_layout_moves(self):
+        r = self.words_pair('Bump', cand_extra=(shift_data(),))
+        self.assertEqual(r.status, 'MATCH', r)
+        self.assertEqual(r.data, gocmpx.Operands(0, 0, 0, 2))
+
+    def test_command_line_counts_operands(self):
+        ref = self.build((words(),))
+        r = subprocess.run([sys.executable, os.path.join(PROFILE, 'tools', 'gocmpx.py'),
+                            ref, ref, r'^shop/cart\.(Bump|Greet|Pick)$'],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(len(r.stdout.splitlines()), 3)
+        self.assertIn('data operands of 3 MATCH functions: 2 by content, 1 by type, '
+                      '0 by function, 3 masked', r.stderr)
+        out = self.diff_cli(ref, ref, 'shop/cart.Pick')
+        self.assertIn('data: 0 by content, 1 by type, 0 by function, 1 masked', out[0])
 
     # The --diff listing
 

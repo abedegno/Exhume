@@ -29,7 +29,9 @@ run, with no status file, --only produces a file that holds only the scored rows
 Prints `REGRESSED<TAB>name` for each row that was MATCH in the old file and is not now: a scored
 function that no longer matches, and also a row that is absent from the new result for any reason
 (gone from REF, no longer selected, dropped under --only). Rows that were not MATCH are dropped
-silently. Then it prints the line `matched N of M; fitted F`, the totals of the whole file. When
+silently. When a function was compared, it prints how the data operands of the functions scored
+MATCH in this run were compared (see gocmpx.py): `data operands of the K functions scored MATCH:
+C by content, T by type, F by function, M masked`. Then it prints the line `matched N of M; fitted F`, the totals of the whole file. When
 anything regressed the exit status is 1 and the status file is not written, so the regression is
 reported again on the next run; the totals are then those of the unchanged file and the line ends
 with `(status file unchanged, not written)`. With --accept-regressions the file is written and
@@ -148,7 +150,8 @@ def write_status(path, rows):
         raise
 
 
-Outcome = collections.namedtuple('Outcome', 'regressed dups matched total fitted scored written')
+Outcome = collections.namedtuple('Outcome', 'regressed dups matched total fitted scored written '
+                                 'operands', defaults=(None,))
 
 
 def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, today=None,
@@ -188,8 +191,8 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
             everywhere[name] = max(everywhere.get(name, 0), k)
     counts = {name: max(k, everywhere.get(name, 0)) for name, k in counts.items()}
     unique = [f for f in funcs if counts[f.name] == 1]
-    results = {r.name: r.status for r in (
-        gocmpx.compare_many(ref, cand, [f.name for f in unique]) if unique else [])}
+    compared = gocmpx.compare_many(ref, cand, [f.name for f in unique]) if unique else []
+    results = {r.name: r.status for r in compared}
     new, regressed = {}, []
     for f, fit in zip(funcs, flags):
         if f.name in new:
@@ -223,7 +226,8 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
     shown = rows if written else list(old.values())     # the totals of the file as it stands
     return Outcome(regressed, sum(1 for c in counts.values() if c > 1),
                    sum(r[2] == 'MATCH' for r in shown), len(shown),
-                   sum(r[3] == '1' for r in shown), len(new), written)
+                   sum(r[3] == '1' for r in shown), len(new), written,
+                   gocmpx.operand_totals(compared) if compared else None)
 
 
 def main(argv):
@@ -251,6 +255,9 @@ def main(argv):
         print('REGRESSED\t' + name)
     if out.regressed and not out.written:
         print('status file not written: rerun with --accept-regressions to record the regressions')
+    if out.operands:
+        print('data operands of the %d functions scored MATCH: %s'
+              % (out.operands[0], gocmpx.operand_text(out.operands[1])))
     if out.dups:
         print('duplicate names: %d' % out.dups)
     if args.only is not None:

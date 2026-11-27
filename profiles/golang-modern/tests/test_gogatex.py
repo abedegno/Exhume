@@ -98,6 +98,8 @@ class Gate(Base):
         out = self.gate(self.ref, self.same)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertRegex(out.stdout.splitlines()[-1], r'^matched \d+ of \d+; fitted 0$')
+        self.assertRegex(out.stdout, r'data operands of the 2 functions scored MATCH: \d+ by '
+                         r'content, \d+ by type, \d+ by function, \d+ masked\n')
         self.assertIn(['shop/cart.Total', 'shop/cart/cart.go', 'MATCH', '0', '2026-01-01'],
                       read_rows(self.status))
 

@@ -23,12 +23,14 @@ gobin.py buildinfo BINARY
 
 ### gocmpx.py
 
-`gocmpx.py` compares functions of two binaries and gives each one of these statuses: MATCH, LINES (same code, a different line table), INLINE (same code and lines, a different inlined call), DIFF, SIZE or MISSING. Calls and jumps that leave the function must reach a function of the same name in both binaries. References to data are masked.
+`gocmpx.py` compares functions of two binaries and gives each one of these statuses: MATCH, LINES (same code, a different line table), INLINE (same code and lines, a different inlined call), DIFF, SIZE or MISSING. Calls and jumps that leave the function must reach a function of the same name in both binaries. String literals, type descriptors and itabs are compared by content or name; other references to data are masked.
 
 ```
 gocmpx.py REF CAND REGEX
 gocmpx.py REF CAND --diff NAME
 ```
+
+What a MATCH vouches for: the instructions are equal apart from the 4-byte displacements of calls, jumps that leave the function and RIP-relative operands; every call or jump that leaves the function reaches the same offset of a function of the same name; and of the RIP-relative (data) operands, those that point at a function or a function value point at the same function, those that point at a type descriptor or an itab name the same types, and those that load the address of a string literal whose length is loaded beside it (in the next argument register, or stored as the second word of a string header in the same block) point at equal bytes. Every other data operand is masked: globals, jump tables, other static data, and strings whose length cannot be paired with the address. Equal sources never give a DIFF, because a length is only paired in those two forms, and the pairing found in the reference is used at the same offset of the candidate. The command prints to stderr how many data operands of the MATCH functions were compared by content, by type, by function and how many stayed masked; `--diff` prints the same counts for its function, and `gogatex.py` for the functions it scores.
 
 The first form prints one line per function of REF whose name matches REGEX. The second form prints one function of both binaries side by side, after padding is trimmed. Each row shows the offset, the instruction with call targets and function addresses as names, the source file and line, and the innermost inlined callee. A row is marked `*` when the instructions differ and `~` when only the line or the inlined callee differs. The two sides are aligned by a sequence diff, so the listing also works when the sizes differ.
 
