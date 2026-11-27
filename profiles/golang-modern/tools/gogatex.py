@@ -22,11 +22,30 @@ today). `waits` names the functions that this function's code in REF calls, jump
 that leaves it) or takes the address of (a RIP-relative operand that points into a function or at
 a function value), and that are either selected and not MATCH in this run (as scored, or as the
 file has them under --only) or absent from CAND. A call made by code inlined into the function
-counts only through the function's own call instructions. The names are sorted and joined by
+counts only through the function's own call instructions. With --src, `waits` also names each
+function inlined into this one (anywhere in its inlining tree in REF) that is first-party by the
+rules above (its file as the tree gives it, or its name), has no row of its own because REF
+always inlines it, and whose declaration line in DIR still carries goskel.py's `// skel:stub`
+marker (see inline_stubs). The names are sorted and joined by
 single spaces; in each name `%` is written `%25` and a space `%20`, since a Go symbol name can hold
 commas, semicolons and spaces (see join_waits). A status file of the first five columns, from
 before `waits`, is read with empty `waits`; the file is always written with six. Without --only,
-every selected function is scored and rows of functions no longer in REF are dropped.
+every selected function is scored and rows of functions no longer in REF are dropped. `waits` is
+recomputed for every row on every run that writes the file, under --only too: an unscored row
+gets its list from REF's code and inlining tree and the statuses of this run, without being
+compared (a row kept under --only for a function no longer selected keeps its list). A DUP row
+has an empty `waits`.
+
+A function waits when its source carries the comment `// waits:` on the line directly above its
+declaration, or as a trailing comment on the declaration line; what follows the colon is
+ignored. It means the body is believed right but cannot match until the functions it calls are
+written. The marker is read from DIR (without --src there are none) for every selected function,
+scored or not; when two functions start on one line, only the first gets it, as with `fitted`.
+For each row of a marked function, the gate prints `RESCORE<TAB>name` when the row is not MATCH
+and its `waits` is empty (nothing is left to wait for, so it should be worked on again), and
+`WAIT-DONE<TAB>name` when the row is MATCH (the marker can be removed). These lines come after
+the `duplicate names` line and before the `scored` line. The marker changes no status and no
+regression rule.
 
 With --only REGEX, only the selected functions whose names match REGEX (re.search) are scored and
 their rows replaced (one line `STATUS<TAB>name` is printed for each scored function, before the
@@ -44,21 +63,23 @@ C by content, T by type, F by function, M masked`.
 
 It then checks the masked data operands of the functions scored MATCH in this run (see
 global_conflicts). A reference address should pair with one candidate address over the run, and
-the reverse. Pairings that break this are grouped into conflicts. In each conflict, the pairing
-used by the most functions is taken as right, and every operand of the other pairings is printed
-as `GLOBAL<TAB>name<TAB>detail` (the likely culprits): the detail holds the instruction offset,
-the operand's pairing and the majority's, each as `REF -> CAND (N operands in M functions)`. Then
-`GLOBAL-BYSTANDERS<TAB>N functions share the other pairing, first NAME+OFF` sums up the
-majority. When the two largest pairings have as many functions each, every operand of the
-conflict is printed as a GLOBAL line and there is no bystanders line. These are warnings: they
+the reverse. Pairings that break this are grouped into conflicts. A conflict is decided when
+the pairing used by the most functions has at least ten times the functions of every other
+pairing. Then every operand of the other pairings is printed as `GLOBAL<TAB>name<TAB>detail`
+(the likely culprits), where detail is `+OFF: PAIRING, but MAJORITY` and each pairing reads
+`REF -> CAND (N operands in M functions)`, and `GLOBAL-BYSTANDERS<TAB>N functions share the
+other pairing, first NAME+OFF` sums up the majority. Otherwise no side is named: every operand of
+the conflict is printed as a GLOBAL line whose detail is `+OFF: PAIRING conflicts with OTHER`,
+OTHER being the largest other pairing, and there is no bystanders line. These are warnings: they
 change no status and no exit status. Whenever a function was compared, the line `globals: K
-functions likely wrong, B bystanders in G conflicts` follows (B counts the majority functions
-that are not also likely wrong elsewhere); under --only it ends with ` (partial run: unscored
-functions not checked)`.
+functions likely wrong, B bystanders, U undecided in G conflicts` follows (B counts the majority
+functions of decided conflicts that are not also likely wrong elsewhere, U the functions of
+undecided conflicts that are not likely wrong elsewhere); under --only it ends with ` (partial
+run: unscored functions not checked)`.
 
-Then it prints the line `matched N of M; fitted F; K of the matched call unmatched code`, the
-totals of the whole file; K counts the MATCH rows with a non-empty `waits`. Under --only the
-unscored rows keep their `waits`, which may be stale; a full run refreshes every row. When
+Then it prints the line `matched N of M; fitted F; waiting W; K of the matched call unmatched
+code`, the totals of the whole file; W counts the rows of functions marked as waiting that are
+not MATCH, and K the MATCH rows with a non-empty `waits`. When
 anything regressed the exit status is 1 and the status file is not written, so the regression is
 reported again on the next run; the totals are then those of the unchanged file and the line ends
 with `(status file unchanged, not written)`. With --accept-regressions the file is written and
@@ -102,6 +123,8 @@ import gobin
 import gocmpx
 
 MARKER = '// fitted:'
+WAIT_MARKER = '// waits:'
+STUB = re.compile(r'^func\b.*// skel:stub\b')    # a declaration line goskel.py wrote as a stub
 HEADER = ('name', 'file', 'status', 'fitted', 'since', 'waits')
 OLD_HEADER = HEADER[:5]                 # before the waits column; read with empty waits
 CALLEE_CAUSED = ('SIZE', 'DIFF', 'LINES', 'INLINE')   # statuses a callee's new body can cause
@@ -152,16 +175,29 @@ def read_status(path):
     return old
 
 
+def first_party(name, file, prefix, excludes, name_prefixes=()):
+    """Whether a function of this name declared in this file is selected: its file starts with
+    prefix and holds no exclude, or its name starts with one of name_prefixes."""
+    return (file.startswith(prefix) and not any(x in file for x in excludes)) or \
+        name.startswith(tuple(name_prefixes))
+
+
 def selected(ref, prefix, excludes, name_prefixes=()):
     """The functions of ref, in address order, whose file is first-party, or whose name starts
     with one of name_prefixes (a closure made by an inlined library call has the library's file).
     Functions that share a name are all kept."""
-    out = []
-    for f in ref.funcs():
-        by_file = f.file.startswith(prefix) and not any(x in f.file for x in excludes)
-        if by_file or f.name.startswith(tuple(name_prefixes)):
-            out.append(f)
-    return out
+    return [f for f in ref.funcs() if first_party(f.name, f.file, prefix, excludes, name_prefixes)]
+
+
+def source_lines(src, file, texts):
+    """The lines of DIR/file, cached in texts; [] when the file cannot be read."""
+    if file not in texts:
+        try:
+            with open(os.path.join(src, file), errors='replace') as fh:
+                texts[file] = fh.read().splitlines()
+        except OSError:
+            texts[file] = []
+    return texts[file]
 
 
 def fitted_flags(ref, funcs, src):
@@ -172,19 +208,46 @@ def fitted_flags(ref, funcs, src):
     for f in ref.funcs():
         starts.setdefault(f.file, set()).add(f.start_line)
     for f in funcs:
-        if f.file not in texts:
-            try:
-                with open(os.path.join(src, f.file), errors='replace') as fh:
-                    texts[f.file] = fh.read().splitlines()
-            except OSError:
-                texts[f.file] = []
+        lines = source_lines(src, f.file, texts)
         later = [s for s in starts[f.file] if s > f.start_line]
-        end = min(later) - 1 if later else len(texts[f.file])
-        span = texts[f.file][max(f.start_line - 1, 0):end]
+        end = min(later) - 1 if later else len(lines)
+        span = lines[max(f.start_line - 1, 0):end]
         first = (f.file, f.start_line) not in claimed
         claimed.add((f.file, f.start_line))
         flags.append(first and any(MARKER in line for line in span))
     return flags
+
+
+def waiting_flags(funcs, src):
+    """[bool] for each of funcs: its declaration line holds the waiting marker, or the line
+    directly above it is a comment that starts with it. As with the fitted marker, when two
+    functions start on one line only the first of them (in the order of funcs) gets it."""
+    if not src:
+        return [False] * len(funcs)
+    texts, flags, claimed = {}, [], set()
+    for f in funcs:
+        lines = source_lines(src, f.file, texts)
+        k = f.start_line - 1
+        decl = lines[k] if 0 <= k < len(lines) else ''
+        above = lines[k - 1] if 1 <= k <= len(lines) else ''
+        first = (f.file, f.start_line) not in claimed
+        claimed.add((f.file, f.start_line))
+        flags.append(first and (WAIT_MARKER in decl or above.strip().startswith(WAIT_MARKER)))
+    return flags
+
+
+def inline_stubs(ref, func, src, chosen, is_first_party, texts):
+    """The first-party functions inlined into func, anywhere in its inlining tree, that have no
+    row of their own (not in chosen) and whose declaration line in src is still a stub."""
+    out = set()
+    for i in ref.inltree(func):
+        if i.callee in chosen or i.callee == func.name or not is_first_party(i.callee, i.file):
+            continue
+        lines = source_lines(src, i.file, texts)
+        k = i.start_line - 1
+        if 0 <= k < len(lines) and STUB.match(lines[k]):
+            out.add(i.callee)
+    return out
 
 
 def write_status(path, rows):
@@ -212,22 +275,25 @@ def _count(n, what):
     return '%d %s%s' % (n, what, '' if n == 1 else 's')
 
 
-Conflict = collections.namedtuple('Conflict', 'lines bystanders majority')
+Conflict = collections.namedtuple('Conflict', 'lines bystanders majority decided')
+DECIDED = 10        # decided when the majority has this many times the functions of each other side
 
 
 def global_conflicts(results):
-    """[Conflict(lines, bystanders)] for the masked data operands of the MATCH results that do
-    not pair one to one. Each distinct (reference address, candidate address) of an operand is a
-    pairing; pairings that share a reference or a candidate address, directly or through others,
-    form one conflict when there are two or more of them. The pairing used by the most functions
-    is the majority; the functions of the other pairings are likely wrong, and each of their
-    operands is a line (name, detail) that cites the majority. The majority's functions are
-    summed up in bystanders, (number of functions, first 'name+0xoff'), and named in majority.
-    When the two largest
-    pairings have as many functions each, no side is the majority: every operand gets a line and
-    bystanders is None and majority empty. Every masked operand counts, read-only data too: the objects there that
-    the linker merges by content (float constants, string bytes, generated tables) are merged
-    alike in both binaries, so equal sources still pair them one to one."""
+    """[Conflict(lines, bystanders, majority, decided)] for the masked data operands of the
+    MATCH results that do not pair one to one. Each distinct (reference address, candidate
+    address) of an operand is a pairing; pairings that share a reference or a candidate address,
+    directly or through others, form one conflict when there are two or more of them. The
+    pairing used by the most functions is the majority. When every other pairing is used by at
+    most a tenth as many functions (DECIDED), the conflict is decided: the functions of the other
+    pairings are likely wrong, each of their operands is a line (name, detail) that cites the
+    majority with `but`, and the majority's functions are summed up in bystanders, (number of
+    functions, first 'name+0xoff'), and named in majority. Otherwise no side is named: every
+    operand of the conflict gets a line that says its pairing conflicts with the largest other
+    one, bystanders is None and majority empty. Every masked operand counts, read-only data too:
+    the objects there that the linker merges by content (float constants, string bytes,
+    generated tables) are merged alike in both binaries, so equal sources still pair them one
+    to one."""
     users = collections.OrderedDict()      # (ra, ca) -> [(name, off)] in the order of results
     for r in results:
         if r.status == 'MATCH':
@@ -259,29 +325,37 @@ def global_conflicts(results):
             continue
         ranked = sorted(pairs, key=lambda p: -len(funcs(p)))      # stable: first seen wins ties
         top = ranked[0]
-        tie = len(funcs(ranked[1])) == len(funcs(top))
-        shown = pairs if tie else sorted(ranked[1:], key=lambda p: len(funcs(p)))
+        decided = all(DECIDED * len(funcs(p)) <= len(funcs(top)) for p in ranked[1:])
         lines = []
-        for pair in shown:
+        if decided:
+            for pair in sorted(ranked[1:], key=lambda p: len(funcs(p))):
+                for name, off in users[pair]:
+                    lines.append((name, '+%#x: %s, but %s' % (off, text(pair), text(top))))
+            name, off = users[top][0]
+            out.append(Conflict(lines, (len(funcs(top)), '%s+%#x' % (name, off)), funcs(top),
+                                True))
+            continue
+        for pair in pairs:
             cited = ranked[1] if pair == top else top
             for name, off in users[pair]:
-                lines.append((name, '+%#x: %s, but %s' % (off, text(pair), text(cited))))
-        name, off = users[top][0]
-        out.append(Conflict(lines, None if tie else (len(funcs(top)), '%s+%#x' % (name, off)),
-                            [] if tie else funcs(top)))
+                lines.append((name, '+%#x: %s conflicts with %s' % (off, text(pair), text(cited))))
+        out.append(Conflict(lines, None, [], False))
     return out
 
 
 def global_counts(conflicts):
-    """(functions likely wrong, bystander functions not also likely wrong, conflicts)."""
-    wrong = {name for c in conflicts for name, _ in c.lines}
+    """(functions likely wrong, bystander functions not also likely wrong, functions of
+    undecided conflicts not also likely wrong, conflicts)."""
+    wrong = {name for c in conflicts if c.decided for name, _ in c.lines}
     by = {name for c in conflicts for name in c.majority} - wrong
-    return len(wrong), len(by), len(conflicts)
+    undecided = {name for c in conflicts if not c.decided for name, _ in c.lines} - wrong
+    return len(wrong), len(by), len(undecided), len(conflicts)
 
 
 Outcome = collections.namedtuple('Outcome', 'regressed dups matched total fitted scored written '
-                                 'operands scored_rows waiting globals accepted',
-                                 defaults=(None, (), 0, (), ()))
+                                 'operands scored_rows waiting globals accepted marked rescore '
+                                 'wait_done',
+                                 defaults=(None, (), 0, (), (), 0, (), ()))
 
 
 def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, today=None,
@@ -332,10 +406,7 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
     now.update((f.name, 'DUP') for f in funcs if f.name not in results)
     chosen = {f.name for f in allfuncs}
     in_cand = {f.name for f in cand.funcs()}
-
-    def waits(name):
-        return join_waits(c for c in calls.get(name, ()) if c != name and (
-            c not in in_cand or (c in chosen and now.get(c) != 'MATCH')))
+    marked = {f.name for f, w in zip(allfuncs, waiting_flags(allfuncs, src)) if w}
     new, regressed = {}, []
     for f, fit in zip(funcs, flags):
         if f.name in new:
@@ -345,7 +416,7 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
         since = was[4] if was and was[2] == st else today
         if was and was[2] == 'MATCH' and st != 'MATCH':
             regressed.append(f.name)
-        new[f.name] = (f.name, f.file, st, '1' if fit else '0', since, waits(f.name))
+        new[f.name] = (f.name, f.file, st, '1' if fit else '0', since, '')
     if pattern is None:
         rows = list(new.values())
     else:
@@ -360,6 +431,31 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
             if row:
                 rows.append(row)
         rows += [r for name, r in old.items() if name not in done and not pattern.search(name)]
+    # the waits of every row of a selected function, scored or not, from the reference's calls
+    # and inlining trees and the statuses of this run; a row no longer selected keeps its waits
+    first = {}
+    for f in allfuncs:
+        first.setdefault(f.name, f)
+    unscored = [r[0] for r in rows if r[0] in first and r[0] not in calls and r[2] != 'DUP']
+    if unscored:
+        calls.update(gocmpx.calls_many(ref, unscored))
+    texts = {}
+
+    def is_first_party(name, file):
+        return first_party(name, file, prefix, excludes, name_prefixes)
+
+    def waits(row):
+        name = row[0]
+        if name not in first:
+            return row[5]
+        if row[2] == 'DUP':
+            return ''
+        got = {c for c in calls.get(name, ()) if c != name and (
+            c not in in_cand or (c in chosen and now.get(c) != 'MATCH'))}
+        if src:
+            got |= inline_stubs(ref, first[name], src, chosen, is_first_party, texts)
+        return join_waits(got)
+    rows = [r[:5] + (waits(r),) for r in rows]
     # a row that was MATCH and is not in the result, for any reason, is a regression too
     kept = {r[0]: r for r in rows}
     regressed += [name for name, r in old.items() if r[2] == 'MATCH' and name not in kept]
@@ -382,13 +478,17 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
     if written:
         write_status(status, rows)
     shown = rows if written else list(old.values())     # the totals of the file as it stands
+    waiting = [r for r in shown if r[0] in marked]
     return Outcome(regressed, sum(1 for c in counts.values() if c > 1),
                    sum(r[2] == 'MATCH' for r in shown), len(shown),
                    sum(r[3] == '1' for r in shown), len(new), written,
                    gocmpx.operand_totals(compared) if compared else None,
                    [(r[2], r[0]) for r in new.values()],
                    sum(r[2] == 'MATCH' and r[5] != '' for r in shown),
-                   global_conflicts(compared) if compared else None, accepted)
+                   global_conflicts(compared) if compared else None, accepted,
+                   sum(r[2] != 'MATCH' for r in waiting),
+                   [r[0] for r in waiting if r[2] != 'MATCH' and r[5] == ''],
+                   [r[0] for r in waiting if r[2] == 'MATCH'])
 
 
 def main(argv):
@@ -429,6 +529,10 @@ def main(argv):
               % (out.operands[0], gocmpx.operand_text(out.operands[1])))
     if out.dups:
         print('duplicate names: %d' % out.dups)
+    for name in out.rescore:
+        print('RESCORE\t' + name)
+    for name in out.wait_done:
+        print('WAIT-DONE\t' + name)
     if args.only is not None:
         print('scored %d functions' % out.scored)
     if out.globals is not None:
@@ -438,12 +542,13 @@ def main(argv):
             if c.bystanders:
                 print('GLOBAL-BYSTANDERS\t%d functions share the other pairing, first %s'
                       % c.bystanders)
-        print('globals: %d functions likely wrong, %d bystanders in %d conflicts%s'
+        print('globals: %d functions likely wrong, %d bystanders, %d undecided in %d '
+              'conflicts%s'
               % (global_counts(out.globals) + (
                   ' (partial run: unscored functions not checked)' if args.only is not None
                   else '',)))
-    print('matched %d of %d; fitted %d; %d of the matched call unmatched code%s' % (
-        out.matched, out.total, out.fitted, out.waiting,
+    print('matched %d of %d; fitted %d; waiting %d; %d of the matched call unmatched code%s' % (
+        out.matched, out.total, out.fitted, out.marked, out.waiting,
         '' if out.written else ' (status file unchanged, not written)'))
     return 1 if out.regressed and not out.written else 0
 

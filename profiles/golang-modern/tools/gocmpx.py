@@ -683,6 +683,21 @@ def compare_many(ref, cand, names):
     return results
 
 
+def calls_many(binary, names):
+    """{name: calls} for the functions of binary called names (the first of each name), where
+    calls is what called gives for its code; a name binary does not have is left out. Only this
+    binary is read, so the lists of a gate's unscored rows can be refreshed without comparing."""
+    index = _by_name(binary)
+    funcs = [index[n] for n in dict.fromkeys(names) if n in index]
+    codes = [binary.code(f) for f in funcs]
+    decoded = decode(codes) if codes else []
+    out = {}
+    for f, code, ins in zip(funcs, codes, decoded):
+        code = trim_padding(code, ins)
+        out[f.name] = called(binary, f, code, ins[:len(ins) - _padding_count(ins)])
+    return out
+
+
 def operand_totals(results):
     """(number of MATCH results, Operands summed over them)."""
     match = [r for r in results if r.status == 'MATCH' and r.data is not None]
