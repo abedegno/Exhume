@@ -89,6 +89,7 @@ A function that the compiler inlined at every call has no entry of its own in th
 
 ```
 goskel.py BINARY OUT_DIR --prefix shop/ [--modcache DIR] [--keep TAG] [--adopt-unmarked-stubs]
+          [--no-noinline-directives]
 ```
 
 ## Stub markers
@@ -101,12 +102,22 @@ func Total(items []Item) int { panic("todo") } // skel:stub
 
 The rules are these:
 
-- A line that ends in `// skel:stub` or `// skel:import` and is exactly as the tool wrote it belongs to the tool. A later run may replace it, move it or blank it.
+- A line that ends in `// skel:stub` or `// skel:import` and is exactly as the tool wrote it belongs to the tool. A later run may replace it, move it or blank it. So does a line that is exactly `//go:noinline // skel:noinline` (see below).
 - To claim a function, write its body and remove the marker. The tool then treats the function as hand-written and never stubs it again.
 - A marked line that was edited by hand is kept as hand-written, and the tool prints a warning naming it.
 - Every other line of a file stays as it was. New stubs and imports go on free lines, which are blank lines outside any declaration, comment or string. A stub whose line is taken goes to the next free line and is listed as moved.
 - `types_recovered.go` belongs to the tool and is rewritten on each run. Each declaration in it follows a `// skel:type` line. If the file holds a declaration without that line, the run stops and writes nothing, so that the declaration can be moved to another file first.
 - A source file that the tool cannot scan, such as one with a backslash and a newline inside a quoted string, stops the run with a message naming the file, and nothing is written.
+
+## The noinline directive on stubs
+
+A stub is so small that the compiler inlines it into every function that calls it. A caller whose body is already right then compiles to the wrong code, because the inlined panic ends it early, and it cannot match until the callee is written too. When the reference never inlines that callee, its callers in the reference make a real call. The directive `//go:noinline` above the stub makes the candidate's callers make a real call as well.
+
+The tool writes the line `//go:noinline // skel:noinline` directly above a stub when the function has its own entry in the function table and no inlining tree in the binary names it. The compiler reads only the first word after `//go:`, so the marker after it does not change the directive. A stub marked `inline-only` never gets it, and neither does a function that the binary inlines even once, because its callers in the reference inlined it. Generic functions are skipped as well, since their instances are named by shape and the tool cannot tell from the names whether one was inlined. The line goes in only when the line above the stub is blank, is a free line, and holds no code of any function in the binary's line table. Otherwise the stub gets no directive, and `UNKNOWN.txt` lists it with the reason.
+
+A directive line exactly as written belongs to the tool, like a marker line. When a function is claimed, the next run blanks the directive above it, since it belonged to the stub. A comment written by hand in its place is left alone. The directive only ever replaces a blank line, so no other line of a file moves. The option `--no-noinline-directives` writes none and blanks those of earlier runs.
+
+The directive cannot fix every caller. A caller that passes pointers to a stub can still compile differently from the reference, because the compiler's escape analysis reads the stub's body, which panics, and not the real one.
 
 ## The keep tag
 

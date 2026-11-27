@@ -423,11 +423,14 @@ class Skeleton(unittest.TestCase):
         n = self.ref_start_line('shop/cart.Total')
         lines[n - 1] = 'func Total(items []Item) int { return len(items) } // skel:stub'
         self.put('cart/cart.go', '\n'.join(lines))
+        self.assertEqual(lines[n - 2], self.NOINLINE)
         before = self.read(self.out, 'cart/cart.go')
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             goskel.write(self.ref, self.out, prefix='shop/')
-        self.assertEqual(self.read(self.out, 'cart/cart.go'), before)
+        # the function is hand-written now, so the stub's directive goes
+        self.assertEqual(self.read(self.out, 'cart/cart.go'),
+                         before.replace(self.NOINLINE + '\n', '\n'))
         self.assertIn('cart/cart.go:%d: marker left on an edited function' % n, err.getvalue())
         self.assertEqual(self.go_build(self.out).returncode, 0)
 
@@ -558,6 +561,131 @@ class Skeleton(unittest.TestCase):
         self.assertEqual(sum(l.startswith('func price()') for l in lines), 1)
         self.assertIn('shop/cart.price\tcart/cart.go:%d\tline moved to ' % n,
                       self.read(self.out, 'UNKNOWN.txt'))
+
+    # The noinline directive on stubs of functions that the binary never inlines
+
+    NOINLINE = '//go:noinline // skel:noinline'
+
+    def above(self, rel, name, out=None):
+        """The line above the stub of the function called name, in the file rel."""
+        with open(os.path.join(out or self.out, rel)) as f:
+            return f.read().split('\n')[self.ref_start_line(name) - 2]
+
+    def snapshot(self, out=None):
+        out = out or self.out
+        files = {os.path.relpath(p, out): slurp(p) for p in self.files(out)}
+        files['UNKNOWN.txt'] = self.read(out, 'UNKNOWN.txt')
+        return files
+
+    def test_never_inlined_stub_gets_the_directive(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        for rel, name in (('cart/shapes.go', 'shop/cart.Square'), ('cart/cart.go', 'shop/cart.Total'),
+                          ('cart/shapes.go', 'shop/cart.Lo'),
+                          ('shelf/shelf.go', 'shop/shelf.(*Shelf).Stock'),
+                          ('shelf/shelf.go', 'shop/shelf.(*Shelf).Add')):
+            self.assertEqual(self.above(rel, name), self.NOINLINE, name)
+            self.assertTrue(self.lines_of(rel)[self.ref_start_line(name) - 1].startswith('func '))
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_function_inlined_somewhere_gets_no_directive(self):
+        self.assertIn('shop/shelf.Base.Label',
+                      {i.callee for f in self.bin.funcs() for i in self.bin.inltree(f)})
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.above('shelf/shelf.go', 'shop/shelf.Base.Label'), '')
+
+    def test_inline_only_and_generic_stubs_get_no_directive(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        n = self.fixture_line('cart/cart.go', 'func price(')
+        self.assertEqual(self.lines_of('cart/cart.go')[n - 2], '')
+        for rel in ('cart/round.go', 'tally/tally.go'):
+            self.assertNotIn('go:noinline', self.read(self.out, rel))
+        n = self.fixture_line('shelf/shelf.go', 'func First[')
+        self.assertEqual(self.lines_of('shelf/shelf.go')[n - 2], '')
+
+    def test_line_above_holding_code_gets_no_directive(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        n = self.ref_start_line('shop/cart.Hi')
+        self.assertEqual(self.ref_start_line('shop/cart.Lo'), n - 1)
+        self.assertTrue(self.above('cart/shapes.go', 'shop/cart.Hi').startswith('func Lo('))
+        self.assertIn('shop/cart.Hi\tcart/shapes.go:%d\tnoinline not written: the line above '
+                      'holds code in the binary\n' % n, self.read(self.out, 'UNKNOWN.txt'))
+
+    def test_hand_comment_above_a_stub_stays_and_is_listed(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        n = self.ref_start_line('shop/cart.Square')
+        lines = self.lines_of('cart/shapes.go')
+        lines[n - 2] = '// Square is next.'
+        self.put('cart/shapes.go', '\n'.join(lines))
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.lines_of('cart/shapes.go'), lines)
+        self.assertIn('shop/cart.Square\tcart/shapes.go:%d\tnoinline not written: the line above '
+                      'is not blank\n' % n, self.read(self.out, 'UNKNOWN.txt'))
+
+    def test_claimed_function_loses_the_directive(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.put_body(self.out, 'Square', 'return 0')
+        n = self.ref_start_line('shop/cart.Tick')
+        lines = self.lines_of('cart/shapes.go')
+        self.assertEqual(lines[n - 2], self.NOINLINE)
+        lines[n - 2] = '// Tick is mine.'
+        lines[n - 1] = 'func Tick() {}'
+        self.put('cart/shapes.go', '\n'.join(lines))
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.above('cart/shapes.go', 'shop/cart.Square'), '')
+        self.assertEqual(self.above('cart/shapes.go', 'shop/cart.Tick'), '// Tick is mine.')
+        self.assertEqual(self.above('cart/shapes.go', 'shop/cart.Parse'), self.NOINLINE)
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_second_run_with_directives_is_byte_identical(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.put_body(self.out, 'Square', 'return 0')
+        goskel.write(self.ref, self.out, prefix='shop/')
+        before = self.snapshot()
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_switching_directives_off_removes_them_and_moves_no_line(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        on = self.snapshot()
+        self.assertIn(self.NOINLINE, on['cart/shapes.go'])
+        goskel.write(self.ref, self.out, prefix='shop/', noinline=False)
+        off = self.snapshot()
+        for rel, text in off.items():
+            self.assertNotIn('go:noinline', text, rel)
+            if rel.endswith('.go'):
+                self.assertEqual(text.split('\n'),
+                                 ['' if l == self.NOINLINE else l for l in on[rel].split('\n')])
+        fresh = tempfile.mkdtemp(prefix='out-', dir=self.tmp)
+        r = subprocess.run([sys.executable, os.path.join(TOOLS, 'goskel.py'), self.ref, fresh,
+                            '--prefix', 'shop/', '--no-noinline-directives'],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn('go:noinline', slurp(os.path.join(fresh, 'cart', 'shapes.go')))
+
+    def test_directive_keeps_a_real_call_in_the_caller(self):
+        import gocmpx
+        goskel.write(self.ref, self.out, prefix='shop/', keep='keepall')
+        lines = self.lines_of('cart/shapes.go')
+        n = self.ref_start_line('shop/cart.Hi')
+        self.assertTrue(lines[n - 1].startswith('func Hi('))
+        lines[n - 1] = 'func Hi(n int) int { return Square(n) + 1 }'
+        self.put('cart/shapes.go', '\n'.join(lines))
+        goskel.write(self.ref, self.out, prefix='shop/', keep='keepall')
+        self.assertEqual(self.above('cart/shapes.go', 'shop/cart.Square'), self.NOINLINE)
+
+        def hi(b):
+            f = b.func('shop/cart.Hi')
+            return (gocmpx.calls_many(b, ['shop/cart.Hi'])['shop/cart.Hi'],
+                    {i.callee for i in b.inltree(f)})
+        calls, inlined = hi(self.build_with(self.out, 'keepall'))
+        self.assertIn('shop/cart.Square', calls)
+        self.assertNotIn('shop/cart.Square', inlined)
+        goskel.write(self.ref, self.out, prefix='shop/', keep='keepall', noinline=False)
+        calls, inlined = hi(self.build_with(self.out, 'keepall'))     # the panic is inlined
+        self.assertNotIn('shop/cart.Square', calls)
+        self.assertIn('shop/cart.Square', inlined)
 
     def test_range_over_func_bodies_are_not_declared(self):
         self.assertEqual(goskel.parse_name('(*List).Add-range1'), 'range-over-func loop body')

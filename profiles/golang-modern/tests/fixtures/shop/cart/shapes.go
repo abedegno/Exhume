@@ -75,3 +75,9 @@ var Ops = []func(int) int{Triple}
 func Rounded(n int) int {
 	return tally.Add(roundUp(n), counter(n).twice())
 }
+
+// Lo ends on the line above Hi, so that line holds code in the binary.
+//
+//go:noinline
+func Lo(n int) int { return n - 1 }
+func Hi(n int) int { return Square(Lo(n)) + Square(n) } // too large to inline
