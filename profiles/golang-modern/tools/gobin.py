@@ -51,12 +51,16 @@ class Func:
 class Inl:
     """One inlined call. parent is the index of the enclosing inlined call in the same list, or
     -1 when the call is made by the function itself. pc_ranges are (start, end) offsets from the
-    function's entry of the code that belongs to this call and not to a deeper one."""
-    __slots__ = ('callee', 'call_file', 'call_line', 'parent', 'pc_ranges')
+    function's entry of the code that belongs to this call and not to a deeper one. start_line
+    is the line on which the inlined function starts, and file its source file: the file the
+    line table gives for the call's own code, or, when it has none, the file of the calls
+    inlined into it ('' when neither is known)."""
+    __slots__ = ('callee', 'call_file', 'call_line', 'parent', 'pc_ranges', 'start_line', 'file')
 
-    def __init__(self, callee, call_file, call_line, parent, pc_ranges):
+    def __init__(self, callee, call_file, call_line, parent, pc_ranges, start_line=0, file=''):
         self.callee, self.call_file, self.call_line = callee, call_file, call_line
         self.parent, self.pc_ranges = parent, pc_ranges
+        self.start_line, self.file = start_line, file
 
     def __repr__(self):
         return 'Inl(%s at %s:%d, parent %d, %s)' % (self.callee, self.call_file, self.call_line,
@@ -342,13 +346,18 @@ class Binary:
         count = max(ranges, default=-1) + 1
         out, n = [], 0
         while n < count:
-            _, nameoff, parent_pc, _ = struct.unpack_from('<Iiii', d, tree + 16 * n)
+            _, nameoff, parent_pc, start_line = struct.unpack_from('<Iiii', d, tree + 16 * n)
             parent = self._at(idx, parent_pc)
             count = max(count, parent + 1)
+            own = ranges.get(n, [])
             out.append(Inl(_cstr(d, self.funcnametab + nameoff),
                            self._file(cu, self._at(files, parent_pc)), self._at(lines, parent_pc),
-                           parent, ranges.get(n, [])))
+                           parent, own, start_line,
+                           self._file(cu, self._at(files, own[0][0])) if own else ''))
             n += 1
+        for i in out:                   # no code of its own: its callees were called from its file
+            if i.parent >= 0 and not out[i.parent].file:
+                out[i.parent].file = i.call_file
         return out
 
     # Build info

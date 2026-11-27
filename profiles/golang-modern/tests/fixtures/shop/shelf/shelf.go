@@ -117,3 +117,29 @@ func Count(ps []Pair[string, int], b Bins) int {
 	k, _ := First(ps)
 	return len(k) + len(b)
 }
+
+// size is a helper with a pointer receiver that the compiler inlines at every call.
+func (s *Shelf) size() int { return len(s.Items) }
+
+// note is a helper with a value receiver that the compiler inlines at every call.
+func (b Base) note() string {
+	if b.Note == "" {
+		return "none"
+	}
+	return b.Note
+}
+
+// either is a generic helper that the compiler inlines at every call.
+func either[T any](a, b T, first bool) T {
+	if first {
+		return a
+	}
+	return b
+}
+
+// Summary uses the inlined helpers above.
+//
+//go:noinline
+func Summary(s *Shelf) (int, string) {
+	return either(s.size(), 0, len(s.Note) > 0), s.note()
+}

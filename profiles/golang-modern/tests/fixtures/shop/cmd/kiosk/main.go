@@ -23,4 +23,6 @@ func main() {
 	cart.Tick()
 	v, err := cart.Parse("12")
 	fmt.Println(cart.Square(v), err, cart.Label(v), cart.Bounds(v), cart.Ops[0](v))
+	fmt.Println(shelf.Summary(sh))
+	fmt.Println(cart.Rounded(v))
 }

@@ -232,7 +232,7 @@ class Skeleton(unittest.TestCase):
         goskel.write(self.ref, self.out, prefix='shop/', keep='keepall')
         names = {os.path.relpath(p, self.out) for p in self.keep_files(self.out)}
         self.assertEqual(names, {'cart/zz_keep_cart.go', 'shelf/zz_keep_shelf.go',
-                                 'cmd/kiosk/zz_keep_main.go'})
+                                 'tally/zz_keep_tally.go', 'cmd/kiosk/zz_keep_main.go'})
         self.assertTrue(self.read(self.out, 'cart/zz_keep_cart.go').startswith(
             goskel.KEEP_NOTE + '\n\n//go:build keepall\n'))
         shelf = self.read(self.out, 'shelf/zz_keep_shelf.go')
@@ -355,6 +355,10 @@ class Skeleton(unittest.TestCase):
         r = self.go_build(self.out)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_one_line_import_has_no_name(self):
+        src = goskel.Source('package shelf\nimport "shop/cart" // skel:import\nimport c2 "shop/cart"\n')
+        self.assertEqual(src.imports(), [(None, 'shop/cart'), ('c2', 'shop/cart')])
+
     def test_import_nothing_uses_is_removed(self):
         goskel.write(self.ref, self.out, prefix='shop/')
         self.claim_add('return nil')
@@ -464,6 +468,101 @@ class Skeleton(unittest.TestCase):
         os.utime(path, ns=(1000000000, 1000000000))
         goskel.write(self.ref, self.out, prefix='shop/')
         self.assertEqual(os.stat(path).st_mtime_ns, 1000000000)
+
+    # Helpers that exist only inlined
+
+    INLINE = '{ panic("todo") } // skel:stub inline-only signature unknown'
+
+    def fixture_line(self, rel, text):
+        """The line of the fixture's source file rel that starts with text."""
+        with open(os.path.join(FIXTURE, rel)) as f:
+            for n, line in enumerate(f, 1):
+                if line.startswith(text):
+                    return n
+        self.fail(text + ' is not in ' + rel)
+
+    def assert_stub_at(self, rel, head, text=None):
+        n = self.fixture_line(rel, head)
+        self.assertEqual(self.lines_of(rel)[n - 1], (text or head) + ' ' + self.INLINE)
+
+    def test_inlined_only_helper_gets_a_stub_on_its_line(self):
+        self.assertNotIn('shop/cart.price', {f.name for f in self.bin.funcs()})
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assert_stub_at('cart/cart.go', 'func price(', 'func price()')
+        unknown = self.read(self.out, 'UNKNOWN.txt')
+        self.assertIn('shop/cart.price\tcart/cart.go:%d\tinline-only: signature unknown, '
+                      'inlined into 1 functions\n' % self.fixture_line('cart/cart.go', 'func price('),
+                      unknown)
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_helper_with_its_own_function_is_not_duplicated(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        shelf = self.read(self.out, 'shelf/shelf.go')
+        self.assertEqual(shelf.count('func (Base) Label('), 1)
+        self.assertNotIn('Label() string { panic("todo") } // skel:stub inline-only', shelf)
+
+    def test_inlined_only_methods_get_their_receivers(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assert_stub_at('shelf/shelf.go', 'func (s *Shelf) size(', 'func (*Shelf) size()')
+        self.assert_stub_at('shelf/shelf.go', 'func (b Base) note(', 'func (Base) note()')
+        unknown = self.read(self.out, 'UNKNOWN.txt')
+        self.assertRegex(unknown, r'shop/cart\.counter\.twice\tcart/round\.go:\d+\tinline-only '
+                         r'skipped: receiver type unknown, inlined into 1 functions\n')
+        self.assertNotIn('twice', self.read(self.out, 'cart/round.go'))
+
+    def test_inlined_only_generic_helper_is_written_once(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assert_stub_at('shelf/shelf.go', 'func either[', 'func either[T1 any]()')
+        self.assertEqual(self.read(self.out, 'shelf/shelf.go').count('func either['), 1)
+
+    def test_inlined_only_helper_in_a_new_file_and_package(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.lines_of('cart/round.go')[0], 'package cart')
+        self.assert_stub_at('cart/round.go', 'func roundUp(', 'func roundUp()')
+        self.assertEqual(self.lines_of('tally/tally.go')[0], 'package tally')
+        self.assert_stub_at('tally/tally.go', 'func Add(', 'func Add()')
+        self.assertIn('shop/tally\ttally\tinline-only: package with no function or type of its '
+                      'own, written for helpers that exist only inlined\n',
+                      self.read(self.out, 'UNKNOWN.txt'))
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_inlined_only_stubs_are_kept_and_a_second_run_changes_nothing(self):
+        goskel.write(self.ref, self.out, prefix='shop/', keep='keepall')
+        self.assertIn('\tprice,\n', self.read(self.out, 'cart/zz_keep_cart.go'))
+        shelf = self.read(self.out, 'shelf/zz_keep_shelf.go')
+        self.assertIn('\t(*Shelf).size,\n', shelf)
+        self.assertIn('\tBase.note,\n', shelf)
+        self.assertNotIn('either', shelf)
+        self.assertIn('\tAdd,\n', self.read(self.out, 'tally/zz_keep_tally.go'))
+        before = {p: slurp(p) for p in self.files(self.out)}
+        before['UNKNOWN.txt'] = self.read(self.out, 'UNKNOWN.txt')
+        goskel.write(self.ref, self.out, prefix='shop/', keep='keepall')
+        after = {p: slurp(p) for p in self.files(self.out)}
+        after['UNKNOWN.txt'] = self.read(self.out, 'UNKNOWN.txt')
+        self.assertEqual(after, before)
+        linked = {f.name for f in self.build_with(self.out, 'keepall').funcs()}
+        self.assertTrue({'shop/cart.price', 'shop/shelf.(*Shelf).size', 'shop/tally.Add'} <= linked)
+        self.build_with(self.out)
+
+    def test_inlined_only_stub_on_a_taken_line_moves(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        n = self.fixture_line('cart/cart.go', 'func price(')
+        lines = self.lines_of('cart/cart.go')
+        lines[n - 1] = 'var mine = 1'
+        self.put('cart/cart.go', '\n'.join(lines))
+        goskel.write(self.ref, self.out, prefix='shop/')
+        lines = self.lines_of('cart/cart.go')
+        self.assertEqual(lines[n - 1], 'var mine = 1')
+        self.assertEqual(sum(l.startswith('func price()') for l in lines), 1)
+        self.assertIn('shop/cart.price\tcart/cart.go:%d\tline moved to ' % n,
+                      self.read(self.out, 'UNKNOWN.txt'))
+
+    def test_range_over_func_bodies_are_not_declared(self):
+        self.assertEqual(goskel.parse_name('(*List).Add-range1'), 'range-over-func loop body')
+        self.assertEqual(goskel.parse_name('Walk-range2.1'), 'range-over-func loop body')
+        self.assertEqual(goskel.parse_name('(*List).Add').name, 'Add')
 
     def test_command_line(self):
         r = subprocess.run([sys.executable, os.path.join(TOOLS, 'goskel.py'), self.ref, self.out,

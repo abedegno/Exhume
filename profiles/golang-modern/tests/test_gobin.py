@@ -118,6 +118,13 @@ class GoBinary(unittest.TestCase):
         self.assertIn(('shop/cart.price', self.line_of('price(it)')),
                       [(i.callee, i.call_line) for i in b.inltree(f)])
 
+    def test_inlined_call_names_the_callee_start_line_and_file(self):
+        b = gobin.load(self.internal)
+        f = next(x for x in b.funcs() if x.name == 'shop/cart.Total')
+        inl = next(i for i in b.inltree(f) if i.callee == 'shop/cart.price')
+        self.assertTrue(inl.file.endswith('/cart/cart.go'), inl.file)
+        self.assertEqual(inl.start_line, self.line_of('func price('))
+
     def test_buildinfo(self):
         self.assertEqual(gobin.load(self.internal).buildinfo()['path'], 'shop/cmd/till')
 

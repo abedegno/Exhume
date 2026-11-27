@@ -72,6 +72,8 @@ Each line gives the name, the classes (`-` for no results, `?` for no answer) an
 
 `goskel.py` writes a skeleton source tree that builds. Every function becomes a one-line stub on the line where it starts in the binary, and the named types of each package go into its `types_recovered.go`. Signatures come from method tables where the linker kept them, and are otherwise guessed: the parameters from the argument layout, the results with `gosig.py`. The file `UNKNOWN.txt` lists every guess.
 
+A function that the compiler inlined at every call has no entry of its own in the function table, but the inlining trees of its callers still name it, with its file and start line. The tool writes a stub for each such function under the prefix, on its start line in its file, and creates the file, or the package, when the tree does not have it. Its signature is unknown, so the stub has no parameters and ends in `// skel:stub inline-only signature unknown`. A method gets its receiver from the name; when the package declares no type of that name, the method is skipped. The instances of a generic function give one stub with as many type parameters as the instances have. `UNKNOWN.txt` lists each of these functions with the number of functions it was inlined into.
+
 ```
 goskel.py BINARY OUT_DIR --prefix shop/ [--modcache DIR] [--keep TAG] [--adopt-unmarked-stubs]
 ```

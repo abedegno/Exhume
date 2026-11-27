@@ -3,6 +3,8 @@ package cart
 import (
 	"errors"
 	"strconv"
+
+	"shop/tally"
 )
 
 // The functions in this file have results of known shapes, for the tests of the result
@@ -66,3 +68,10 @@ func Triple(n int) int {
 
 // Ops holds Triple as a value.
 var Ops = []func(int) int{Triple}
+
+// Rounded uses helpers that are inlined at every call, one of them from a package of its own.
+//
+//go:noinline
+func Rounded(n int) int {
+	return tally.Add(roundUp(n), counter(n).twice())
+}
