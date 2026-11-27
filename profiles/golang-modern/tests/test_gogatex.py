@@ -187,10 +187,16 @@ class Gate(Base):
         self.assertEqual(out.returncode, 0, out.stderr)
         lines = out.stdout.splitlines()
         self.assertEqual(lines[-2:], ['scored 1 functions', 'matched 2 of 3; fitted 1'])
+        self.assertIn('MATCH\t' + TOTAL, lines)        # one STATUS<TAB>name line per scored function
+        self.assertLess(lines.index('MATCH\t' + TOTAL), len(lines) - 2)
         rows = read_rows(self.status)
         self.assertIn(['main.main', 'shop/cmd/till/main.go', 'DIFF', '1', '2025-05-05'], rows)
         self.assertIn(['shop/other.Kept', 'shop/other/o.go', 'MATCH', '0', '2025-01-01'], rows)
         self.assertIn([TOTAL, 'shop/cart/cart.go', 'MATCH', '0', '2026-01-01'], rows)
+
+    def test_full_gate_prints_no_function_lines(self):
+        out = self.gate(self.ref, self.same)
+        self.assertNotIn('MATCH\t' + TOTAL, out.stdout.splitlines())
 
     def test_only_judges_regressions_on_scored_rows(self):
         with open(self.status, 'w') as f:

@@ -338,6 +338,31 @@ class Skeleton(unittest.TestCase):
         self.assertNotIn('type Pair[', self.read(self.out, 'shelf/types_recovered.go'))
         self.assertEqual(self.go_build(self.out).returncode, 0)
 
+    def claim_add(self, body):
+        """Claim shelf's one stub that uses the cart package, writing body in its place."""
+        lines = self.lines_of('shelf/shelf.go')
+        k = [n for n, l in enumerate(lines) if l.startswith('func (*Shelf) Add(')][0]
+        lines[k] = 'func (*Shelf) Add(it cart.Item) error { %s }' % body
+        self.put('shelf/shelf.go', '\n'.join(lines))
+
+    def test_import_used_by_claimed_code_survives(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        before = self.lines_of('shelf/shelf.go')[1]
+        self.assertEqual(before, 'import "shop/cart" // skel:import')
+        self.claim_add('var c cart.Item; _ = c; return nil')
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.lines_of('shelf/shelf.go')[1], before)
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_import_nothing_uses_is_removed(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.claim_add('return nil')
+        self.put('shelf/shelf.go', self.read(self.out, 'shelf/shelf.go').replace(
+            'func (*Shelf) Add(it cart.Item)', 'func (*Shelf) Add(it int)'))
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertNotIn('skel:import', self.read(self.out, 'shelf/shelf.go'))
+
     def test_adopting_unmarked_stubs_of_an_earlier_run(self):
         goskel.write(self.ref, self.out, prefix='shop/')
         fresh = {p: slurp(p) for p in self.files(self.out)}

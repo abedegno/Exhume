@@ -21,7 +21,8 @@ today). Without --only, every selected function is scored and rows of functions 
 are dropped.
 
 With --only REGEX, only the selected functions whose names match REGEX (re.search) are scored and
-their rows replaced; every other row of the existing file is kept as it is, and a row whose name
+their rows replaced (one line `STATUS<TAB>name` is printed for each scored function, before the
+summary lines; the full gate prints none); every other row of the existing file is kept as it is, and a row whose name
 matches REGEX but which is no longer selected is dropped (a dropped row that was MATCH is a
 regression, see below). The line `scored K functions` is printed before the last line. On a first
 run, with no status file, --only produces a file that holds only the scored rows.
@@ -151,7 +152,7 @@ def write_status(path, rows):
 
 
 Outcome = collections.namedtuple('Outcome', 'regressed dups matched total fitted scored written '
-                                 'operands', defaults=(None,))
+                                 'operands scored_rows', defaults=(None, ()))
 
 
 def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, today=None,
@@ -227,7 +228,8 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
     return Outcome(regressed, sum(1 for c in counts.values() if c > 1),
                    sum(r[2] == 'MATCH' for r in shown), len(shown),
                    sum(r[3] == '1' for r in shown), len(new), written,
-                   gocmpx.operand_totals(compared) if compared else None)
+                   gocmpx.operand_totals(compared) if compared else None,
+                   [(r[2], r[0]) for r in new.values()])
 
 
 def main(argv):
@@ -255,6 +257,9 @@ def main(argv):
         print('REGRESSED\t' + name)
     if out.regressed and not out.written:
         print('status file not written: rerun with --accept-regressions to record the regressions')
+    if args.only is not None:
+        for st, name in out.scored_rows:
+            print('%s\t%s' % (st, name))
     if out.operands:
         print('data operands of the %d functions scored MATCH: %s'
               % (out.operands[0], gocmpx.operand_text(out.operands[1])))

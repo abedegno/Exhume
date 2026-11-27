@@ -930,6 +930,17 @@ class Skeleton:
             r.may_import = lambda path: path in existing
         return r, [self._stub_text(s, chosen, generic, r) for s in stubs]
 
+    def _import_in_use(self, src, i):
+        """Whether line i is an owned import that code other than the stubs uses."""
+        m = re.match(r'^import (?:(\w+|\.|_) )?"([^"]*)" // skel:import$', src.lines[i])
+        if not m or m.group(1) in ('_', '.'):
+            return False
+        name = m.group(1) or self._default_name(m.group(2))
+        decls = {n for d in src.decls if d[0] == 'import' or src.is_stub(d, self.adopt)
+                 for n in range(d[1] - 1, d[2])}
+        rx = re.compile(r'(?<![\w.])' + re.escape(name) + r'\s*\.')
+        return any(rx.search(code) for n, code in enumerate(src.code) if n not in decls)
+
     def _edit_file(self, pkg, name, stubs, chosen, generic, declared, own_types):
         """Edit (or write) one source file in place: only marker lines change, and stubs and
         imports go on free lines."""
@@ -948,6 +959,8 @@ class Skeleton:
         ours = set()                        # indexes of lines this run may blank or trim
         for i in range(len(lines)):
             if src is not None and src.owned(i, self.adopt):
+                if self._import_in_use(src, i):
+                    continue            # hand-written code needs it: it stays as written
                 lines[i] = ''
                 ours.add(i)
         cur = Source('\n'.join(lines))
