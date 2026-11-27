@@ -193,7 +193,8 @@ class Gate(Base):
         self.assertEqual(out.returncode, 0, out.stderr)
         lines = out.stdout.splitlines()
         self.assertEqual(lines[-3:], ['scored 1 functions',
-                                      'globals: 0 functions with inconsistent references',
+                                      'globals: 0 functions likely wrong, 0 bystanders in 0 '
+                                      'conflicts (partial run: unscored functions not checked)',
                                       'matched 2 of 3; fitted 1; 0 of the matched call unmatched code'])
         self.assertIn('MATCH\t' + TOTAL, lines)        # one STATUS<TAB>name line per scored function
         self.assertLess(lines.index('MATCH\t' + TOTAL), len(lines) - 3)
@@ -360,8 +361,11 @@ class Globals(Base):
         self.assertEqual({f[1] for f in flagged}, {'shop/cart.BumpA', 'shop/cart.BumpB'})
         self.assertTrue(all(len(f) == 3 and f[2].startswith('+0x') for f in flagged), flagged)
         detail = next(f[2] for f in flagged if f[1] == 'shop/cart.BumpB')
-        self.assertIn('shop/cart.BumpA', detail)                # the conflicting pairing
-        self.assertEqual(lines[-2], 'globals: 2 functions with inconsistent references')
+        self.assertRegex(detail, r'^\+0x[0-9a-f]+: 0x[0-9a-f]+ -> (0x[0-9a-f]+) \(2 operands in 1 '
+                                 r'function\), but 0x[0-9a-f]+ -> \1 \(2 operands in 1 function\)$')
+        self.assertNotIn('1 operands', out.stdout)
+        self.assertFalse(any(l.startswith('GLOBAL-BYSTANDERS') for l in lines))   # a tie
+        self.assertEqual(lines[-2], 'globals: 2 functions likely wrong, 0 bystanders in 1 conflicts')
         self.assertTrue(lines[-1].startswith('matched '))
 
     def test_equal_sources_in_a_moved_layout_report_none(self):
@@ -373,15 +377,16 @@ class Globals(Base):
         out = self.gate(self.vars_ref, self.vars_moved)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertNotIn('GLOBAL\t', out.stdout)
-        self.assertIn('globals: 0 functions with inconsistent references', out.stdout)
+        self.assertIn('globals: 0 functions likely wrong, 0 bystanders in 0 conflicts\n', out.stdout)
 
 
 def fake_compare(table):
-    """A stand-in for gocmpx.compare_many: table is {name: (status, [callee, ...])}."""
+    """A stand-in for gocmpx.compare_many: table is {name: (status, [callee, ...][, pairs])}."""
     import gocmpx
 
     def compare_many(ref, cand, names):
-        return [gocmpx.Result(table[n][0], n, '', None, tuple(sorted(table[n][1])))
+        return [gocmpx.Result(table[n][0], n, '', None, tuple(sorted(table[n][1])),
+                              tuple(table[n][2]) if len(table[n]) > 2 else ())
                 for n in names]
     return compare_many
 
@@ -482,6 +487,48 @@ class Stubbed(StubBase):
         code, lines = self.run_main(['shop/a', 'shop/b', 'shop/c'], table)
         self.assertEqual(lines[-1], 'matched 3 of 3; fitted 0; 0 of the matched call unmatched code')
 
+    def globals_run(self, table, extra=()):
+        code, lines = self.run_main(sorted(table), table, extra=extra)
+        self.assertEqual(code, 0, lines)
+        return lines
+
+    def test_globals_blame_the_minority_and_summarise_the_bystanders(self):
+        good = [(0x10, 0x500, 0x900)]
+        table = {'shop/f%d' % i: ('MATCH', [], good) for i in range(1, 4)}
+        table['shop/g'] = ('MATCH', [], [(0x20, 0x600, 0x900), (0x28, 0x700, 0x980)])
+        table['shop/h'] = ('MATCH', [], [(0x8, 0x700, 0x980)])          # consistent: no line
+        lines = self.globals_run(table)
+        glob = [l for l in lines if l.startswith('GLOBAL')]
+        self.assertEqual(glob, [
+            'GLOBAL\tshop/g\t+0x20: 0x600 -> 0x900 (1 operand in 1 function), but '
+            '0x500 -> 0x900 (3 operands in 3 functions)',
+            'GLOBAL-BYSTANDERS\t3 functions share the other pairing, first shop/f1+0x10'])
+        self.assertEqual(lines[-2], 'globals: 1 functions likely wrong, 3 bystanders in 1 conflicts')
+
+    def test_globals_tie_prints_both_sides(self):
+        lines = self.globals_run({'shop/a': ('MATCH', [], [(0x4, 0x500, 0x900)]),
+                                  'shop/b': ('MATCH', [], [(0x8, 0x600, 0x900)])})
+        glob = [l for l in lines if l.startswith('GLOBAL')]
+        self.assertEqual([l.split('\t')[1] for l in glob], ['shop/a', 'shop/b'])
+        self.assertIn('but 0x600 -> 0x900 (1 operand in 1 function)', glob[0])
+        self.assertEqual(lines[-2], 'globals: 2 functions likely wrong, 0 bystanders in 1 conflicts')
+
+    def test_globals_count_conflicts_and_say_when_partial(self):
+        table = {'shop/a': ('MATCH', [], [(0x4, 0x500, 0x900), (0xc, 0x510, 0x910)]),
+                 'shop/b': ('MATCH', [], [(0x8, 0x600, 0x900)]),
+                 'shop/c': ('MATCH', [], [(0x8, 0x510, 0x920)]),
+                 'shop/d': ('MATCH', [], [(0x8, 0x510, 0x910)]),
+                 'shop/e': ('MATCH', [], [(0x8, 0x510, 0x910)])}
+        lines = self.globals_run(table)
+        self.assertEqual(lines[-2], 'globals: 3 functions likely wrong, 2 bystanders in 2 conflicts')
+        self.assertIn('GLOBAL\tshop/c\t+0x8: 0x510 -> 0x920 (1 operand in 1 function), but '
+                      '0x510 -> 0x910 (3 operands in 3 functions)', lines)
+        self.assertIn('GLOBAL-BYSTANDERS\t3 functions share the other pairing, first shop/a+0xc',
+                      lines)
+        lines = self.globals_run(table, extra=['--only', 'shop/'])
+        self.assertEqual(lines[-2], 'globals: 3 functions likely wrong, 2 bystanders in 2 conflicts'
+                                    ' (partial run: unscored functions not checked)')
+
 
 class AcceptFrom(StubBase):
     """--accept-regressions-from NAME: a regression whose old waits named NAME, now MATCH."""
@@ -527,7 +574,8 @@ class AcceptFrom(StubBase):
         names = ['shop/a', 'shop/b', 'shop/c', 'shop/d']
         code, lines = self.run_main(names, table, extra=['--accept-regressions-from', 'shop/b'])
         self.assertEqual(code, 1)
-        self.assertIn('ACCEPTED\tshop/a\tcaused by shop/b\tSIZE', lines)
+        self.assertIn('WOULD-ACCEPT\tshop/a\tcaused by shop/b\tSIZE', lines)   # not applied
+        self.assertFalse(any(l.startswith('ACCEPTED') for l in lines), lines)
         self.assertIn('REGRESSED\tshop/c', lines)     # empty old waits
         self.assertIn('REGRESSED\tshop/d', lines)     # waited on another function
         self.assertNotIn('REGRESSED\tshop/a', lines)
@@ -545,12 +593,12 @@ class AcceptFrom(StubBase):
                    ('shop/b', 'shop/a.go', 'SIZE', '0', '2025-01-01', ''),
                    (odd, 'shop/a.go', 'SIZE', '0', '2025-01-01', ''))
         code, lines = self.run_main(['shop/a', 'shop/c', 'shop/b', odd], {
-            'shop/a': ('DIFF', [odd]), 'shop/c': ('MISSING', ['shop/b']),
+            'shop/a': ('DIFF', [odd]), 'shop/c': ('INLINE', ['shop/b']),
             'shop/b': ('MATCH', []), odd: ('MATCH', [])},
             extra=['--accept-regressions-from', odd, '--accept-regressions-from', 'shop/b'])
         self.assertEqual(code, 0, lines)
         self.assertIn('ACCEPTED\tshop/a\tcaused by %s\tDIFF' % odd, lines)
-        self.assertIn('ACCEPTED\tshop/c\tcaused by shop/b\tMISSING', lines)
+        self.assertIn('ACCEPTED\tshop/c\tcaused by shop/b\tINLINE', lines)
 
     def test_only_takes_an_unscored_callee_from_the_file(self):
         self.write(('shop/a', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/b'),
@@ -565,6 +613,28 @@ class AcceptFrom(StubBase):
                                                            'shop/b': ('MATCH', [])},
                                     extra=['--only', '^shop/a$', '--accept-regressions-from', 'shop/b'])
         self.assertEqual(code, 1)
+        self.assertIn('REGRESSED\tshop/a', lines)
+        self.unchanged(before)
+
+    def test_missing_or_dup_is_not_caused_by_a_callee(self):
+        for now, names in (('MISSING', ['shop/a', 'shop/b']), ('DUP', ['shop/a', 'shop/a', 'shop/b'])):
+            before = self.old()
+            code, lines = self.run_main(names, {'shop/a': (now, ['shop/b']),
+                                                'shop/b': ('MATCH', [])},
+                                        extra=['--accept-regressions-from', 'shop/b'])
+            self.assertEqual(code, 1, (now, lines))
+            self.assertIn('REGRESSED\tshop/a', lines)
+            self.assertFalse(any('ACCEPT' in l for l in lines), lines)
+            self.unchanged(before)
+
+    def test_only_refuses_a_callee_no_longer_in_the_reference(self):
+        self.write(('shop/a', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/b'),
+                   ('shop/b', 'shop/a.go', 'MATCH', '0', '2025-01-01', ''))   # a stale row
+        with open(self.status, 'rb') as f:
+            before = f.read()
+        code, lines = self.run_main(['shop/a'], {'shop/a': ('SIZE', ['shop/b'])},
+                                    extra=['--only', '^shop/a$', '--accept-regressions-from', 'shop/b'])
+        self.assertEqual(code, 1, lines)
         self.assertIn('REGRESSED\tshop/a', lines)
         self.unchanged(before)
 
