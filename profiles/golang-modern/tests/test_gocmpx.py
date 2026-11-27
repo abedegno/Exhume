@@ -382,6 +382,47 @@ class Comparator(unittest.TestCase):
         self.assertEqual(r.status, 'MATCH', r)
         self.assertEqual(r.data, gocmpx.Operands(0, 0, 0, 2))
 
+    # What a function refers to: calls, function values, masked globals
+
+    def test_calls_name_called_functions_of_the_reference(self):
+        a = gobin.load(self.build((call_helper('helperA'),)))
+        b = gobin.load(self.build((call_helper('helperB'),)))
+        r = gocmpx.compare(a, b, TOTAL)
+        self.assertEqual(r.status, 'DIFF', r)
+        self.assertIn('shop/cart.helperA', r.calls)            # the reference's callee
+        self.assertNotIn('shop/cart.helperB', r.calls)
+        self.assertNotIn(TOTAL, r.calls)                       # never itself
+        self.assertEqual(list(r.calls), sorted(set(r.calls)))
+        main = gocmpx.compare(a, b, 'main.main')
+        self.assertIn(TOTAL, main.calls)
+
+    def test_calls_include_a_function_value(self):
+        ref = gobin.load(self.build((call_helper('helperA', as_value=True),)))
+        r = gocmpx.compare(ref, ref, TOTAL)
+        self.assertEqual(r.status, 'MATCH', r)
+        self.assertIn('shop/cart.helperA', r.calls)
+        self.assertIn('shop/cart.sink', r.calls)
+
+    def test_calls_of_a_function_missing_from_the_candidate(self):
+        gone = self.build((replace('cart.Total(items)', 'len(items)', 'cmd/till/main.go'),))
+        r = self.between(self.build((call_helper('helperA'),)), gone)
+        self.assertEqual(r.status, 'MISSING')
+        self.assertIn('shop/cart.helperA', r.calls)
+
+    def test_pairs_hold_the_masked_operands_of_a_match(self):
+        a = gobin.load(self.build((words(),)))
+        b = gobin.load(self.build((words(), shift_data())))
+        r = gocmpx.compare(a, b, 'shop/cart.Bump')
+        self.assertEqual(r.status, 'MATCH', r)
+        self.assertEqual(len(r.pairs), 2)                       # Counter, read and written
+        self.assertEqual(len({(ra, ca) for _, ra, ca in r.pairs}), 1)
+        ra = r.pairs[0][1]
+        held = [n for n, (_, va, _, size) in a.sections.items() if va <= ra < va + size and va]
+        self.assertIn(held[0], ('.bss', '.noptrbss', '.data', '.noptrdata'))   # a package variable
+        self.assertEqual(gocmpx.compare(a, b, 'shop/cart.Greet').pairs, ())   # by content only
+        r = self.words_pair('Greet', cand={'greet': 'a long greeting for the shoe'})
+        self.assertEqual(r.pairs, ())                          # pairs of MATCH functions only
+
     def test_command_line_counts_operands(self):
         ref = self.build((words(),))
         r = subprocess.run([sys.executable, os.path.join(PROFILE, 'tools', 'gocmpx.py'),

@@ -54,7 +54,11 @@ so they line up even when the sizes differ. A row is marked `*` when the instruc
 one side has none, `~` when they are equal but the source line or inlined callee differs.
 
 As a module: compare(ref, cand, name) returns a Result (status, name, detail, and data, the
-Operands counts or None when the code was not compared); compare_many(ref, cand, names) returns the
+Operands counts or None when the code was not compared; calls, the sorted names of the functions
+the reference's code calls, jumps to or takes the address of, whatever the status, empty when the
+reference lacks the function; pairs, for a MATCH, the (offset, reference address, candidate
+address) of each masked data operand, so that a caller can check that the masked addresses
+correspond one to one across many functions); compare_many(ref, cand, names) returns the
 results of many functions and decodes them in as few objdump runs as possible. Every function
 is decoded, since equal bytes can still call different functions. The code is written
 as the sections of one relocatable ELF file, which objdump (LLVM or GNU) disassembles in a single process, so there is no per-function
@@ -78,8 +82,11 @@ PADDING = (0xCC, 0x90)                  # int3 and nop, which the linker puts be
 CHUNK = 1500                            # functions per objdump process
 OUTSIDE = 'outside Go code'
 # data is the Operands of a function whose code was compared (DIFF from data, LINES, INLINE,
-# MATCH), else None
-Result = collections.namedtuple('Result', 'status name detail data', defaults=(None,))
+# MATCH), else None; calls the names of the functions the reference's code calls or refers to
+# (see called), for every function the reference has; pairs the (offset, reference address,
+# candidate address) of each masked data operand of a MATCH function, else ()
+Result = collections.namedtuple('Result', 'status name detail data calls pairs',
+                                defaults=(None, (), ()))
 Insn = collections.namedtuple('Insn', 'off raw text')
 # how the RIP-relative operands of a function were compared
 Operands = collections.namedtuple('Operands', 'content type function masked')
@@ -345,6 +352,25 @@ class Data:
         return i[0], t[0]
 
 
+def called(binary, func, code, insns):
+    """The sorted names of the functions, other than func itself, that func's decoded code calls
+    or jumps to (a rel32 branch that leaves it) or refers to by a RIP-relative operand that points
+    into a function or at a function value. Only the code is read: a call made by an inlined
+    callee counts only when its call instruction is in func's code."""
+    res, out = _resolver(binary), set()
+    for (kind, _), target in references(code, insns).items():
+        addr = func.entry + target
+        where = res.where(addr) if kind == 'branch' else res.value_where(addr)
+        if where == OUTSIDE:
+            continue
+        if where.startswith('value of '):
+            where = where[len('value of '):]
+        name = where.rsplit('+', 1)[0]
+        if name != func.name:
+            out.add(name)
+    return tuple(sorted(out))
+
+
 def _data(binary):
     d = getattr(binary, '_gocmpx_data', None)
     if d is None:
@@ -490,7 +516,8 @@ def string_lengths(insns, leas):
 
 
 def _target_difference(ref, cand, rf, cf, rc, cc, rins, cins):
-    """(None or a description of the first difference, Operands). The branches that leave the
+    """(None or a description of the first difference, Operands, the (offset, reference address,
+    candidate address) of each masked operand). The branches that leave the
     function must go to the same place in both binaries. Of the RIP-relative operands, one that
     points into Go code or at a function value must point at the same function; one that points
     at a type descriptor or an itab at a type or itab of the same names; one that is the address
@@ -500,7 +527,7 @@ def _target_difference(ref, cand, rf, cf, rc, cc, rins, cins):
     rr, cr = _resolver(ref), _resolver(cand)
     rd, cd = _data(ref), _data(cand)
     counts = dict.fromkeys(OPERAND_KINDS, 0)
-    found = []
+    found, pairs = [], []
     lengths = None
     for key in sorted(set(rb) | set(cb), key=lambda k: (k[1], k[0])):
         kind, off = key
@@ -548,7 +575,8 @@ def _target_difference(ref, cand, rf, cf, rc, cc, rins, cins):
                     off, _show(sa), _show(sb) if sb is not None else 'not read-only data'))
             continue
         counts['masked'] += 1
-    return (found[0] if found else None), Operands(**counts)
+        pairs.append((off, ra, ca))
+    return (found[0] if found else None), Operands(**counts), tuple(pairs)
 
 
 def _code_difference(rc, cc, rins, cins):
@@ -606,41 +634,52 @@ def compare_many(ref, cand, names):
     functions when the two binaries are laid out differently."""
     rnames, cnames = _by_name(ref), _by_name(cand)
     results, found, data = [None] * len(names), [], [None] * len(names)
+    calls, pairs, alone = [()] * len(names), [()] * len(names), []
     for n, name in enumerate(names):
         rf, cf = rnames.get(name), cnames.get(name)
         if rf is None or cf is None:
             results[n] = Result('MISSING', name, 'not in the %s' % (
                 'reference' if rf is None else 'candidate'))
+            if rf is not None:
+                alone.append((n, rf, ref.code(rf)))
         else:
             found.append((n, rf, cf, ref.code(rf), cand.code(cf)))
-    decoded = decode([c for _, _, _, rc, cc in found for c in (rc, cc)]) if found else []
+    codes = [c for _, _, _, rc, cc in found for c in (rc, cc)] + [rc for _, _, rc in alone]
+    decoded = decode(codes) if codes else []
+    for k, (n, rf, rc) in enumerate(alone):
+        rins = decoded[2 * len(found) + k]
+        rc = trim_padding(rc, rins)
+        results[n] = results[n]._replace(calls=called(
+            ref, rf, rc, rins[:len(rins) - _padding_count(rins)]))
     for k, (n, rf, cf, rc, cc) in enumerate(found):
         rins, cins = decoded[2 * k], decoded[2 * k + 1]
         rc, cc = trim_padding(rc, rins), trim_padding(cc, cins)
         rins, cins = rins[:len(rins) - _padding_count(rins)], cins[:len(cins) - _padding_count(cins)]
+        calls[n] = called(ref, rf, rc, rins)
         if len(rc) != len(cc):
-            results[n] = Result('SIZE', names[n], '%d / %d bytes' % (len(rc), len(cc)))
+            results[n] = Result('SIZE', names[n], '%d / %d bytes' % (len(rc), len(cc)), None,
+                                calls[n])
             continue
         why = _code_difference(rc, cc, rins, cins)
         if why:
-            results[n] = Result('DIFF', names[n], why)
+            results[n] = Result('DIFF', names[n], why, None, calls[n])
             continue
-        why, data[n] = _target_difference(ref, cand, rf, cf, rc, cc, rins, cins)
+        why, data[n], pairs[n] = _target_difference(ref, cand, rf, cf, rc, cc, rins, cins)
         if why:
-            results[n] = Result('DIFF', names[n], why, data[n])
+            results[n] = Result('DIFF', names[n], why, data[n], calls[n])
     for n, name in enumerate(names):
         if results[n] is not None:
             continue
         rf, cf = rnames[name], cnames[name]
         rl, cl = ref.lines(rf), cand.lines(cf)
         if rl != cl:
-            results[n] = Result('LINES', name, _line_detail(rl, cl), data[n])
+            results[n] = Result('LINES', name, _line_detail(rl, cl), data[n], calls[n])
             continue
         ri, ci = ref.inltree(rf), cand.inltree(cf)
         if [_inline_key(i) for i in ri] != [_inline_key(i) for i in ci]:
-            results[n] = Result('INLINE', name, _inline_detail(ri, ci), data[n])
+            results[n] = Result('INLINE', name, _inline_detail(ri, ci), data[n], calls[n])
         else:
-            results[n] = Result('MATCH', name, '', data[n])
+            results[n] = Result('MATCH', name, '', data[n], calls[n], pairs[n])
     return results
 
 

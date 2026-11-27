@@ -55,15 +55,21 @@ class Base(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def build(cls, name, edit):
+    def build(cls, name, edit, files=None):
+        """Build the fixture with edit (old, new) applied to cart/cart.go and with files, a
+        {path: text or (old, new)} dict, written or edited."""
         src = os.path.join(cls.tmp, 'src-' + name)
         shutil.copytree(FIXTURE, src)
+        files = dict(files or {})
         if edit:
-            path = os.path.join(src, 'cart', 'cart.go')
-            with open(path) as f:
-                text = f.read()
+            files['cart/cart.go'] = edit
+        for rel, text in files.items():
+            path = os.path.join(src, rel)
+            if isinstance(text, tuple):
+                with open(path) as f:
+                    text = f.read().replace(*text)
             with open(path, 'w') as f:
-                f.write(text.replace(*edit))
+                f.write(text)
         out = os.path.join(cls.tmp, 'bin-' + name)
         r = subprocess.run(['go', 'build', '-trimpath', '-buildvcs=false', '-o', out, './cmd/till'],
                            cwd=src, env=go_env(CGO_ENABLED='0'), capture_output=True, text=True)
@@ -97,10 +103,10 @@ class Gate(Base):
     def test_counts(self):
         out = self.gate(self.ref, self.same)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertRegex(out.stdout.splitlines()[-1], r'^matched \d+ of \d+; fitted 0$')
+        self.assertRegex(out.stdout.splitlines()[-1], r'^matched \d+ of \d+; fitted 0; 0 of the matched call unmatched code$')
         self.assertRegex(out.stdout, r'data operands of the 2 functions scored MATCH: \d+ by '
                          r'content, \d+ by type, \d+ by function, \d+ masked\n')
-        self.assertIn(['shop/cart.Total', 'shop/cart/cart.go', 'MATCH', '0', '2026-01-01'],
+        self.assertIn(['shop/cart.Total', 'shop/cart/cart.go', 'MATCH', '0', '2026-01-01', ''],
                       read_rows(self.status))
 
     def test_only_first_party_files_are_compared(self):
@@ -109,7 +115,7 @@ class Gate(Base):
         self.assertEqual(names, {TOTAL, 'main.main'})      # runtime.* files are elsewhere
         os.unlink(self.status)       # excluding a matched function would be a regression
         out = self.gate(self.ref, self.same, extra=['--exclude', '/cart/'])
-        self.assertEqual(out.stdout.splitlines()[-1], 'matched 1 of 1; fitted 0')
+        self.assertEqual(out.stdout.splitlines()[-1], 'matched 1 of 1; fitted 0; 0 of the matched call unmatched code')
         out = self.gate(self.ref, self.same, extra=['--exclude', '/cart/', '--exclude', '/cmd/'])
         self.assertEqual(out.returncode, 2)               # nothing selected at all
 
@@ -124,7 +130,7 @@ class Gate(Base):
 
     def test_name_prefix_option(self):
         out = self.gate(self.ref, self.same, extra=['--exclude', '/', '--name-prefix', 'shop/'])
-        self.assertEqual(out.stdout.splitlines()[-1], 'matched 1 of 1; fitted 0')
+        self.assertEqual(out.stdout.splitlines()[-1], 'matched 1 of 1; fitted 0; 0 of the matched call unmatched code')
         self.assertEqual([r[0] for r in read_rows(self.status)], [TOTAL])
 
     def test_regression_fails_and_is_named(self):
@@ -133,7 +139,7 @@ class Gate(Base):
         self.assertEqual(out.returncode, 1)
         self.assertIn('REGRESSED\tshop/cart.Total', out.stdout)
         self.assertEqual(out.stdout.splitlines()[-1],
-                         'matched 2 of 2; fitted 0 (status file unchanged, not written)')
+                         'matched 2 of 2; fitted 0; 0 of the matched call unmatched code (status file unchanged, not written)')
         self.assertNotIn('SIZE', [r[2] for r in read_rows(self.status)])   # not written
 
     def test_regression_holds_across_runs(self):
@@ -186,13 +192,15 @@ class Gate(Base):
         out = self.gate(self.ref, self.same, extra=['--only', r'^shop/cart\.'])
         self.assertEqual(out.returncode, 0, out.stderr)
         lines = out.stdout.splitlines()
-        self.assertEqual(lines[-2:], ['scored 1 functions', 'matched 2 of 3; fitted 1'])
+        self.assertEqual(lines[-3:], ['scored 1 functions',
+                                      'globals: 0 functions with inconsistent references',
+                                      'matched 2 of 3; fitted 1; 0 of the matched call unmatched code'])
         self.assertIn('MATCH\t' + TOTAL, lines)        # one STATUS<TAB>name line per scored function
-        self.assertLess(lines.index('MATCH\t' + TOTAL), len(lines) - 2)
+        self.assertLess(lines.index('MATCH\t' + TOTAL), len(lines) - 3)
         rows = read_rows(self.status)
-        self.assertIn(['main.main', 'shop/cmd/till/main.go', 'DIFF', '1', '2025-05-05'], rows)
-        self.assertIn(['shop/other.Kept', 'shop/other/o.go', 'MATCH', '0', '2025-01-01'], rows)
-        self.assertIn([TOTAL, 'shop/cart/cart.go', 'MATCH', '0', '2026-01-01'], rows)
+        self.assertIn(['main.main', 'shop/cmd/till/main.go', 'DIFF', '1', '2025-05-05', ''], rows)
+        self.assertIn(['shop/other.Kept', 'shop/other/o.go', 'MATCH', '0', '2025-01-01', ''], rows)
+        self.assertIn([TOTAL, 'shop/cart/cart.go', 'MATCH', '0', '2026-01-01', ''], rows)
 
     def test_full_gate_prints_no_function_lines(self):
         out = self.gate(self.ref, self.same)
@@ -235,7 +243,7 @@ class Gate(Base):
         self.assertEqual(out.returncode, 1)
         self.assertIn('REGRESSED\tshop/cart.Gone', out.stdout)
         self.assertEqual(out.stdout.splitlines()[-1],
-                         'matched 1 of 1; fitted 0 (status file unchanged, not written)')
+                         'matched 1 of 1; fitted 0; 0 of the matched call unmatched code (status file unchanged, not written)')
         with open(self.status, 'rb') as f:
             self.assertEqual(f.read(), old)
         out = self.gate(self.ref, self.same, extra=['--accept-regressions'])
@@ -265,8 +273,210 @@ class Gate(Base):
 
     def test_fitted_marker_is_counted(self):
         out = self.gate(self.ref, self.same, source_with_marker='cart/cart.go')
-        self.assertTrue(out.stdout.splitlines()[-1].endswith('fitted 1'))
+        self.assertIn('; fitted 1;', out.stdout.splitlines()[-1])
         self.assertEqual(read_rows(self.status)[0][3], '1')
+
+    # waits: what a function waits on
+
+    def test_waits_names_an_unmatched_callee(self):
+        out = self.gate(self.ref, self.changed)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        rows = {r[0]: r for r in read_rows(self.status)}
+        self.assertEqual(rows['main.main'][2:3] + rows['main.main'][5:], ['MATCH', TOTAL])
+        self.assertEqual(rows[TOTAL][2:3] + rows[TOTAL][5:], ['SIZE', ''])
+        self.assertEqual(out.stdout.splitlines()[-1],
+                         'matched 1 of 2; fitted 0; 1 of the matched call unmatched code')
+        out = self.gate(self.ref, self.same, extra=['--accept-regressions'])
+        self.assertEqual(read_rows(self.status)[1][5], '')      # Total matches again
+        self.assertTrue(out.stdout.splitlines()[-1].endswith('; 0 of the matched call unmatched code'))
+
+    def test_old_five_column_file_reads_with_empty_waits(self):
+        with open(self.status, 'w') as f:
+            f.write('name\tfile\tstatus\tfitted\tsince\n'
+                    'main.main\tshop/cmd/till/main.go\tMATCH\t0\t2025-01-01\n'
+                    'shop/other.Kept\tshop/other/o.go\tMATCH\t0\t2025-01-01\n')
+        out = self.gate(self.ref, self.same, extra=['--only', r'^shop/cart\.'])
+        self.assertEqual(out.returncode, 0, out.stderr)
+        with open(self.status) as f:
+            self.assertEqual(f.readline(), 'name\tfile\tstatus\tfitted\tsince\twaits\n')
+        rows = read_rows(self.status)
+        self.assertTrue(all(len(r) == 6 for r in rows), rows)
+        self.assertIn(['shop/other.Kept', 'shop/other/o.go', 'MATCH', '0', '2025-01-01', ''], rows)
+
+    def test_a_six_column_header_with_five_fields_is_a_tool_error(self):
+        with open(self.status, 'w') as f:
+            f.write('name\tfile\tstatus\tfitted\tsince\twaits\n'
+                    'main.main\tshop/cmd/till/main.go\tMATCH\t0\t2025-01-01\n')
+        out = self.gate(self.ref, self.same)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn(':2:', out.stderr)
+
+
+VARS = """package cart
+
+var countA, countB int
+
+//go:noinline
+func BumpA() int { countA++; return countA }
+
+//go:noinline
+func BumpB() int { %s++; return %s }
+"""
+CALLS_BUMPS = ('fmt.Println(cart.Total(items))',
+               'fmt.Println(cart.Total(items), cart.BumpA(), cart.BumpB())')
+MOVER = """package cart
+
+var aaa1, aaa2, aaa3 int
+
+//go:noinline
+func Pad() int { aaa1++; aaa2++; aaa3++; println("words that move the read-only data"); return aaa2 }
+
+func init() { Pad() }
+"""
+
+
+class Globals(Base):
+    """References to writable globals, which the comparator masks, are checked for consistency
+    across the run."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        main = {'cmd/till/main.go': CALLS_BUMPS}
+        cls.vars_ref = cls.build('vars-ref', None, dict(main, **{
+            'cart/vars.go': VARS % ('countB', 'countB')}))
+        cls.vars_one = cls.build('vars-one', None, dict(main, **{
+            'cart/vars.go': VARS % ('countA', 'countA')}))
+        cls.vars_moved = cls.build('vars-moved', None, dict(main, **{
+            'cart/vars.go': VARS % ('countB', 'countB'), 'cart/aaa.go': MOVER}))
+
+    def test_two_globals_merged_into_one_are_reported(self):
+        out = self.gate(self.vars_ref, self.vars_one)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        rows = {r[0]: r[2] for r in read_rows(self.status)}
+        self.assertEqual((rows['shop/cart.BumpA'], rows['shop/cart.BumpB']), ('MATCH', 'MATCH'))
+        lines = out.stdout.splitlines()
+        flagged = [l.split('\t') for l in lines if l.startswith('GLOBAL\t')]
+        self.assertEqual({f[1] for f in flagged}, {'shop/cart.BumpA', 'shop/cart.BumpB'})
+        self.assertTrue(all(len(f) == 3 and f[2].startswith('+0x') for f in flagged), flagged)
+        detail = next(f[2] for f in flagged if f[1] == 'shop/cart.BumpB')
+        self.assertIn('shop/cart.BumpA', detail)                # the conflicting pairing
+        self.assertEqual(lines[-2], 'globals: 2 functions with inconsistent references')
+        self.assertTrue(lines[-1].startswith('matched '))
+
+    def test_equal_sources_in_a_moved_layout_report_none(self):
+        ref, cand = gobin.load(self.vars_ref), gobin.load(self.vars_moved)
+        import gocmpx
+        r = gocmpx.compare(ref, cand, 'shop/cart.BumpA')
+        self.assertEqual(r.status, 'MATCH', r)
+        self.assertTrue(all(ra != ca for _, ra, ca in r.pairs), r.pairs)   # the globals moved
+        out = self.gate(self.vars_ref, self.vars_moved)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn('GLOBAL\t', out.stdout)
+        self.assertIn('globals: 0 functions with inconsistent references', out.stdout)
+
+
+def fake_compare(table):
+    """A stand-in for gocmpx.compare_many: table is {name: (status, [callee, ...])}."""
+    import gocmpx
+
+    def compare_many(ref, cand, names):
+        return [gocmpx.Result(table[n][0], n, '', None, tuple(sorted(table[n][1])))
+                for n in names]
+    return compare_many
+
+
+class Stubbed(unittest.TestCase):
+    """The waits column and its uses, with stub binaries and a stub comparator."""
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix='gogatex-stub-')
+        self.status = os.path.join(self.work, 'status.tsv')
+
+    def tearDown(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def write(self, *rows):
+        with open(self.status, 'w') as f:
+            f.write('name\tfile\tstatus\tfitted\tsince\twaits\n')
+            for r in rows:
+                f.write('\t'.join(r) + '\n')
+
+    def run_main(self, names, table, extra=(), cand_extra=(), cand_missing=()):
+        """Run gogatex.main on stub binaries holding names (all selected, file shop/a.go) and
+        returns (exit status, stdout lines)."""
+        import contextlib
+        import io
+        funcs = [gobin.Func(n, 2 * i, 2 * i + 1, 'shop/a.go', i + 1, 0) for i, n in enumerate(names)]
+        cand = [f for f in funcs if f.name not in cand_missing] + \
+            [gobin.Func(n, 1000 + i, 1001 + i, 'lib/x.go', 1, 0) for i, n in enumerate(cand_extra)]
+        bins = {'r': StubRef(funcs), 'c': StubRef(cand)}
+        real = gogatex.gobin.load, gogatex.gocmpx.compare_many
+        gogatex.gobin.load = lambda path: bins[path]
+        gogatex.gocmpx.compare_many = fake_compare(table)
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = gogatex.main(['gogatex', 'r', 'c', self.status, '--prefix', 'shop/',
+                                     '--today', '2026-01-01'] + list(extra))
+        finally:
+            gogatex.gobin.load, gogatex.gocmpx.compare_many = real
+        return code, out.getvalue().splitlines()
+
+    def rows(self):
+        return {r[0]: r for r in read_rows(self.status)}
+
+    def test_separator_survives_spaces_commas_and_semicolons(self):
+        odd = 'shop/T[go.shape.struct { X int; Y string },go.shape.int].M'
+        pct = 'shop/b%c'
+        code, lines = self.run_main(['shop/a', odd, pct], {
+            'shop/a': ('MATCH', [odd, pct]), odd: ('SIZE', []), pct: ('DIFF', [])})
+        self.assertEqual(code, 0, lines)
+        waits = self.rows()['shop/a'][5]
+        self.assertEqual(waits, 'shop/T[go.shape.struct%20{%20X%20int;%20Y%20string%20},'
+                                'go.shape.int].M shop/b%25c')
+        self.assertEqual(gogatex.split_waits(waits), [odd, pct])
+        self.assertEqual(gogatex.split_waits(''), [])
+        self.assertEqual(gogatex.join_waits([]), '')
+        for names in ([odd], [odd, pct, 'shop/c'], ['a%20b', 'x y']):
+            self.assertEqual(gogatex.split_waits(gogatex.join_waits(names)), sorted(names))
+        self.assertEqual(lines[-1], 'matched 1 of 3; fitted 0; 1 of the matched call unmatched code')
+
+    def test_waits_holds_unmatched_first_party_and_missing_callees_only(self):
+        code, lines = self.run_main(['shop/a', 'shop/b', 'shop/c'], {
+            'shop/a': ('MATCH', ['shop/b', 'shop/c', 'lib.Here', 'lib.Gone']),
+            'shop/b': ('MATCH', []), 'shop/c': ('INLINE', ['shop/a'])},
+            cand_extra=['lib.Here'])
+        self.assertEqual(code, 0, lines)
+        rows = self.rows()
+        self.assertEqual(rows['shop/a'][5], 'lib.Gone shop/c')
+        self.assertEqual(rows['shop/c'][5], '')               # waits on a, which matches
+        self.assertEqual(rows['shop/b'][5], '')
+
+    def test_a_dup_callee_is_waited_on(self):
+        names = ['shop/a', 'shop/d', 'shop/d']
+        code, lines = self.run_main(names, {'shop/a': ('MATCH', ['shop/d'])})
+        self.assertEqual(self.rows()['shop/a'][5], 'shop/d')
+
+    def test_only_recomputes_scored_rows_and_keeps_the_others(self):
+        self.write(('shop/a', 'shop/a.go', 'MATCH', '0', '2025-01-01', 'shop/gone'),
+                   ('shop/b', 'shop/a.go', 'SIZE', '0', '2025-01-01', ''),
+                   ('shop/c', 'shop/a.go', 'MATCH', '0', '2025-01-01', ''))
+        table = {'shop/a': ('MATCH', []), 'shop/b': ('MATCH', []),
+                 'shop/c': ('MATCH', ['shop/b'])}
+        code, lines = self.run_main(['shop/a', 'shop/b', 'shop/c'], table,
+                                    extra=['--only', '^shop/c$'])
+        self.assertEqual(code, 0, lines)
+        rows = self.rows()
+        self.assertEqual(rows['shop/c'][5], 'shop/b')         # b's status taken from the file
+        self.assertEqual(rows['shop/a'][5], 'shop/gone')      # unscored: kept, maybe stale
+        self.assertEqual(lines[-1], 'matched 2 of 3; fitted 0; 2 of the matched call unmatched code')
+        code, lines = self.run_main(['shop/a', 'shop/b', 'shop/c'], table,
+                                    extra=['--only', '^shop/(b|c)$'])
+        self.assertEqual(self.rows()['shop/c'][5], '')        # b scored MATCH in this run
+        self.assertEqual(lines[-1], 'matched 3 of 3; fitted 0; 1 of the matched call unmatched code')
+        code, lines = self.run_main(['shop/a', 'shop/b', 'shop/c'], table)
+        self.assertEqual(lines[-1], 'matched 3 of 3; fitted 0; 0 of the matched call unmatched code')
 
 
 class Errors(Base):
@@ -357,7 +567,7 @@ class Errors(Base):
             gogatex.gobin.load = real
         self.assertEqual(code, 0)
         self.assertEqual(out.getvalue().splitlines(), ['duplicate names: 1',
-                                                      'matched 0 of 1; fitted 0'])
+                                                      'matched 0 of 1; fitted 0; 0 of the matched call unmatched code'])
 
     def test_match_turning_dup_is_a_regression(self):
         with open(self.status, 'w') as f:
