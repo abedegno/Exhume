@@ -41,7 +41,7 @@ gogatex.py REF CAND STATUS_TSV --prefix shop/ [--exclude /vendor/] [--name-prefi
            [--src DIR] [--only REGEX] [--accept-regressions]
 ```
 
-The last line reads `matched N of M; fitted F`. When a function that matched before no longer matches, the gate prints `REGRESSED` and its name, exits with status 1 and leaves the status file as it was. The regression is reported again on every run until it is fixed, or until it is recorded with `--accept-regressions`. With `--only REGEX`, only the functions whose names match are scored, and the other rows of the status file are kept.
+The last line reads `matched N of M; fitted F`. When a function that matched before no longer matches, the gate prints `REGRESSED` and its name, exits with status 1 and leaves the status file as it was. The regression is reported again on every run until it is fixed, or until it is recorded with `--accept-regressions`. A row that matched before and is missing from the new result for any reason (gone from the reference, no longer selected) counts as a regression too. A selection that yields no function at all, for example a wrong `--prefix`, is a tool error (exit 2) and the file is left alone. When a regression blocks the write, the last line gives the totals of the unchanged file and says so. With `--only REGEX`, only the functions whose names match are scored, and the other rows of the status file are kept. A first run with `--only`, when there is no status file yet, produces a file that holds only the scored rows.
 
 ### gotypes.py
 

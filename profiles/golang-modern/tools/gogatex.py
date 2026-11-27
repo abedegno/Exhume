@@ -22,17 +22,23 @@ are dropped.
 
 With --only REGEX, only the selected functions whose names match REGEX (re.search) are scored and
 their rows replaced; every other row of the existing file is kept as it is, and a row whose name
-matches REGEX but which is no longer selected is dropped. The line `scored K functions` is
-printed before the last line.
+matches REGEX but which is no longer selected is dropped (a dropped row that was MATCH is a
+regression, see below). The line `scored K functions` is printed before the last line. On a first
+run, with no status file, --only produces a file that holds only the scored rows.
 
-Prints `REGRESSED<TAB>name` for each scored function that was MATCH in the old file and is not
-now, then the line `matched N of M; fitted F`, the totals of the whole file. When anything
-regressed the exit status is 1 and the status file is not written, so the regression is reported
-again on the next run; with --accept-regressions the file is written and the exit status is 0.
+Prints `REGRESSED<TAB>name` for each row that was MATCH in the old file and is not now: a scored
+function that no longer matches, and also a row that is absent from the new result for any reason
+(gone from REF, no longer selected, dropped under --only). Rows that were not MATCH are dropped
+silently. Then it prints the line `matched N of M; fitted F`, the totals of the whole file. When
+anything regressed the exit status is 1 and the status file is not written, so the regression is
+reported again on the next run; the totals are then those of the unchanged file and the line ends
+with `(status file unchanged, not written)`. With --accept-regressions the file is written and
+the exit status is 0. A selection that yields no function at all (usually a wrong --prefix) is a
+tool error.
 
 Tool errors exit with 2 and leave the status file as it was: a status file that does not parse
 (a missing or wrong header, a row without five fields, text that is not UTF-8), a name with a tab
-or newline in it, a binary that cannot be read, a bad REGEX, a comparator failure. A missing
+or newline in it, a binary that cannot be read, a bad REGEX, a comparator failure, an empty selection. A missing
 status file is a first run. The file is written to a temporary file and moved into place.
 
 Functions that share a name cannot be told apart in the status file, so each such name gets one
@@ -161,6 +167,10 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
         for what in (f.name, f.file):
             if any(c in what for c in '\t\r\n'):
                 raise ToolError('function name or file with a tab or newline: %r' % what)
+    if not allfuncs:
+        raise ToolError('no function selected (prefix %r, %d excludes, %d name prefixes): '
+                        'check --prefix; the status file is untouched'
+                        % (prefix, len(excludes), len(name_prefixes)))
     funcs = [f for f in allfuncs if pattern is None or pattern.search(f.name)]
     flags = fitted_flags(ref, funcs, src)
     counts = {}
@@ -204,12 +214,16 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
             if row:
                 rows.append(row)
         rows += [r for name, r in old.items() if name not in done and not pattern.search(name)]
+    # a row that was MATCH and is not in the result, for any reason, is a regression too
+    kept = {r[0] for r in rows}
+    regressed += [name for name, r in old.items() if r[2] == 'MATCH' and name not in kept]
     written = not regressed or accept_regressions
     if written:
         write_status(status, rows)
+    shown = rows if written else list(old.values())     # the totals of the file as it stands
     return Outcome(regressed, sum(1 for c in counts.values() if c > 1),
-                   sum(r[2] == 'MATCH' for r in rows), len(rows), sum(r[3] == '1' for r in rows),
-                   len(new), written)
+                   sum(r[2] == 'MATCH' for r in shown), len(shown),
+                   sum(r[3] == '1' for r in shown), len(new), written)
 
 
 def main(argv):
@@ -241,7 +255,8 @@ def main(argv):
         print('duplicate names: %d' % out.dups)
     if args.only is not None:
         print('scored %d functions' % out.scored)
-    print('matched %d of %d; fitted %d' % (out.matched, out.total, out.fitted))
+    print('matched %d of %d; fitted %d%s' % (out.matched, out.total, out.fitted,
+          '' if out.written else ' (status file unchanged, not written)'))
     return 1 if out.regressed and not out.written else 0
 
 

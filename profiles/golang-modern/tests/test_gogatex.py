@@ -105,10 +105,11 @@ class Gate(Base):
         self.gate(self.ref, self.same)
         names = {r[0] for r in read_rows(self.status)}
         self.assertEqual(names, {TOTAL, 'main.main'})      # runtime.* files are elsewhere
+        os.unlink(self.status)       # excluding a matched function would be a regression
         out = self.gate(self.ref, self.same, extra=['--exclude', '/cart/'])
         self.assertEqual(out.stdout.splitlines()[-1], 'matched 1 of 1; fitted 0')
         out = self.gate(self.ref, self.same, extra=['--exclude', '/cart/', '--exclude', '/cmd/'])
-        self.assertEqual(out.stdout.splitlines()[-1], 'matched 0 of 0; fitted 0')
+        self.assertEqual(out.returncode, 2)               # nothing selected at all
 
     def test_name_prefix_selects_functions_of_other_files(self):
         funcs = [gobin.Func('shop/cart.Total.Printf.func1', 0, 1, 'fmt/print.go', 1, 0),
@@ -129,7 +130,8 @@ class Gate(Base):
         out = self.gate(self.ref, self.changed)
         self.assertEqual(out.returncode, 1)
         self.assertIn('REGRESSED\tshop/cart.Total', out.stdout)
-        self.assertIn('matched 1 of 2', out.stdout.splitlines()[-1])
+        self.assertEqual(out.stdout.splitlines()[-1],
+                         'matched 2 of 2; fitted 0 (status file unchanged, not written)')
         self.assertNotIn('SIZE', [r[2] for r in read_rows(self.status)])   # not written
 
     def test_regression_holds_across_runs(self):
@@ -169,7 +171,7 @@ class Gate(Base):
         os.makedirs(self.work, exist_ok=True)
         with open(self.status, 'w') as f:
             f.write('name\tfile\tstatus\tfitted\tsince\n'
-                    'shop/cart.Gone\tshop/cart/cart.go\tMATCH\t0\t2025-01-01\n')
+                    'shop/cart.Gone\tshop/cart/cart.go\tDIFF\t0\t2025-01-01\n')
         out = self.gate(self.ref, self.same)
         self.assertEqual(out.returncode, 0)
         self.assertNotIn('Gone', open(self.status).read())
@@ -199,6 +201,54 @@ class Gate(Base):
         out = self.gate(self.ref, self.changed, extra=['--only', 'cart'])
         self.assertEqual(out.returncode, 1)
         self.assertIn('REGRESSED\tshop/cart.Total', out.stdout)
+
+    def match_status(self, *names):
+        with open(self.status, 'w') as f:
+            f.write('name\tfile\tstatus\tfitted\tsince\n')
+            for n in names:
+                f.write('%s\tshop/cart/cart.go\tMATCH\t0\t2025-01-01\n' % n)
+        with open(self.status, 'rb') as f:
+            return f.read()
+
+    def test_wrong_prefix_after_a_good_run_is_a_tool_error(self):
+        self.gate(self.ref, self.same)
+        with open(self.status, 'rb') as f:
+            before = f.read()
+        out = subprocess.run([sys.executable, GATE, self.ref, self.same, self.status,
+                              '--prefix', 'typo/'], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn('no function', out.stderr)
+        with open(self.status, 'rb') as f:
+            self.assertEqual(f.read(), before)
+
+    def test_match_row_gone_from_the_reference_is_a_regression(self):
+        old = self.match_status('shop/cart.Gone')
+        out = self.gate(self.ref, self.same)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('REGRESSED\tshop/cart.Gone', out.stdout)
+        self.assertEqual(out.stdout.splitlines()[-1],
+                         'matched 1 of 1; fitted 0 (status file unchanged, not written)')
+        with open(self.status, 'rb') as f:
+            self.assertEqual(f.read(), old)
+        out = self.gate(self.ref, self.same, extra=['--accept-regressions'])
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn('Gone', open(self.status).read())
+
+    def test_only_does_not_drop_a_matching_unselected_match_row(self):
+        old = self.match_status('shop/cart.Gone')
+        out = self.gate(self.ref, self.same, extra=['--only', 'Gone'])
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('REGRESSED\tshop/cart.Gone', out.stdout)
+        with open(self.status, 'rb') as f:
+            self.assertEqual(f.read(), old)
+
+    def test_only_drops_a_non_match_row_silently(self):
+        with open(self.status, 'w') as f:
+            f.write('name\tfile\tstatus\tfitted\tsince\n'
+                    'shop/cart.Gone\tshop/cart/cart.go\tDIFF\t0\t2025-01-01\n')
+        out = self.gate(self.ref, self.same, extra=['--only', 'Gone'])
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn('Gone', open(self.status).read())
 
     def test_bad_only_regex_is_a_tool_error(self):
         out = self.gate(self.ref, self.same, extra=['--only', '('])
