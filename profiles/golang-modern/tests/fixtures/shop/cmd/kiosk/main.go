@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"shop/cart"
+	"shop/depot"
 	"shop/shelf"
 )
 
@@ -26,4 +27,5 @@ func main() {
 	fmt.Println(shelf.Summary(sh))
 	fmt.Println(cart.Rounded(v))
 	fmt.Println(cart.Hi(v))
+	fmt.Println(depot.Deliver(depot.NewDepot("north"), map[string]int64{"tea": 4}))
 }

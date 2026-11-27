@@ -615,9 +615,27 @@ class Stubbed(StubBase):
         code, lines = self.run_main(['shop/a', 'shop/b'], table, starts={'shop/a': 2, 'shop/b': 3},
                                     inl=self.inlined(), src=self.INLINE_SRC)
         self.assertEqual(code, 0, lines)
-        self.assertEqual(self.rows()['shop/a'][5], 'shop/x.helper shop/x.plain')
+        # b has a row of its own and is DIFF, so it is waited on although its line is no stub
+        self.assertEqual(self.rows()['shop/a'][5], 'shop/b shop/x.helper shop/x.plain')
         self.assertEqual(lines[-1], 'matched 1 of 2; fitted 0; waiting 0; 1 of the matched call '
                                     'unmatched code')
+
+    def test_inlined_callee_with_its_own_row_is_waited_on_until_it_matches(self):
+        # b is inlined into a and also kept as a function of its own, so it has a row; a is
+        # marked as waiting and must not be sent back while b does not match
+        src = {'shop/a.go': 'package a\n// waits: b\nfunc a() {}\nfunc b() {}\n'}
+        inl = {'shop/a': [gobin.Inl('shop/b', 'shop/a.go', 3, -1, [(0, 1)], 4, 'shop/a.go')]}
+        table = {'shop/a': ('SIZE', []), 'shop/b': ('DIFF', [])}
+        code, lines = self.run_main(['shop/a', 'shop/b'], table, starts={'shop/a': 3, 'shop/b': 4},
+                                    inl=inl, src=src)
+        self.assertEqual(code, 0, lines)
+        self.assertEqual(self.rows()['shop/a'][5], 'shop/b')
+        self.assertNotIn('RESCORE\tshop/a', lines)
+        table = {'shop/a': ('SIZE', []), 'shop/b': ('MATCH', [])}
+        code, lines = self.run_main(['shop/a', 'shop/b'], table, starts={'shop/a': 3, 'shop/b': 4},
+                                    inl=inl, src=src)
+        self.assertEqual(self.rows()['shop/a'][5], '')
+        self.assertIn('RESCORE\tshop/a', lines)
 
     def test_inline_only_callees_need_src(self):
         table = {'shop/a': ('MATCH', []), 'shop/b': ('DIFF', [])}

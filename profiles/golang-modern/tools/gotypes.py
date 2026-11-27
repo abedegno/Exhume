@@ -15,7 +15,9 @@ them in the code (rip-relative lea) and in the data sections, and from the types
 A type that the program never needs at run time is not in the binary.
 
 As a module: load(binary) returns a Types (see its methods), Renderer writes type expressions and
-declarations for one package, and declare(binary, regex) returns what the command prints.
+declarations for one package, and declare(binary, regex) returns what the command prints. An
+instance of a generic type is written as a placeholder of its size, unless the Renderer is given
+a generic_ok callable that accepts its generic type; it is then written with its type arguments.
 """
 import re
 import struct
@@ -363,6 +365,48 @@ def tabular(rows, indent='\t'):
     return out
 
 
+def split_top(s, sep='.'):
+    """s split at each sep outside brackets, parentheses and braces."""
+    parts, depth, cur = [], 0, []
+    for c in s:
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+        if c == sep and depth == 0:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(c)
+    parts.append(''.join(cur))
+    return parts
+
+
+def instance_parts(s):
+    """('Name', ['arg', ...]) of 'Name[a,b]' (the arguments split at top-level commas), or
+    ('Name', []) when s has no type arguments, or None when the brackets do not close at the
+    end."""
+    if '[' not in s:
+        return s, []
+    i = s.index('[')
+    if not s.endswith(']'):
+        return None
+    inner = s[i + 1:-1]
+    depth = 0
+    for c in inner:
+        depth += c in '([{'
+        depth -= c in ')]}'
+        if depth < 0:
+            return None
+    return s[:i], [a.strip() for a in split_top(inner, ',')]
+
+
+PREDECLARED = {'bool', 'byte', 'complex64', 'complex128', 'error', 'float32', 'float64', 'int',
+               'int8', 'int16', 'int32', 'int64', 'rune', 'string', 'uint', 'uint8', 'uint16',
+               'uint32', 'uint64', 'uintptr', 'any'}
+IDENT = re.compile(r'^[A-Za-z_]\w*$')
+
+
 class Renderer:
     """Writes type expressions and declarations as seen from one package.
 
@@ -370,16 +414,24 @@ class Renderer:
     usable(t) whether a named type of another package may be named (its package can be imported
     and the type exists there). A type that may not be named is written as a placeholder of its
     size and alignment, and counted in placeholders. imports collects {import path: name}.
-    taken is the set of identifiers of the package, which an import name must not hide."""
+    taken is the set of identifiers of the package, which an import name must not hide.
+
+    An instance of a generic type is written as a placeholder too, unless generic_ok(import
+    path, base name) says that the generic type is declared in source. It is then written as
+    the base name with its type arguments, which are read from the runtime's name of the
+    instance (see type_arg). named_ok(import path, name) says whether a named type that appears
+    in such an argument may be named."""
 
     def __init__(self, pkgpath, pkg_names, local=lambda t: True, usable=lambda t: True,
-                 taken=()):
+                 taken=(), generic_ok=None, named_ok=None):
         self.pkg, self.pkg_names = pkgpath, pkg_names
         self.local, self.usable = local, usable
         self.taken = set(taken)
         self.imports = {}
         self.placeholders = []
         self.may_import = lambda path: True     # whether a new import may be added
+        self.generic_ok = generic_ok or (lambda path, name: False)
+        self.named_ok = named_ok or (lambda path, name: True)
 
     def qualifier(self, path):
         if path in self.imports:
@@ -411,8 +463,10 @@ class Renderer:
         if t.named:
             if not t.pkgpath:                       # int, string, error, ...
                 return t.name
-            if t.generic or t.pkgpath == 'main' and self.pkg != 'main':
+            if t.pkgpath == 'main' and self.pkg != 'main':
                 return self._placeholder(t)
+            if t.generic:
+                return self.instance(t.pkgpath, t.name) or self._placeholder(t)
             if t.pkgpath == self.pkg:
                 return t.name if self.local(t) else self._placeholder(t)
             if not t.name[:1].isupper() or not self.usable(t) or \
@@ -420,6 +474,83 @@ class Renderer:
                 return self._placeholder(t)
             return self.qualifier(t.pkgpath) + '.' + t.name
         return self.underlying(t)
+
+    def instance(self, path, name):
+        """The source text of the instance name ('Base[arg,...]') of a generic type of package
+        path, or None when generic_ok refuses the base or an argument cannot be written. Nothing
+        is added to imports when it returns None."""
+        saved = dict(self.imports)
+        text = self._instance(path, name)
+        if text is None:
+            self.imports = saved
+        return text
+
+    def _named(self, path, name):
+        """How a named, non-generic type is written here, or None."""
+        if not IDENT.match(name) or not path or not self.named_ok(path, name):
+            return None
+        if path == self.pkg:
+            return name
+        if path == 'main' or not name[:1].isupper() or \
+                path not in self.imports and not self.may_import(path):
+            return None
+        return self.qualifier(path) + '.' + name
+
+    def _instance(self, path, name):
+        parts = instance_parts(name)
+        if parts is None or not parts[1]:
+            return None
+        base, args = parts
+        if not IDENT.match(base) or not self.generic_ok(path, base):
+            return None
+        head = self._named(path, base) if path != self.pkg else base
+        if head is None:
+            return None
+        texts = [self.type_arg(a) for a in args]
+        if None in texts:
+            return None
+        return '%s[%s]' % (head, ', '.join(texts))
+
+    def type_arg(self, s):
+        """The source text of a type argument as the runtime writes it in an instance's name
+        (named types as import/path.Name), or None. Accepted: predeclared identifiers, named
+        types that may be named here, *X, []X, [N]X, map[K]V, struct {}, interface {}, and
+        instances of generic types that generic_ok accepts."""
+        s = s.strip()
+        if s in PREDECLARED:
+            return s
+        if s in ('struct {}', 'struct{}'):
+            return 'struct{}'
+        if s in ('interface {}', 'interface{}'):
+            return 'interface{}'
+        if s.startswith('*'):
+            inner = self.type_arg(s[1:])
+            return None if inner is None else '*' + inner
+        if s.startswith('[]'):
+            inner = self.type_arg(s[2:])
+            return None if inner is None else '[]' + inner
+        m = re.match(r'^\[(\d+)\](.+)$', s)
+        if m:
+            inner = self.type_arg(m.group(2))
+            return None if inner is None else '[%s]%s' % (m.group(1), inner)
+        if s.startswith('map['):
+            depth = 0
+            for j in range(3, len(s)):
+                depth += s[j] in '([{'
+                depth -= s[j] in ')]}'
+                if depth == 0:
+                    break
+            else:
+                return None
+            key, val = self.type_arg(s[4:j]), self.type_arg(s[j + 1:])
+            return None if key is None or val is None else 'map[%s]%s' % (key, val)
+        head = s.split('[', 1)[0]
+        if '.' not in head or ' ' in head or '(' in head:
+            return None
+        path, base = head.rsplit('.', 1)
+        if '[' in s:
+            return self._instance(path, base + s[len(head):])
+        return self._named(path, base)
 
     def underlying(self, t):
         k = t.kind

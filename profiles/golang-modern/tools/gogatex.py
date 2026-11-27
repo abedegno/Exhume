@@ -24,9 +24,10 @@ a function value), and that are either selected and not MATCH in this run (as sc
 file has them under --only) or absent from CAND. A call made by code inlined into the function
 counts only through the function's own call instructions. With --src, `waits` also names each
 function inlined into this one (anywhere in its inlining tree in REF) that is first-party by the
-rules above (its file as the tree gives it, or its name), has no row of its own because REF
-always inlines it, and whose declaration line in DIR still carries goskel.py's `// skel:stub`
-marker (see inline_stubs). The names are sorted and joined by
+rules above (its file as the tree gives it, or its name) and either has a row of its own (REF
+inlines it here but also keeps it as a function) whose status in this run is not MATCH, or has
+a declaration line in DIR that still carries goskel.py's `// skel:stub` marker (see
+inline_stubs). A function that REF always inlines has no row, so only the marker counts for it. The names are sorted and joined by
 single spaces; in each name `%` is written `%25` and a space `%20`, since a Go symbol name can hold
 commas, semicolons and spaces (see join_waits). A status file of the first five columns, from
 before `waits`, is read with empty `waits`; the file is always written with six. Without --only,
@@ -236,12 +237,18 @@ def waiting_flags(funcs, src):
     return flags
 
 
-def inline_stubs(ref, func, src, chosen, is_first_party, texts):
-    """The first-party functions inlined into func, anywhere in its inlining tree, that have no
-    row of their own (not in chosen) and whose declaration line in src is still a stub."""
+def inline_stubs(ref, func, src, chosen, is_first_party, texts, now=None):
+    """The first-party functions inlined into func, anywhere in its inlining tree, that are still
+    waited on: their declaration line in src is still a stub, or they have a row of their own (in
+    chosen; REF inlines them somewhere and also keeps them as functions) whose status in now is
+    not MATCH. Without such a row and a stub line, a callee is not waited on."""
     out = set()
+    now = now or {}
     for i in ref.inltree(func):
-        if i.callee in chosen or i.callee == func.name or not is_first_party(i.callee, i.file):
+        if i.callee == func.name or not is_first_party(i.callee, i.file):
+            continue
+        if i.callee in chosen and now.get(i.callee) != 'MATCH':
+            out.add(i.callee)
             continue
         lines = source_lines(src, i.file, texts)
         k = i.start_line - 1
@@ -453,7 +460,7 @@ def gate(ref, cand, status, prefix, excludes=(), name_prefixes=(), src=None, tod
         got = {c for c in calls.get(name, ()) if c != name and (
             c not in in_cand or (c in chosen and now.get(c) != 'MATCH'))}
         if src:
-            got |= inline_stubs(ref, first[name], src, chosen, is_first_party, texts)
+            got |= inline_stubs(ref, first[name], src, chosen, is_first_party, texts, now)
         return join_waits(got)
     rows = [r[:5] + (waits(r),) for r in rows]
     # a row that was MATCH and is not in the result, for any reason, is a regression too

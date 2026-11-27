@@ -232,7 +232,8 @@ class Skeleton(unittest.TestCase):
         goskel.write(self.ref, self.out, prefix='shop/', keep='keepall')
         names = {os.path.relpath(p, self.out) for p in self.keep_files(self.out)}
         self.assertEqual(names, {'cart/zz_keep_cart.go', 'shelf/zz_keep_shelf.go',
-                                 'tally/zz_keep_tally.go', 'cmd/kiosk/zz_keep_main.go'})
+                                 'tally/zz_keep_tally.go', 'depot/zz_keep_depot.go',
+                                 'cmd/kiosk/zz_keep_main.go'})
         self.assertTrue(self.read(self.out, 'cart/zz_keep_cart.go').startswith(
             goskel.KEEP_NOTE + '\n\n//go:build keepall\n'))
         shelf = self.read(self.out, 'shelf/zz_keep_shelf.go')
@@ -686,6 +687,117 @@ class Skeleton(unittest.TestCase):
         calls, inlined = hi(self.build_with(self.out, 'keepall'))     # the panic is inlined
         self.assertNotIn('shop/cart.Square', calls)
         self.assertIn('shop/cart.Square', inlined)
+
+    # Generic types declared by hand (the depot package)
+
+    QUEUE = 'package depot\n\ntype Queue[T any] struct {\n\titems []T\n}\n'
+    DEPOT = ('package depot\n\nimport "shop/cart"\n\ntype Depot struct {\n\tName    string\n'
+             '\tOrders  *Queue[string]\n\tCrates  *Queue[[]cart.Item]\n\tPending int\n}\n')
+
+    def depot_field(self, name):
+        types = self.read(self.out, 'depot/types_recovered.go')
+        body = types[types.index('type Depot struct {'):]
+        body = body[:body.index('\n}\n')]
+        return next(re.sub(r'\s+', ' ', l.strip()) for l in body.split('\n')[1:]
+                    if l.strip().startswith(name + ' '))
+
+    def test_field_of_a_generic_instance_is_a_placeholder_without_a_hand_declaration(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.depot_field('Orders'), 'Orders *[3]uint64')
+        self.assertEqual(self.depot_field('Crates'), 'Crates *[3]uint64')
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_field_of_an_instance_of_a_hand_declared_generic_type_is_written_as_source(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.put('depot/queue.go', self.QUEUE)
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.depot_field('Orders'), 'Orders *Queue[string]')
+        self.assertEqual(self.depot_field('Crates'), 'Crates *Queue[[]cart.Item]')
+        self.assertIn('\t"shop/cart"\n', self.read(self.out, 'depot/types_recovered.go'))
+        self.assertNotIn('shop/depot.Queue[string]\t', self.read(self.out, 'UNKNOWN.txt'))
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_methods_of_a_hand_declared_generic_type_keep_their_type_parameters(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.put('depot/queue.go', self.QUEUE)
+        goskel.write(self.ref, self.out, prefix='shop/')
+        src = self.read(self.out, 'depot/depot.go')
+        self.assertIn('\nfunc (*Queue[T1]) Len() { panic("todo") } // skel:stub signature unknown\n',
+                      src)
+        # the inline-only method gets its stub, with the receiver's type parameters
+        self.assert_stub_at('depot/depot.go', 'func (q *Queue[T]) PushBack(',
+                            'func (*Queue[T1]) PushBack()')
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_method_of_a_hand_declared_type_keeps_its_recovered_signature(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        line = self.ref_start_line('shop/depot.(*Depot).Restock')
+        stub = 'func (*Depot) Restock(map[string]int64) int { panic("todo") } // skel:stub'
+        self.assertEqual(self.lines_of('depot/depot.go')[line - 1], stub)
+        self.put('depot/hand.go', self.DEPOT)
+        goskel.write(self.ref, self.out, prefix='shop/')
+        self.assertEqual(self.lines_of('depot/depot.go')[line - 1], stub)
+        self.assertNotIn('type Depot ', self.read(self.out, 'depot/types_recovered.go'))
+        r = self.go_build(self.out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_inline_only_callee_without_a_stub_is_listed_once(self):
+        goskel.write(self.ref, self.out, prefix='shop/')
+        unknown = self.read(self.out, 'UNKNOWN.txt')
+        # counter has no runtime type, so twice gets no stub but one row with its callers
+        rows = [l for l in unknown.split('\n') if l.startswith('shop/cart.counter.twice\t')]
+        self.assertEqual(len(rows), 1, unknown)
+        self.assertTrue(rows[0].endswith('inlined into 1 functions'), rows[0])
+        # every inline-only callee under the prefix has a stub or a row
+        sk = goskel.Skeleton(self.ref, self.out, 'shop/')
+        sk.write()
+        listed = {row[0] for row in sk.unknown}
+        for name in sk.inline_found:
+            self.assertTrue(name in listed or name in sk.inline_done, name)
+
+    def test_inline_only_callee_never_accounted_for_gets_a_row(self):
+        sk = goskel.Skeleton(self.ref, self.out, 'shop/')
+        sk.inline_found['shop/cart.ghost'] = ('shop/cart/cart.go', 3, {'shop/cart.Total'})
+        sk.write()
+        self.assertIn('shop/cart.ghost\tcart/cart.go:3\tinline-only not written: no stub was '
+                      'made for it, inlined into 1 functions\n', self.read(self.out, 'UNKNOWN.txt'))
+
+    def test_renderer_writes_instances_of_accepted_generic_types(self):
+        def named(path, name, size=24, align=8):
+            t = gotypes.Type(0)
+            t.named, t.pkgpath, t.name, t.size, t.align = True, path, name, size, align
+            t.kind = gotypes.STRUCT
+            return t
+        ok = lambda path, base: base in ('Store', 'Box')
+        cases = [
+            ('Store[string,int64]', 'Store[string, int64]'),
+            ('Store[*shop/cart.Item,[]byte]', 'Store[*cart.Item, []byte]'),
+            ('Store[[4]uint8,map[string]shop/cart.Item]', 'Store[[4]uint8, map[string]cart.Item]'),
+            ('Store[struct {},interface {}]', 'Store[struct{}, interface{}]'),
+            ('Store[shop/depot.Box[int],error]', 'Store[Box[int], error]'),
+            ('Store[shop/depot.Local,bool]', 'Store[Local, bool]'),
+        ]
+        for name, want in cases:
+            r = gotypes.Renderer('shop/depot', {'shop/cart': 'cart'}, generic_ok=ok)
+            self.assertEqual(r.expr(named('shop/depot', name)), want)
+            self.assertEqual(r.placeholders, [])
+        r = gotypes.Renderer('shop/depot', {}, generic_ok=ok)
+        r.expr(named('shop/depot', 'Store[*shop/cart.Item,int]'))
+        self.assertEqual(r.imports, {'shop/cart': 'cart'})
+        r = gotypes.Renderer('shop/shelf', {'shop/depot': 'depot'}, generic_ok=ok)
+        self.assertEqual(r.expr(named('shop/depot', 'Store[string,int64]')),
+                         'depot.Store[string, int64]')
+        for name in ('Store[func(int) string,int]', 'Store[shop/cart.item,int]',
+                     'Store[chan int,int]', 'Other[int]', 'Store[shop/depot.Other[int],int]',
+                     'Store[*shop/cart.Item,func()]'):
+            r = gotypes.Renderer('shop/depot', {}, generic_ok=ok)
+            self.assertEqual(r.expr(named('shop/depot', name)), '[3]uint64', name)
+            self.assertEqual(r.imports, {}, name)     # a failed argument records no import
+        r = gotypes.Renderer('shop/depot', {})
+        self.assertEqual(r.expr(named('shop/depot', 'Store[string,int64]')), '[3]uint64')
 
     def test_range_over_func_bodies_are_not_declared(self):
         self.assertEqual(goskel.parse_name('(*List).Add-range1'), 'range-over-func loop body')
